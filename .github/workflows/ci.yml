@@ -80,9 +80,11 @@ jobs:
           import zipfile, sys
           z = zipfile.ZipFile('$WHEEL')
           names = z.namelist()
-          forbidden = [n for n in names if 'kestrel_sovereign' in n]
+          # Forbid framework content: kestrel_sovereign/ as a path component
+          # (NOT kestrel_sovereign_sdk-... which is the SDK's own dist-info).
+          forbidden = [n for n in names if n.startswith('kestrel_sovereign/')]
           if forbidden:
-              print('ERROR: wheel contains kestrel_sovereign content:', forbidden, file=sys.stderr)
+              print('ERROR: wheel contains kestrel_sovereign framework content:', forbidden, file=sys.stderr)
               sys.exit(1)
           missing = [m for m in ['kestrel_sdk/__init__.py', 'kestrel_sdk/features/base.py'] if m not in names]
           if missing:
