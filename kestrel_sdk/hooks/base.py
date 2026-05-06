@@ -130,6 +130,10 @@ class HookOutput:
     # For ASK - queue info
     approval_id: Optional[str] = None
 
+    # Graduated severity — soft advisories that don't block execution
+    warning_message: Optional[str] = None
+    warning_severity: Optional[str] = None  # "info" | "warning" | "critical"
+
     @classmethod
     def allow(cls, reason: str = None) -> "HookOutput":
         """Create an ALLOW output - execution continues."""
@@ -160,6 +164,16 @@ class HookOutput:
         )
 
     @classmethod
+    def warn(cls, message: str, severity: str = "warning") -> "HookOutput":
+        """Create a WARN output — advisory that doesn't block execution."""
+        return cls(
+            continue_execution=True,
+            permission_decision=PermissionDecision.ALLOW,
+            warning_message=message,
+            warning_severity=severity,
+        )
+
+    @classmethod
     def modify(cls, updated_input: Dict[str, Any], reason: str = None) -> "HookOutput":
         """Create a MODIFY output - execution continues with modified args."""
         return cls(
@@ -179,6 +193,8 @@ class HookOutput:
             "permission_reason": self.permission_reason,
             "updated_input": self.updated_input,
             "approval_id": self.approval_id,
+            "warning_message": self.warning_message,
+            "warning_severity": self.warning_severity,
         }
 
 
@@ -215,6 +231,7 @@ class Hook(ABC):
         matcher: Optional[str] = None,  # Regex for tool names
         priority: int = 100,
         timeout: float = 5.0,
+        awaits_user_input: bool = False,
     ):
         """
         Initialize a hook.
@@ -224,13 +241,25 @@ class Hook(ABC):
             events: List of HookEvent types this hook handles
             matcher: Optional regex pattern to match tool names
             priority: Execution priority (lower = earlier, default 100)
-            timeout: Maximum execution time in seconds
+            timeout: Maximum execution time in seconds. IGNORED when
+                ``awaits_user_input=True`` — see below.
+            awaits_user_input: If True, this hook blocks waiting for a
+                human decision (e.g. an approval prompt). The hook
+                manager will NOT wrap ``execute()`` in
+                ``asyncio.wait_for`` for these hooks; bounding human
+                response time with a synthetic timeout would cancel
+                the wait before the user could reply. Such hooks are
+                expected to manage their own lifecycle (e.g. by
+                writing to a queue with its own staleness sweep).
+                Default False so non-interactive hooks (audit,
+                telemetry, validation) keep their existing watchdog.
         """
         self.name = name
         self.events = events
         self.matcher = matcher
         self.priority = priority
         self.timeout = timeout
+        self.awaits_user_input = awaits_user_input
         self.enabled = True
         self._compiled_matcher: Optional[re.Pattern] = None
 
