@@ -1,10 +1,36 @@
 [project]
 name = "kestrel-sovereign-sdk"
 version = "0.1.0"
-description = "Kestrel Sovereign SDK — lightweight interfaces for feature packages"
+description = "Kestrel Sovereign SDK — lightweight interfaces and protocols for feature packages"
+readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = "Apache-2.0"
-readme = "README.md"
+license-files = ["LICENSE"]
+authors = [{ name = "UncleSaurus" }]
+maintainers = [{ name = "UncleSaurus" }]
+keywords = [
+    "ai",
+    "agents",
+    "sovereign",
+    "constitutional-ai",
+    "did",
+    "sdk",
+    "lightweight",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.0",
 ]
@@ -14,6 +40,16 @@ dependencies = [
 crypto = [
     "cryptography>=42.0",
 ]
+# Test dependencies
+test = [
+    "pytest>=8.0.0",
+]
+
+[project.urls]
+Homepage = "https://kestrelsovereign.com"
+Source = "https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk"
+Issues = "https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk/issues"
+Documentation = "https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk/blob/main/README.md"
 
 [build-system]
 requires = ["hatchling"]
@@ -23,4 +59,4 @@ build-backend = "hatchling.build"
 packages = ["kestrel_sdk"]
 
 [tool.hatch.build.targets.sdist]
-include = ["kestrel_sdk/**/*", "sdk/README.md"]
+include = ["kestrel_sdk/**/*", "README.md", "LICENSE", "pyproject.toml"]
