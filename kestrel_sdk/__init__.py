@@ -12,4 +12,9 @@ Usage:
     from kestrel_sdk.tools.base import AgentTool, ToolSchema
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version as _version
+
+try:
+    __version__ = _version("kestrel-sovereign-sdk")
+except PackageNotFoundError:
+    __version__ = "0.0.0+local"
