@@ -159,6 +159,104 @@ class TestDrainStreamingWithToolsViolations:
         with pytest.raises(AssertionError, match="MUST appear in the"):
             _drive(drain_streaming_with_tools(_stream_from(items)))
 
+    def test_tool_calls_without_any_markers_is_rejected(self):
+        """Codex review found this gap: an adapter that yields a
+        terminal LLMResponse with tool_calls but emits no
+        ToolCallStarted markers violates the consumer-half contract.
+        The honesty layer (#1042 layer 2) and the streaming
+        "revising" event (#1045) both gate on the marker — without
+        one, pre-tool prose leaks. The conformance suite must
+        reject this."""
+        items = [
+            "Saved!",
+            LLMResponse(
+                content="Saved!",
+                tool_calls=[
+                    ToolCall(id="call_1", name="save_fact", arguments={}),
+                ],
+            ),
+        ]
+        with pytest.raises(AssertionError, match="no ToolCallStarted markers"):
+            _drive(drain_streaming_with_tools(_stream_from(items)))
+
+    def test_marker_id_mismatch_with_tool_call_is_rejected(self):
+        """When a marker carries an id, that id MUST match the
+        corresponding tool_call (positional in stream order /
+        tool_calls assembled order). Catches reordering bugs where
+        the adapter swaps tool calls between stream and final
+        response."""
+        items = [
+            ToolCallStarted(index=0, id="call_a", name="fn_a"),
+            ToolCallStarted(index=1, id="call_b", name="fn_b"),
+            LLMResponse(
+                tool_calls=[
+                    # Wrong order: call_b first, call_a second.
+                    ToolCall(id="call_b", name="fn_b", arguments={}),
+                    ToolCall(id="call_a", name="fn_a", arguments={}),
+                ],
+            ),
+        ]
+        with pytest.raises(
+            AssertionError,
+            match="marker stream order MUST equal tool_calls assembled order",
+        ):
+            _drive(drain_streaming_with_tools(_stream_from(items)))
+
+    def test_marker_name_mismatch_is_rejected(self):
+        """Same rule as id mismatch: when name is non-None, it must
+        align with tool_calls[i].name."""
+        items = [
+            ToolCallStarted(index=0, id=None, name="fn_a"),
+            LLMResponse(
+                tool_calls=[
+                    ToolCall(id="x", name="fn_b", arguments={}),
+                ],
+            ),
+        ]
+        with pytest.raises(AssertionError, match="see id mismatch above"):
+            _drive(drain_streaming_with_tools(_stream_from(items)))
+
+    def test_marker_with_none_id_skips_correlation_check(self):
+        """The OpenAI-first-delta case: marker fires with index but
+        no id/name yet. Conformance must NOT reject this case just
+        because the final tool_calls has a different id — the
+        marker said it didn't know."""
+        items = [
+            ToolCallStarted(index=0, id=None, name=None),
+            LLMResponse(
+                tool_calls=[
+                    ToolCall(id="filled-in-later", name="fn", arguments={}),
+                ],
+            ),
+        ]
+        # Should NOT raise — id/name None on the marker means
+        # "not yet known", and that's documented as legal.
+        result = _drive(drain_streaming_with_tools(_stream_from(items)))
+        assert result.final_response.tool_calls[0].id == "filled-in-later"
+
+    def test_sparse_marker_indices_with_aligned_order_pass(self):
+        """Anthropic uses content_block_index which is sparse when
+        text blocks interleave (block 0 = text, block 1 = tool_use,
+        block 2 = text, block 3 = tool_use). The marker indices are
+        [1, 3] but the assembled tool_calls are [0]=block-1-tool,
+        [1]=block-3-tool. Order matches; literal indices don't.
+        Conformance must accept this — index is provider-specific."""
+        items = [
+            "Let me check ",
+            ToolCallStarted(index=1, id="call_a", name="fn_a"),
+            "and look up ",
+            ToolCallStarted(index=3, id="call_b", name="fn_b"),
+            LLMResponse(
+                tool_calls=[
+                    ToolCall(id="call_a", name="fn_a", arguments={}),
+                    ToolCall(id="call_b", name="fn_b", arguments={}),
+                ],
+            ),
+        ]
+        result = _drive(drain_streaming_with_tools(_stream_from(items)))
+        assert [s.index for s in result.tool_starts] == [1, 3]
+        assert len(result.final_response.tool_calls) == 2
+
 
 # ---------------------------------------------------------------------------
 # drain_streaming_text_only

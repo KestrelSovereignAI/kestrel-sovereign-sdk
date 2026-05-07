@@ -152,6 +152,28 @@ async def drain_streaming_with_tools(
         )
 
     # Cross-cutting checks once the stream has drained.
+    final_tool_calls = (
+        out.final_response.tool_calls
+        if out.final_response is not None
+        else None
+    ) or []
+
+    if final_tool_calls and not out.tool_starts:
+        # Codex review caught this gap: an adapter that yields a
+        # terminal LLMResponse with tool_calls but no preceding
+        # markers violates the consumer-half contract. The honesty
+        # layer (#1042 layer 2) and the streaming "revising" event
+        # (#1045) both gate on the marker — without one, pre-tool
+        # prose leaks. The conformance suite MUST reject this.
+        raise AssertionError(
+            "Stream's terminal LLMResponse has tool_calls but no "
+            "ToolCallStarted markers were yielded earlier. Contract: "
+            "every assembled tool call MUST have a corresponding "
+            "marker so downstream honesty/revising consumers can "
+            "gate pre-tool prose. Final tool_calls: "
+            f"{[(tc.id, tc.name) for tc in final_tool_calls]}"
+        )
+
     if out.tool_starts:
         if out.final_response is None:
             raise AssertionError(
@@ -172,25 +194,50 @@ async def drain_streaming_with_tools(
                 f"tool_calls: {out.final_response.tool_calls!r}"
             )
 
-        # Index alignment: marker order must match tool_calls order.
-        marker_indices = [s.index for s in out.tool_starts]
-        # Adapters MAY assign arbitrary indices (Anthropic block_index,
-        # OpenAI delta index — neither is guaranteed to start at 0
-        # or be contiguous). The order of distinct values in the
-        # marker stream must equal the order in tool_calls when each
-        # tool_call is assigned the marker_index of the marker it
-        # corresponds to, but the framework's assembly path does the
-        # final mapping by the adapter's own logic. We assert here
-        # only that the COUNT matches: every tool_call has a marker
-        # and vice versa.
-        if len(marker_indices) != len(out.final_response.tool_calls or []):
+        # Count alignment: every assembled tool_call has a marker.
+        if len(out.tool_starts) != len(final_tool_calls):
             raise AssertionError(
-                f"ToolCallStarted count ({len(marker_indices)}) does "
+                f"ToolCallStarted count ({len(out.tool_starts)}) does "
                 f"not equal final tool_calls count "
-                f"({len(out.final_response.tool_calls or [])}). "
-                f"Contract: every assembled tool call MUST have a "
-                "corresponding ToolCallStarted marker yielded earlier."
+                f"({len(final_tool_calls)}). Contract: every assembled "
+                "tool call MUST have a corresponding ToolCallStarted "
+                "marker yielded earlier."
             )
+
+        # Order alignment: the position of a marker in stream order
+        # MUST equal the position of the corresponding tool call in
+        # ``LLMResponse.tool_calls``. This is the contract's load-
+        # bearing claim — consumers (the audit hook in particular)
+        # treat marker[i] as "TC[i] is about to fire".
+        #
+        # Note: ``marker.index`` is provider-specific (Anthropic uses
+        # content_block_index which is sparse when text blocks
+        # interleave; OpenAI uses delta tool_call index which is
+        # positional). The conformance suite pins the ORDER invariant,
+        # not the literal-index invariant — so the assertion below
+        # walks the streams positionally and uses ``id`` to verify
+        # alignment when the marker carries one. Markers with id=None
+        # (the OpenAI-first-delta MAY-BE-NONE case) are skipped from
+        # the id-correlation check; only their count and stream
+        # position are pinned by the surrounding count-equality.
+        for i, (marker, tc) in enumerate(zip(out.tool_starts, final_tool_calls)):
+            if marker.id is not None and marker.id != tc.id:
+                raise AssertionError(
+                    f"ToolCallStarted at stream position {i} "
+                    f"(id={marker.id!r}) does not match the tool call "
+                    f"at the same position in tool_calls "
+                    f"(id={tc.id!r}). Contract: marker stream order "
+                    "MUST equal tool_calls assembled order — consumers "
+                    "treat marker[i] as 'tool_calls[i] is about to "
+                    "fire'."
+                )
+            if marker.name is not None and marker.name != tc.name:
+                raise AssertionError(
+                    f"ToolCallStarted at stream position {i} "
+                    f"(name={marker.name!r}) does not match the tool "
+                    f"call at the same position in tool_calls "
+                    f"(name={tc.name!r}). Contract: see id mismatch above."
+                )
 
     return out
 
