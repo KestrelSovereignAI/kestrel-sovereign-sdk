@@ -88,6 +88,36 @@ class HookInput:
     spawn_purpose: Optional[str] = None
     termination_reason: Optional[str] = None
 
+    # PostResponse narration-check fields (added in 0.9). Appended at
+    # the end of the field list so positional-arg callers built against
+    # 0.8 keep landing on ``parent_did`` / ``child_did`` / etc. — not
+    # silently re-routed onto ``pre_tool_prose``.
+    #
+    # Pre-tool prose the agent streamed before the first ToolCallStarted
+    # marker arrived in the LLM stream. Distinct from ``response_text``,
+    # which is the post-tool synthesizing answer. ResponseAuditHook
+    # narration check (kestrel-sovereign #1042 layer 3, #1061 piece 4)
+    # uses this to compare what the agent SAID it was doing against
+    # what the tool actually returned. Empty string when no pre-tool
+    # prose was streamed; ``None`` when the firing path can't supply it.
+    pre_tool_prose: Optional[str] = None
+    # Tool calls the agent issued in this turn — name/id/arguments per
+    # call. ``Dict[str, Any]`` for cross-language consumers (Claude-Code-
+    # style stdin/stdout JSON hooks) — framework callers always wrap
+    # adapter-level ``ToolCall`` instances into the dict shape before
+    # populating this field.
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    # Tool results observed in this turn. Framework normalizes to
+    # ``ToolResult.to_dict()`` when the tool conforms to the envelope
+    # (kestrel-sovereign #1042 layer 4); legacy non-conforming tools
+    # are wrapped to a ``{status, data, ...}`` dict before populating
+    # this field — entries are always ``Dict[str, Any]``, never raw
+    # framework objects. Hook authors writing the narration check
+    # should treat ``status == "ok"`` (or equivalent positive-
+    # confirmation fields) as the only basis for past-tense success
+    # language.
+    tool_results: Optional[List[Dict[str, Any]]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -102,6 +132,9 @@ class HookInput:
             "execution_time_ms": self.execution_time_ms,
             "user_message": self.user_message,
             "response_text": self.response_text,
+            "pre_tool_prose": self.pre_tool_prose,
+            "tool_calls": self.tool_calls,
+            "tool_results": self.tool_results,
             "parent_did": self.parent_did,
             "child_did": self.child_did,
             "child_name": self.child_name,
