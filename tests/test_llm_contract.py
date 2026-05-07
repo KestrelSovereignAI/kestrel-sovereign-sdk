@@ -517,3 +517,136 @@ class TestLLMAdapterContributeSystemPrompt:
         assert out[0]["role"] == "system"
         assert out[0]["content"] == "should not apply"
         assert out[1] == msg
+
+
+# ---------------------------------------------------------------------------
+# Provider metadata methods (SDK 0.6.0)
+#
+# All five methods default to ``None``. Plugin authors override the ones
+# relevant to their backend; the framework consumes them to remove the
+# provider-name string-matching that previously leaked into council
+# costing, identity export, model selection, key storage UI, etc.
+# ---------------------------------------------------------------------------
+
+
+class TestLLMAdapterProviderMetadata:
+    """All metadata methods default to None — concrete adapters opt in."""
+
+    def _make_minimal_adapter(self):
+        class A(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse()
+
+        return A()
+
+    def test_cost_per_1m_tokens_defaults_to_none(self):
+        assert self._make_minimal_adapter().cost_per_1m_tokens() is None
+
+    def test_substrate_type_defaults_to_none(self):
+        assert self._make_minimal_adapter().substrate_type() is None
+
+    def test_display_name_defaults_to_none(self):
+        assert self._make_minimal_adapter().display_name() is None
+
+    def test_key_env_var_defaults_to_none(self):
+        assert self._make_minimal_adapter().key_env_var() is None
+
+    def test_deliberation_style_defaults_to_none(self):
+        assert self._make_minimal_adapter().deliberation_style() is None
+
+
+class TestLLMAdapterProviderMetadataOverrides:
+    """Concrete adapters that override the metadata methods report
+    their values through the same surface plugins use."""
+
+    def test_cost_per_1m_tokens_round_trip(self):
+        class PaidAdapter(LLMAdapter):
+            async def get_response(self, *a, **kw):
+                return LLMResponse()
+
+            def cost_per_1m_tokens(self):
+                return {"input": 3.0, "output": 15.0}
+
+        cost = PaidAdapter().cost_per_1m_tokens()
+        assert cost == {"input": 3.0, "output": 15.0}
+
+    def test_substrate_type_round_trip(self):
+        class ClaudeAdapter(LLMAdapter):
+            async def get_response(self, *a, **kw):
+                return LLMResponse()
+
+            def substrate_type(self):
+                return "claude"
+
+        assert ClaudeAdapter().substrate_type() == "claude"
+
+    def test_display_name_round_trip(self):
+        class OpenRouterAdapter(LLMAdapter):
+            async def get_response(self, *a, **kw):
+                return LLMResponse()
+
+            def display_name(self):
+                return "OpenRouter"
+
+        assert OpenRouterAdapter().display_name() == "OpenRouter"
+
+    def test_key_env_var_round_trip(self):
+        class KimiAdapter(LLMAdapter):
+            async def get_response(self, *a, **kw):
+                return LLMResponse()
+
+            def key_env_var(self):
+                return "KIMI_API_KEY"
+
+        assert KimiAdapter().key_env_var() == "KIMI_API_KEY"
+
+    def test_deliberation_style_round_trip(self):
+        class GroqAdapter(LLMAdapter):
+            async def get_response(self, *a, **kw):
+                return LLMResponse()
+
+            def deliberation_style(self):
+                return "parallel"
+
+        assert GroqAdapter().deliberation_style() == "parallel"
+
+
+class TestLLMAdapterMetadataAreNonAbstract:
+    """Adding the metadata methods MUST NOT break minimal adapters
+    that only implement get_response. The five methods are optional —
+    instantiating without overriding any of them must succeed."""
+
+    def test_minimal_adapter_remains_instantiable(self):
+        class Echo(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse(content="echo")
+
+        # No NotImplementedError, no TypeError. A plugin that only
+        # implements get_response is fully conforming.
+        adapter = Echo()
+        assert adapter.cost_per_1m_tokens() is None
+        assert adapter.substrate_type() is None
+        assert adapter.display_name() is None
+        assert adapter.key_env_var() is None
+        assert adapter.deliberation_style() is None
+
+    def test_abstract_methods_unchanged(self):
+        """Pinned: only get_response is abstract. Adding metadata
+        methods with default implementations must not promote them
+        into the abstract set or invalidate any existing plugin."""
+        assert LLMAdapter.__abstractmethods__ == frozenset({"get_response"})
+
+
+class TestLLMAdapterContractVersion:
+    """SDK_LLM_CONTRACT_VERSION must NOT bump on a backwards-compatible
+    metadata-method addition — existing plugins continue to work
+    unchanged; new optional surface doesn't break the contract."""
+
+    def test_contract_version_unchanged_at_1(self):
+        from kestrel_sdk.llm import SDK_LLM_CONTRACT_VERSION
+
+        assert SDK_LLM_CONTRACT_VERSION == 1, (
+            "Adding optional metadata methods with None defaults is a "
+            "feature addition, not a contract change. Plugins that pin "
+            "version 1 must continue to load correctly under SDK 0.6.0."
+        )
