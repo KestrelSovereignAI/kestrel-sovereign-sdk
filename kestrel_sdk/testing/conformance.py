@@ -325,11 +325,16 @@ def assert_response_contract(response: LLMResponse) -> None:
     * Each :class:`ToolCall` in ``tool_calls`` has the contract
       shape: ``id`` non-empty (the framework echoes it back on the
       next turn), ``name`` non-empty, ``arguments`` a dict.
-    * If ``arguments`` contains the malformed-JSON sentinel
-      ``"_raw"``, that's the documented fallback shape — the
-      assertion accepts it. (The pre-0.7.0 ``"raw"`` sentinel is
-      NOT accepted; plugins that haven't updated will fail this
-      assertion until they migrate.)
+    * The ``"_raw"`` malformed-JSON sentinel is accepted as a valid
+      argument shape. The contract reserves the underscore-prefixed
+      ``_raw`` key for parse-failure fallback but does NOT forbid
+      tool schemas from having a real argument named ``raw`` (or
+      anything else) — that's between the tool author and the model.
+      Conformance does not try to detect the pre-0.7.0 sentinel
+      rename; that's a one-off migration concern, not a per-call
+      check, and a heuristic at this layer would generate false
+      positives for tools whose schema legitimately includes a
+      ``raw`` parameter.
     """
     if response.tool_calls is not None:
         if not isinstance(response.tool_calls, list):
@@ -372,14 +377,11 @@ def assert_response_contract(response: LLMResponse) -> None:
                     "string. Use the malformed-JSON sentinel "
                     "``{'_raw': '<accumulated>'}`` when parsing fails."
                 )
-            if "raw" in tc.arguments and "_raw" not in tc.arguments:
-                # Heuristic: a plugin still on the pre-0.7.0 sentinel
-                # name. Catch it explicitly so the failure points at
-                # the rename rather than producing a confusing
-                # downstream parse error.
-                raise AssertionError(
-                    f"ToolCall[{i}].arguments uses the legacy "
-                    f"``'raw'`` sentinel for malformed JSON; SDK 0.7.0 "
-                    "renamed this to ``'_raw'`` to signal sentinel "
-                    "vs. real data. Update your adapter."
-                )
+            # Note: ``"raw"`` as an argument key is NOT rejected. The
+            # contract reserves ``"_raw"`` (underscore-prefixed) for
+            # the malformed-JSON sentinel; an adapter that uses
+            # ``"raw"`` as a real parameter name (e.g. for a tool
+            # whose schema has a ``raw: str`` parameter) is
+            # conforming. The pre-0.7.0 sentinel rename is a one-off
+            # migration concern handled at adapter-implementation
+            # time, not per-call here.

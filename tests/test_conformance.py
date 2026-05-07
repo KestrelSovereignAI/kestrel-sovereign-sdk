@@ -348,23 +348,49 @@ class TestAssertResponseContract:
         with pytest.raises(AssertionError, match="non-empty string"):
             assert_response_contract(resp)
 
-    def test_legacy_raw_sentinel_is_caught_with_migration_hint(self):
-        """Plugins still on the pre-0.7.0 ``raw`` sentinel get a
-        clear migration message rather than a confusing downstream
-        parse error."""
-        resp = LLMResponse(
-            tool_calls=[
-                ToolCall(id="c", name="n", arguments={"raw": "bad json"})
-            ]
-        )
-        with pytest.raises(AssertionError, match="renamed this to ``'_raw'``"):
-            assert_response_contract(resp)
-
     def test_underscore_raw_sentinel_passes(self):
-        """The current sentinel shape is valid."""
+        """The current malformed-JSON sentinel shape is valid."""
         resp = LLMResponse(
             tool_calls=[
                 ToolCall(id="c", name="n", arguments={"_raw": "bad json"})
+            ]
+        )
+        assert_response_contract(resp)
+
+    def test_legitimate_raw_argument_is_not_rejected(self):
+        """Codex review caught a false-positive: tools whose schema
+        legitimately includes a ``raw`` parameter (e.g. a transform
+        tool that accepts raw text) produce
+        ``arguments={"raw": "<value>"}``. The contract reserves the
+        underscore-prefixed ``_raw`` for the malformed-JSON sentinel
+        but does NOT forbid ``raw`` as a real argument key.
+        Conformance does not try to detect the pre-0.7.0 sentinel
+        rename — that's a one-off migration concern, not a per-call
+        check."""
+        resp = LLMResponse(
+            tool_calls=[
+                ToolCall(
+                    id="c",
+                    name="transform",
+                    arguments={"raw": "user-supplied bytes here"},
+                )
+            ]
+        )
+        # Must not raise — ``raw`` here is a legitimate tool argument
+        # whose value is the user's actual input, not a parse-failure
+        # fallback.
+        assert_response_contract(resp)
+
+    def test_raw_alongside_other_keys_passes(self):
+        """A tool argument dict that includes ``raw`` alongside other
+        keys is unambiguously a real parameter set."""
+        resp = LLMResponse(
+            tool_calls=[
+                ToolCall(
+                    id="c",
+                    name="encode",
+                    arguments={"raw": "data", "format": "base64"},
+                )
             ]
         )
         assert_response_contract(resp)
