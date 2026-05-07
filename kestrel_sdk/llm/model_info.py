@@ -93,9 +93,15 @@ class ModelInfo:
             and can emit :class:`ToolCall` requests. Filters models
             for tool-using agent loops.
         supports_streaming: ``get_streaming_response`` works for this
-            model. Defaults ``True`` because most modern chat models
-            stream — flip to ``False`` for embeddings and legacy
-            completion endpoints.
+            model. Defaults ``False`` (conservative-by-default,
+            matching ``supports_vision`` and ``supports_tools``):
+            adapters that implement streaming opt in by setting this
+            to ``True``. Without that, the framework gates streaming
+            off — otherwise a minimal adapter that overrides only
+            ``get_response`` would have its ``ModelInfo`` advertise
+            streaming, and the framework would dispatch into the
+            default ``get_streaming_response`` that raises
+            ``NotImplementedError``.
 
         size_gb: For local models (Ollama, llama.cpp), on-disk size.
             Surfaced in UI. ``None`` for cloud models.
@@ -123,7 +129,7 @@ class ModelInfo:
 
     supports_vision: bool = False
     supports_tools: bool = False
-    supports_streaming: bool = True
+    supports_streaming: bool = False
 
     size_gb: Optional[float] = None
     context_limit: Optional[int] = None
@@ -174,6 +180,13 @@ class ModelInfo:
             created_at=data.get("created_at"),
             supports_vision=data.get("supports_vision", False),
             supports_tools=data.get("supports_tools", False),
+            # Old catalogs predating the supports_streaming field
+            # encoded the "every chat model streams" assumption; keep
+            # their meaning when the key is absent. Catalogs that DO
+            # include the key (everything written after this field
+            # was introduced) round-trip exactly via the explicit
+            # value. Fresh ModelInfo construction without the kwarg
+            # uses the conservative dataclass default (False) instead.
             supports_streaming=data.get("supports_streaming", True),
             size_gb=data.get("size_gb"),
             context_limit=data.get("context_limit"),

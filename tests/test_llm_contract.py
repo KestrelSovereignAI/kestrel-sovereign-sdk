@@ -146,15 +146,40 @@ class TestModelInfo:
         assert m.display_name == "Kimi K2"
         assert m.category is ModelCategory.CHAT
 
-    def test_capability_defaults(self):
+    def test_capability_defaults_are_all_conservative(self):
         """Defaults match the conservative-by-default invariant: a
-        plugin that does not opt into vision / tools is treated as
-        not supporting them. Streaming defaults True because most
-        modern chat models do."""
+        plugin that does not opt into vision / tools / streaming is
+        treated as not supporting them. The streaming default is
+        load-bearing: a minimal adapter that overrides only
+        ``get_response`` (relying on the SDK's NotImplementedError
+        default for ``get_streaming_response``) must not have its
+        ``ModelInfo`` advertise streaming, or the framework's
+        capability gate would dispatch into the unsupported path."""
         m = ModelInfo(id="x", provider="p", display_name="X")
         assert m.supports_vision is False
         assert m.supports_tools is False
+        assert m.supports_streaming is False
+
+    def test_from_dict_streaming_default_preserves_old_catalog_meaning(self):
+        """Old catalogs predating the supports_streaming field encoded
+        'every chat model streams'. Loading them must keep that
+        meaning so we don't silently demote a fleet of cataloged
+        models to non-streaming on upgrade.
+
+        Round-trip via to_dict (which always writes the key) is
+        unaffected — only catalogs missing the key entirely take
+        this path."""
+        m = ModelInfo.from_dict({"id": "x", "provider": "p", "display_name": "X"})
         assert m.supports_streaming is True
+
+    def test_to_dict_round_trip_preserves_explicit_streaming_false(self):
+        """A fresh ``ModelInfo(...)`` (default supports_streaming=False)
+        round-trips exactly — to_dict writes the explicit False, and
+        from_dict reads it back without falling into the legacy-True
+        path."""
+        m = ModelInfo(id="x", provider="p", display_name="X")
+        m2 = ModelInfo.from_dict(m.to_dict())
+        assert m2.supports_streaming is False
 
     def test_to_dict_round_trip(self):
         ts = datetime(2026, 5, 7, 12, 0, 0, tzinfo=timezone.utc)
