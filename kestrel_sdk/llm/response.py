@@ -52,6 +52,81 @@ class ToolCall:
     arguments: Dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ToolCallStarted:
+    """Streaming-event marker: the provider stream has begun a tool call.
+
+    Yielded by :meth:`LLMAdapter.get_streaming_response_with_tools` at
+    the moment a tool-call signal first appears in the provider stream,
+    before the call's arguments have finished accumulating. The
+    final :class:`LLMResponse` at end-of-stream remains the source of
+    truth for the assembled call(s); ``ToolCallStarted`` is a
+    "look up — a tool is coming" signal, not a delivery mechanism.
+
+    Two consumers depend on this contract:
+
+    1. **Honesty layer** (kestrel-sovereign #1042 layer 2): the audit
+       hook reads this as a deterministic "stop yielding pre-tool prose"
+       signal — the chat client can clear any optimistic text bubble
+       once a ``ToolCallStarted`` arrives, rather than letting the
+       model's "Saved!" lead-in narrate a tool invocation that may not
+       in fact succeed.
+
+    2. **Streaming pipeline** (kestrel-sovereign #1045): a corresponding
+       SSE ``"revising"`` event is emitted to the frontend so any
+       text streamed before the marker can be discarded.
+
+    **Per-provider emission rules** (the contract every implementing
+    adapter must satisfy):
+
+    * **OpenAI / OpenRouter / OpenAI-compatible**: fire on the first
+      non-null ``delta.tool_calls`` fragment in the stream. ``id`` and
+      ``name`` MAY be absent at this moment — OpenAI's first delta for
+      a tool call typically carries only ``index``. Adapters MUST
+      populate ``index`` and SHOULD populate ``id`` / ``name`` when
+      the same first delta surfaces them; subsequent deltas filling
+      those fields do NOT trigger additional ``ToolCallStarted``
+      events for the same index.
+    * **Anthropic**: fire on ``content_block_start`` with
+      ``type="tool_use"``. Both ``id`` and ``name`` are populated at
+      this moment.
+    * **Google / Vertex (Gemini)**: fire on the first
+      ``candidates[].content.parts`` entry containing ``functionCall``.
+      ``id`` MAY be ``None`` (Gemini does not always use call ids);
+      ``name`` is populated.
+    * **Ollama**: fire when the streamed message first contains a
+      non-null ``tool_calls`` field. ``id`` and ``name`` populated.
+
+    Adapters that do not stream tool calls leave
+    ``get_streaming_response_with_tools`` unimplemented; they never
+    emit this marker.
+
+    Attributes:
+        index: Position in the assembled tool-calls list. Always
+            populated. The framework uses this to dispatch when
+            multiple tool calls fire concurrently in the same
+            streaming response — the order of ``ToolCallStarted``
+            events with distinct ``index`` values defines the order
+            of the corresponding entries in the final
+            :attr:`LLMResponse.tool_calls`.
+        id: Provider-supplied identifier, when known at emission
+            time. ``None`` is documented and expected for providers
+            (OpenAI's first delta, some Gemini paths) where the id
+            arrives later in the stream. The final ``LLMResponse``
+            has the resolved id.
+        name: Function name, when known at emission time. ``None``
+            is documented and expected for the same reason ``id`` is.
+
+    Frozen + hashable so consumers can compare events by identity in
+    tests and use them as dict keys when correlating multiple
+    concurrent calls.
+    """
+
+    index: int
+    id: Optional[str] = None
+    name: Optional[str] = None
+
+
 @dataclass
 class LLMResponse:
     """Unified response from an LLM adapter.
