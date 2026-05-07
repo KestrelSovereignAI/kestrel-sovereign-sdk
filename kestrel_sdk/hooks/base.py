@@ -80,6 +80,25 @@ class HookInput:
 
     # For PostResponse
     response_text: Optional[str] = None
+    # Pre-tool prose the agent streamed before the first ToolCallStarted
+    # marker arrived in the LLM stream. Distinct from ``response_text``,
+    # which is the post-tool synthesizing answer. ResponseAuditHook
+    # narration check (#1042 layer 3, kestrel-sovereign #1061 piece 4)
+    # uses this to compare what the agent SAID it was doing against
+    # what the tool actually returned. Empty string when no pre-tool
+    # prose was streamed; ``None`` when the firing path can't supply it.
+    pre_tool_prose: Optional[str] = None
+    # Tool calls the agent issued in this turn — name/id/arguments per
+    # call. List of dicts so cross-language consumers (claude-code-style
+    # JSON stdin/stdout) get a stable wire shape.
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    # Tool results observed in this turn. Each entry is the call's
+    # return envelope — the framework normalizes to ``ToolResult.to_dict()``
+    # when the tool returns one, and otherwise passes the raw return.
+    # Hook authors writing the narration check should treat
+    # ``status == "ok"`` (or equivalent positive-confirmation fields)
+    # as the only basis for past-tense success language.
+    tool_results: Optional[List[Dict[str, Any]]] = None
 
     # For AgentSpawn / AgentTerminate
     parent_did: Optional[str] = None
@@ -102,6 +121,9 @@ class HookInput:
             "execution_time_ms": self.execution_time_ms,
             "user_message": self.user_message,
             "response_text": self.response_text,
+            "pre_tool_prose": self.pre_tool_prose,
+            "tool_calls": self.tool_calls,
+            "tool_results": self.tool_results,
             "parent_did": self.parent_did,
             "child_did": self.child_did,
             "child_name": self.child_name,
