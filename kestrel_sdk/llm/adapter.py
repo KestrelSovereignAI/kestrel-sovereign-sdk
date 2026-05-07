@@ -262,3 +262,96 @@ class LLMAdapter(ABC):
             if contributed:
                 return [{"role": "system", "content": contributed}, *new_messages]
         return new_messages
+
+    # ------------------------------------------------------------------
+    # Provider metadata — optional, all default to ``None`` so existing
+    # adapters need not implement them. Each is consumed by a specific
+    # framework subsystem (council costing, identity export, model
+    # selection, key storage UI, etc.). Implement the ones relevant to
+    # your backend; the framework falls back to a sensible default when
+    # ``None`` is returned.
+    #
+    # Promoted in SDK 0.6.0 to kill the provider-name string-matching
+    # leaks in ``kestrel-sovereign`` (council pricing tables, substrate
+    # mapping, identity export, service-key UI, etc. — see kestrel-
+    # sovereign #1048 Wave 2). Pre-0.6.0, those subsystems consulted
+    # hardcoded dicts keyed by provider name; with these methods,
+    # third-party plugins are first-class participants.
+    # ------------------------------------------------------------------
+
+    def cost_per_1m_tokens(self) -> Optional[Dict[str, float]]:
+        """Return token pricing for this adapter's primary model family.
+
+        Format: ``{"input": <USD per 1M input tokens>, "output": <USD
+        per 1M output tokens>}``, or ``None`` if pricing is unknown,
+        not applicable (local backends), or varies by model.
+
+        Used by ``kestrel-sovereign``'s council deliberation cost
+        accounting. ``None`` means "treat as unknown" — the framework's
+        cost-aware routing falls back to a conservative default rather
+        than guessing.
+
+        For adapters whose pricing varies meaningfully by model, prefer
+        carrying per-model pricing on the ``ModelInfo`` returned by
+        :meth:`list_models` and leaving this method at ``None``.
+        """
+        return None
+
+    def substrate_type(self) -> Optional[str]:
+        """Return a stable identifier for the model family / substrate.
+
+        A short lowercase string the framework uses for substrate-aware
+        decisions and identity export — e.g. ``"claude"``, ``"gpt"``,
+        ``"gemini"``, ``"llama"``, ``"mistral"``. Plugin authors should
+        return whatever short identifier captures the underlying weights
+        family their backend serves.
+
+        ``None`` means "substrate is heterogeneous, unknown, or not
+        meaningful". The framework treats unknown substrates as
+        ``OPENAI_COMPATIBLE`` for downstream defaults (message shape,
+        tool format) — that's a reasonable assumption for most
+        OpenAI-shape API providers.
+        """
+        return None
+
+    def display_name(self) -> Optional[str]:
+        """Return a human-readable provider name for UI surfaces.
+
+        Surfaces in the model dropdown, the service-keys settings
+        panel, and audit logs. ``None`` falls back to the entry-point
+        name (e.g. ``"kimi"``) titlecased — fine for most plugins, but
+        override when the provider's brand name doesn't match its
+        package name (``"OpenRouter"`` vs ``"openrouter"``).
+        """
+        return None
+
+    def key_env_var(self) -> Optional[str]:
+        """Return the conventional env var name for this provider's API key.
+
+        Used by ``kestrel-sovereign``'s service-key storage and
+        diagnostics to surface which env var corresponds to which
+        adapter. Format: an ``UPPER_SNAKE_CASE`` identifier (e.g.
+        ``"OPENAI_API_KEY"``, ``"ANTHROPIC_API_KEY"``,
+        ``"KIMI_API_KEY"``).
+
+        ``None`` for adapters that don't authenticate via API key
+        (Ollama, local llama.cpp, OAuth-based plans), or for adapters
+        whose auth scheme doesn't fit the env-var pattern.
+        """
+        return None
+
+    def deliberation_style(self) -> Optional[str]:
+        """Return a hint for council deliberation routing.
+
+        ``"parallel"`` — fast/cheap models good for breadth-first
+        deliberation rounds run in parallel.
+        ``"sequential"`` — slower/more expensive models suited to a
+        single careful pass.
+        ``None`` — no preference; the framework picks a default.
+
+        Plugin authors can use this to nudge the council toward
+        running their model in the role best suited to its
+        cost/quality profile. The framework treats this as a hint,
+        not a hard constraint.
+        """
+        return None
