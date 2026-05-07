@@ -298,6 +298,18 @@ class TestAssertToolCallStartedContract:
         with pytest.raises(AssertionError, match="non-negative"):
             assert_tool_call_started_contract(marker)
 
+    def test_bool_index_is_rejected(self):
+        """Codex review caught this: ``bool`` is a subclass of
+        ``int`` in Python, so a plugin accidentally constructing
+        ``ToolCallStarted(index=True)`` would pass a bare
+        ``isinstance(_, int)`` check. ``True`` also equals ``1`` in
+        dict keys / equality, so it would collide with a real
+        index-1 marker during correlation. Conformance must reject
+        it explicitly."""
+        marker = ToolCallStarted(index=True)  # type: ignore[arg-type]
+        with pytest.raises(AssertionError, match="not bool"):
+            assert_tool_call_started_contract(marker)
+
     def test_empty_string_id_is_rejected(self):
         marker = ToolCallStarted(index=0, id="")
         with pytest.raises(AssertionError, match="never the empty string"):

@@ -285,9 +285,14 @@ def assert_tool_call_started_contract(marker: ToolCallStarted) -> None:
       explicitly. This rule keeps consumers from having to
       special-case truthiness on top of ``is None`` checks.
     """
-    if not isinstance(marker.index, int):
+    # ``bool`` is a subclass of ``int`` in Python, so the
+    # straight ``isinstance(_, int)`` check accidentally accepts
+    # ``True`` / ``False``. Codex review flagged this — ``True``
+    # would alias to index 1 in dict keys / equality, colliding
+    # with a real index 1 during marker-to-tool_calls correlation.
+    if not isinstance(marker.index, int) or isinstance(marker.index, bool):
         raise AssertionError(
-            f"ToolCallStarted.index must be an int, got "
+            f"ToolCallStarted.index must be an int (not bool), got "
             f"{type(marker.index).__name__}={marker.index!r}"
         )
     if marker.index < 0:
