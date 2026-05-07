@@ -289,6 +289,29 @@ class Feature(ABC):
                     async def execute(self, **kwargs) -> Dict[str, Any]:
                         try:
                             result = await self.func(**kwargs)
+                            # ToolResult-aware pass-through: when a tool
+                            # returns the canonical envelope, expose
+                            # `status`/`confirmation`/`error` at the top
+                            # level so the constitutional honesty layer
+                            # (#1042) can read them directly. Without
+                            # this, the wrapper hides the envelope under
+                            # `result["result"]` and ToolResult itself
+                            # would also fail json.dumps because it's
+                            # not JSON-native. The `tool` key is kept
+                            # alongside as dispatch-layer metadata so
+                            # audit logs can still identify which tool
+                            # produced this row.
+                            from kestrel_sdk.tools.result import ToolResult
+                            if isinstance(result, ToolResult):
+                                payload = result.to_dict()
+                                payload["tool"] = self.name
+                                return payload
+                            # Legacy path for tools that still return
+                            # arbitrary dicts/strings. Removed once
+                            # every feature has migrated and the
+                            # framework's registry validator (#1042
+                            # layer 4b) starts rejecting non-ToolResult
+                            # methods at startup.
                             return {
                                 "success": True,
                                 "result": result,
