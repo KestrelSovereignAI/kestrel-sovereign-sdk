@@ -83,29 +83,49 @@ def test_to_dict_exact_shape_for_post_response_event():
     }
 
 
-def test_positional_args_through_response_text_keep_pre_0_9_meaning():
+def test_positional_args_through_agent_spawn_keep_pre_0_9_meaning():
     """Pin the field-order compatibility codex flagged at review.
 
     Pre-0.9 callers that constructed HookInput positionally up through
-    ``response_text`` must not have those positional values silently
-    re-routed onto the new ``pre_tool_prose`` / ``tool_calls`` /
-    ``tool_results`` fields by 0.9's field additions. Equivalent to:
-    new fields are appended at the end of the dataclass field list.
+    the AgentSpawn fields must keep those positional values aligned to
+    ``parent_did`` / ``child_did`` / etc. — NOT silently re-routed onto
+    the new ``pre_tool_prose`` / ``tool_calls`` / ``tool_results``
+    fields by 0.9's additions. Exercises every positional slot from
+    ``session_id`` through ``termination_reason`` so a future field
+    insertion in the middle would break this guard immediately.
     """
-    # Fields up through ``response_text`` (per the 0.8 layout).
+    from datetime import datetime
+    ts = datetime(2026, 5, 7, 22, 0, 0)
     h = HookInput(
-        "sess-1",                          # session_id
-        HookEvent.POST_RESPONSE.value,     # hook_event_name
-        "/cwd",                            # cwd
+        "sess-1",                          # 1: session_id
+        HookEvent.POST_RESPONSE.value,     # 2: hook_event_name
+        "/cwd",                            # 3: cwd
+        ts,                                # 4: timestamp
+        "tool-x",                          # 5: tool_name
+        {"k": "v"},                        # 6: tool_input
+        "FeatX",                           # 7: feature_name
+        {"status": "ok"},                  # 8: tool_response
+        42,                                # 9: execution_time_ms
+        "hi",                              # 10: user_message
+        "rt",                              # 11: response_text
+        "parent-did",                      # 12: parent_did
+        "child-did",                       # 13: child_did
+        "Junior",                          # 14: child_name
+        "spawn-because",                   # 15: spawn_purpose
+        "term-because",                    # 16: termination_reason
     )
-    # New fields default to None even though they exist on 0.9+.
+    # Existing fields receive their positional values.
+    assert h.session_id == "sess-1"
+    assert h.parent_did == "parent-did"
+    assert h.child_did == "child-did"
+    assert h.child_name == "Junior"
+    assert h.spawn_purpose == "spawn-because"
+    assert h.termination_reason == "term-because"
+    # New 0.9 fields default to None — NOT overrun by any of the
+    # positional values above.
     assert h.pre_tool_prose is None
     assert h.tool_calls is None
     assert h.tool_results is None
-    # And the existing AgentSpawn fields are still defaulted, not
-    # overrun by anything stray.
-    assert h.parent_did is None
-    assert h.child_did is None
 
 
 def test_pre_0_9_callers_still_construct_without_narration_fields():
