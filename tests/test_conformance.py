@@ -343,14 +343,33 @@ class TestAssertResponseContract:
         resp = LLMResponse(
             tool_calls=[ToolCall(id="", name="n", arguments={})]
         )
-        with pytest.raises(AssertionError, match="non-empty string"):
+        with pytest.raises(AssertionError, match="non-empty str"):
             assert_response_contract(resp)
 
     def test_tool_call_with_empty_name_is_rejected(self):
         resp = LLMResponse(
             tool_calls=[ToolCall(id="c", name="", arguments={})]
         )
-        with pytest.raises(AssertionError, match="non-empty string"):
+        with pytest.raises(AssertionError, match="non-empty str"):
+            assert_response_contract(resp)
+
+    def test_tool_call_with_non_string_id_is_rejected(self):
+        """Codex review caught this: dataclasses don't enforce
+        annotations at runtime, so a plugin that constructs
+        ToolCall(id=123, ...) would pass at construction but fail
+        downstream when the framework echoes the id back. Conformance
+        catches the bad shape before that downstream failure."""
+        resp = LLMResponse(
+            tool_calls=[ToolCall(id=123, name="n", arguments={})]  # type: ignore[arg-type]
+        )
+        with pytest.raises(AssertionError, match="non-empty str.*int"):
+            assert_response_contract(resp)
+
+    def test_tool_call_with_non_string_name_is_rejected(self):
+        resp = LLMResponse(
+            tool_calls=[ToolCall(id="c", name=42, arguments={})]  # type: ignore[arg-type]
+        )
+        with pytest.raises(AssertionError, match="non-empty str.*int"):
             assert_response_contract(resp)
 
     def test_underscore_raw_sentinel_passes(self):

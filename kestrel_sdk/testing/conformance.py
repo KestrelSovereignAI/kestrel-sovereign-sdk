@@ -355,16 +355,23 @@ def assert_response_contract(response: LLMResponse) -> None:
                     f"LLMResponse.tool_calls[{i}] must be a ToolCall, "
                     f"got {type(tc).__name__}"
                 )
-            if not tc.id:
+            if not isinstance(tc.id, str) or not tc.id:
                 raise AssertionError(
-                    f"ToolCall[{i}].id must be a non-empty string. "
-                    "The framework echoes this id back on the next "
-                    "turn to match tool_call_output to the call; an "
-                    "empty id breaks that match."
+                    f"ToolCall[{i}].id must be a non-empty str, got "
+                    f"{type(tc.id).__name__}={tc.id!r}. The framework "
+                    "echoes this id back on the next turn to match "
+                    "tool_call_output to the call; a non-string id "
+                    "(or empty string) breaks that match. Dataclasses "
+                    "do not enforce annotations at runtime, so a "
+                    "plugin that accidentally constructs the field "
+                    "with int / None / etc. would pass at "
+                    "construction time but fail downstream — the "
+                    "conformance helper catches it now."
                 )
-            if not tc.name:
+            if not isinstance(tc.name, str) or not tc.name:
                 raise AssertionError(
-                    f"ToolCall[{i}].name must be a non-empty string."
+                    f"ToolCall[{i}].name must be a non-empty str, got "
+                    f"{type(tc.name).__name__}={tc.name!r}."
                 )
             if not isinstance(tc.arguments, dict):
                 raise AssertionError(
