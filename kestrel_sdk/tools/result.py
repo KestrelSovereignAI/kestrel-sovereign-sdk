@@ -40,18 +40,21 @@ layer 3) reads it directly to detect contradictions between an LLM's
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Dict, Optional
 
 
-class ToolResultStatus(str, Enum):
+class ToolResultStatus(StrEnum):
     """Lifecycle states of a tool invocation outcome.
 
-    The ``str`` mixin is deliberate: every consumer (LLM-facing
-    serialization, log lines, audit records, the honesty hook's regex
-    matcher) treats this as a stable lowercase string token. Using
-    ``str, Enum`` lets ``status.value`` and ``str(status)`` produce
-    the same wire format without conversion churn.
+    Every consumer (LLM-facing serialization, log lines, audit records,
+    the honesty hook's regex matcher) treats the status as a stable
+    lowercase string token. ``StrEnum`` (Python 3.11+ stdlib) gives us
+    ``str(status) == status.value`` and f-string interpolation that
+    yields the bare wire token — unlike a plain ``(str, Enum)`` mix-in,
+    where ``str(ToolResultStatus.OK)`` would render as
+    ``"ToolResultStatus.OK"``. ``requires-python = ">=3.11,<3.14"`` in
+    pyproject covers ``StrEnum`` availability.
     """
 
     OK = "ok"

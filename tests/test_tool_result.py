@@ -26,10 +26,21 @@ class TestToolResultStatus:
         assert ToolResultStatus.PARTIAL.value == "partial"
 
     def test_enum_is_str_subclass(self):
-        """str-mixin lets ``status.value`` and ``str(status)`` produce
-        the same wire format — load-bearing for serialization stability."""
+        """StrEnum makes status a str subclass — load-bearing for
+        equality with bare strings used in audit-log filters."""
         assert isinstance(ToolResultStatus.OK, str)
         assert ToolResultStatus.OK == "ok"
+
+    def test_str_returns_canonical_lowercase_token(self):
+        """``str(status)`` and f-string interpolation must yield the
+        bare wire token, not ``ToolResultStatus.OK``. With a plain
+        ``(str, Enum)`` mix-in this would fail on Python 3.11+; we use
+        ``StrEnum`` deliberately. The honesty audit hook's regex
+        compares against this rendering."""
+        assert str(ToolResultStatus.OK) == "ok"
+        assert str(ToolResultStatus.ERROR) == "error"
+        assert str(ToolResultStatus.PARTIAL) == "partial"
+        assert f"{ToolResultStatus.OK}" == "ok"
 
     def test_only_three_states(self):
         """Adding a state is a contract change. This test guards
