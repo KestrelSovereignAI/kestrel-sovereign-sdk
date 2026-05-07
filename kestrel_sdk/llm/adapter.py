@@ -213,6 +213,15 @@ class LLMAdapter(ABC):
         existing one — encountering a string-content system message
         marks the slot as filled, regardless of whether the
         contribution rewrote it.
+
+        If the adapter returns ``None`` from
+        :meth:`contribute_system_prompt` for an existing system
+        message, that is the documented signal "no system prompt for
+        this turn" — the helper drops the system message entirely
+        rather than emitting an invalid ``{"content": None}`` shape.
+        Suppression also marks the slot as filled, so the no-prompt
+        fallback does not fire afterwards (suppression and overlay
+        injection are different intents).
         """
         new_messages: List[Dict[str, Any]] = []
         augmented = False
@@ -221,7 +230,12 @@ class LLMAdapter(ABC):
                 content = msg.get("content")
                 if isinstance(content, str):
                     contributed = self.contribute_system_prompt(model_id, content)
-                    if contributed != content:
+                    if contributed is None:
+                        # Documented "suppress this turn" signal —
+                        # drop the system message rather than keep
+                        # it with content=None.
+                        pass
+                    elif contributed != content:
                         new_messages.append({**msg, "content": contributed})
                     else:
                         new_messages.append(msg)

@@ -389,6 +389,67 @@ class TestLLMAdapterContributeSystemPrompt:
         )
         assert system_msgs[0]["content"] == "user-supplied"
 
+    def test_apply_drops_system_message_when_contribution_is_none(self):
+        """An adapter that explicitly suppresses the system prompt
+        (returns ``None`` from ``contribute_system_prompt``) must
+        result in NO system message in the output — never a system
+        message with ``content=None``, which would be an invalid
+        wire shape for providers that require string content.
+
+        Found by codex review on the Wave 1A PR (second pass).
+        """
+
+        class SuppressingAdapter(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse()
+
+            def contribute_system_prompt(self, model_id, base):
+                return None
+
+        a = SuppressingAdapter()
+        out = a._apply_system_prompt_contribution(
+            [
+                {"role": "system", "content": "user-supplied"},
+                {"role": "user", "content": "hi"},
+            ],
+            "any-model",
+        )
+        system_msgs = [m for m in out if m.get("role") == "system"]
+        assert system_msgs == [], f"expected no system messages, got {system_msgs}"
+        # The user message is preserved.
+        assert {"role": "user", "content": "hi"} in out
+
+    def test_apply_suppression_does_not_trigger_fallback_prepend(self):
+        """Suppression and no-prompt-overlay-injection are different
+        intents: an adapter that returns ``None`` to suppress for a
+        non-None ``base`` must NOT have its (possibly different)
+        ``base=None`` overlay prepended afterward.
+
+        Without this guarantee an adapter could only express "suppress"
+        if it also returned ``None`` for ``base=None``, which would
+        conflate two different intentions.
+        """
+
+        class SelectivelySuppressing(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse()
+
+            def contribute_system_prompt(self, model_id, base):
+                if base is None:
+                    return "default-when-empty"  # would inject when no prompt
+                return None  # suppress when there is one
+
+        a = SelectivelySuppressing()
+        out = a._apply_system_prompt_contribution(
+            [{"role": "system", "content": "user"}, {"role": "user", "content": "hi"}],
+            "any-model",
+        )
+        system_msgs = [m for m in out if m.get("role") == "system"]
+        assert system_msgs == [], (
+            f"suppression must not fall through to the no-prompt overlay; "
+            f"got {system_msgs}"
+        )
+
     def test_apply_skips_non_string_system_content(self):
         """Multi-part content (list of blocks) is passed through —
         contributions are text-only by contract."""
