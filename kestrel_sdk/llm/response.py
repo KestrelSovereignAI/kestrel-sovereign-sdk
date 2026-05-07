@@ -102,13 +102,28 @@ class ToolCallStarted:
     emit this marker.
 
     Attributes:
-        index: Position in the assembled tool-calls list. Always
-            populated. The framework uses this to dispatch when
-            multiple tool calls fire concurrently in the same
-            streaming response — the order of ``ToolCallStarted``
-            events with distinct ``index`` values defines the order
-            of the corresponding entries in the final
-            :attr:`LLMResponse.tool_calls`.
+        index: Provider-native identifier for the tool-call slot.
+            Always populated. **The literal value of ``index`` is
+            provider-specific** — Anthropic uses
+            ``content_block_index`` (which is sparse when text
+            blocks interleave: e.g. block 0 = text, block 1 =
+            tool_use, block 2 = text, block 3 = tool_use → the two
+            tool calls have indices 1 and 3); OpenAI / OpenRouter
+            use the delta tool_call index (typically 0, 1, 2, ...);
+            Codex (Responses API) uses ``output_index``.
+
+            **The framework's contract is on stream order, not on
+            literal index value.** The order of ``ToolCallStarted``
+            events with distinct ``index`` values in the stream
+            defines the order of the corresponding entries in the
+            final :attr:`LLMResponse.tool_calls`. Consumers MUST
+            iterate markers in stream order rather than dispatching
+            ``tool_calls[marker.index]`` directly — sparse provider-
+            native indices would crash or misalign that pattern.
+            ``index`` is exposed primarily so consumers can correlate
+            multiple events for the SAME slot (e.g. a future
+            "tool-call progress" event would re-use the same index
+            to identify the slot it belongs to).
         id: Provider-supplied identifier, when known at emission
             time. ``None`` is documented and expected for providers
             (OpenAI's first delta, some Gemini paths) where the id
