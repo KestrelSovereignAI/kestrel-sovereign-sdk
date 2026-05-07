@@ -639,17 +639,28 @@ class TestLLMAdapterMetadataAreNonAbstract:
 
 
 class TestLLMAdapterContractVersion:
-    """SDK_LLM_CONTRACT_VERSION must NOT bump on a backwards-compatible
-    metadata-method addition — existing plugins continue to work
-    unchanged; new optional surface doesn't break the contract."""
+    """SDK_LLM_CONTRACT_VERSION pin tracking.
 
-    def test_contract_version_unchanged_at_1(self):
+    Versions:
+      * 1 — initial contract (SDK 0.5.0 — 0.7.0).
+      * 2 — clarified ToolCallStarted.index semantics (SDK 0.8.0):
+        index is provider-native; consumers iterate by stream order,
+        not ``tool_calls[marker.index]``. Plugins that pinned
+        ``>= 1`` and never read ``marker.index`` directly keep
+        working; plugins that wrote consumer code against the old
+        positional reading must update.
+    """
+
+    def test_contract_version_is_2(self):
         from kestrel_sdk.llm import SDK_LLM_CONTRACT_VERSION
 
-        assert SDK_LLM_CONTRACT_VERSION == 1, (
-            "Adding optional metadata methods with None defaults is a "
-            "feature addition, not a contract change. Plugins that pin "
-            "version 1 must continue to load correctly under SDK 0.6.0."
+        assert SDK_LLM_CONTRACT_VERSION == 2, (
+            "SDK 0.8.0 bumps the LLM contract version from 1 to 2 to "
+            "signal the ToolCallStarted.index docstring clarification "
+            "(provider-native, stream-order pin). Plugins that read "
+            "``marker.index`` as a positional index into "
+            "``LLMResponse.tool_calls`` must migrate to stream-order "
+            "iteration."
         )
 
 
@@ -873,14 +884,18 @@ class TestStreamingWithToolsOverride:
 
 
 class TestStreamingWithToolsContractVersion:
-    """Adding ToolCallStarted + the new optional method is a
-    feature-additive change. ``SDK_LLM_CONTRACT_VERSION`` MUST NOT
-    bump — every plugin that pinned ``>= 1`` and was working under
-    SDK 0.6.0 continues to work under 0.7.0."""
+    """Adding ``ToolCallStarted`` + the new optional method in 0.7.0
+    was feature-additive (no version bump). The clarification of
+    ``ToolCallStarted.index`` semantics in 0.8.0 IS a documented
+    contract change and bumps the version to 2."""
 
-    def test_contract_version_unchanged_at_1(self):
-        assert SDK_LLM_CONTRACT_VERSION == 1, (
-            "Adding ToolCallStarted + optional get_streaming_response_with_tools "
-            "is feature-additive, not a contract break. Plugins pinned at "
-            "SDK_LLM_CONTRACT_VERSION >= 1 must keep loading under 0.7.0."
+    def test_contract_version_is_2(self):
+        assert SDK_LLM_CONTRACT_VERSION == 2, (
+            "SDK 0.8.0 clarified that ToolCallStarted.index is "
+            "provider-native (Anthropic block_index, Codex output_index, "
+            "OpenAI delta-tool-call-index) and that consumers iterate "
+            "markers in stream order rather than indexing tool_calls by "
+            "marker.index. Plugin authors who wrote consumer code "
+            "against the prior 'position in tool_calls' wording need "
+            "to update — hence the contract version bump to 2."
         )

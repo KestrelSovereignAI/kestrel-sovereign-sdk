@@ -47,7 +47,22 @@ from .types import BackendType
 # LLMResponse / ModelInfo / ProviderInfo, or the meaning of the
 # ``kestrel_sovereign.llm_providers`` entry-point contract changes in
 # a way that requires plugin authors to update their code.
-SDK_LLM_CONTRACT_VERSION = 1
+#
+# Version 2 (SDK 0.8.0): clarifies the meaning of
+# :attr:`ToolCallStarted.index`. The dataclass shape is unchanged
+# from version 1, but the documented contract for *consumers* of
+# the marker shifted: ``index`` is defined as a provider-native
+# value (potentially sparse: Anthropic ``content_block_index``,
+# Codex ``output_index``, OpenAI delta-tool-call-index) whose
+# *stream order* — not literal value — defines the assembled
+# ``LLMResponse.tool_calls`` order. Consumers MUST iterate markers
+# in stream order; the previous wording invited
+# ``tool_calls[marker.index]`` dispatch, which would mis-fire for
+# sparse-index providers. Plugins that pinned ``>= 1`` and never
+# read ``marker.index`` directly continue to work; plugins that
+# wrote consumer code against the old (positional) wording must
+# update to read by stream order.
+SDK_LLM_CONTRACT_VERSION = 2
 
 __all__ = [
     "BackendType",
