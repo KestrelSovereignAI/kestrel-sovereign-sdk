@@ -296,12 +296,27 @@ def assert_tool_call_started_contract(marker: ToolCallStarted) -> None:
             f"{marker.index}. Negative indices break ordering "
             "assumptions in framework consumers."
         )
+    if marker.id is not None and not isinstance(marker.id, str):
+        raise AssertionError(
+            f"ToolCallStarted.id must be a str or None, got "
+            f"{type(marker.id).__name__}={marker.id!r}. Dataclasses "
+            "do not enforce annotations at runtime, so a plugin that "
+            "accidentally constructs the field with int / object / etc. "
+            "would pass at construction time but fail downstream — "
+            "consumers compare/read this field as a string when "
+            "present."
+        )
     if marker.id == "":
         raise AssertionError(
             "ToolCallStarted.id must be either a non-empty string or "
             "None — never the empty string. Adapters that don't yet "
             "know the id at emission time MUST emit None so consumers "
             "can use ``is None`` rather than truthiness checks."
+        )
+    if marker.name is not None and not isinstance(marker.name, str):
+        raise AssertionError(
+            f"ToolCallStarted.name must be a str or None, got "
+            f"{type(marker.name).__name__}={marker.name!r}."
         )
     if marker.name == "":
         raise AssertionError(

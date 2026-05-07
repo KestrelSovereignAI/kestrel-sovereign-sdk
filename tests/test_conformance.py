@@ -308,6 +308,21 @@ class TestAssertToolCallStartedContract:
         with pytest.raises(AssertionError, match="never the empty string"):
             assert_tool_call_started_contract(marker)
 
+    def test_non_string_id_is_rejected(self):
+        """Codex review caught the symmetric case to ToolCall: marker
+        validator must isinstance-check id, not just truthiness. A
+        plugin accidentally constructing
+        ``ToolCallStarted(index=0, id=123)`` would pass at
+        construction time but fail downstream."""
+        marker = ToolCallStarted(index=0, id=123)  # type: ignore[arg-type]
+        with pytest.raises(AssertionError, match="must be a str or None.*int"):
+            assert_tool_call_started_contract(marker)
+
+    def test_non_string_name_is_rejected(self):
+        marker = ToolCallStarted(index=0, name=object())  # type: ignore[arg-type]
+        with pytest.raises(AssertionError, match="must be a str or None.*object"):
+            assert_tool_call_started_contract(marker)
+
 
 # ---------------------------------------------------------------------------
 # assert_response_contract
