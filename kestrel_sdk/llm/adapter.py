@@ -38,12 +38,12 @@ version a plugin can pin against.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Dict, List, Optional, Type
+from typing import Any, AsyncIterator, Dict, List, Optional, Type, Union
 
 from pydantic import BaseModel
 
 from .model_info import ModelInfo
-from .response import LLMResponse
+from .response import LLMResponse, ToolCallStarted
 
 
 class LLMAdapter(ABC):
@@ -111,6 +111,13 @@ class LLMAdapter(ABC):
         is expected to gate streaming on
         :attr:`ModelInfo.supports_streaming` before calling this.
 
+        For text-only streaming. Adapters whose backend can also stream
+        tool calls should implement
+        :meth:`get_streaming_response_with_tools` (yielding the
+        tagged-union of text chunks, :class:`ToolCallStarted` markers,
+        and a final :class:`LLMResponse`) rather than smuggling tool
+        events through the text-chunk channel.
+
         Args:
             client: Provider-native client.
             model: Model id.
@@ -134,6 +141,93 @@ class LLMAdapter(ABC):
         # as an async generator function so static analysers and the
         # ``AsyncIterator[str]`` return type both check out. Without it
         # the function would be a coroutine returning ``None``.
+        if False:  # pragma: no cover
+            yield ""
+
+    async def get_streaming_response_with_tools(
+        self,
+        client: Any,
+        model: str,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        response_format: Optional[Type[BaseModel]] = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[Union[str, ToolCallStarted, LLMResponse]]:
+        """Stream a chat completion that may include tool calls.
+
+        Yields a tagged union:
+
+        * :class:`str` — text content chunks as they arrive. Yielded
+          live; consumers can render them into a chat UI in real time.
+        * :class:`ToolCallStarted` — emitted the moment the provider
+          stream first signals a tool call (one event per distinct
+          tool-call ``index``). See the class docstring for
+          per-provider emission rules. Consumers can treat this as
+          "the model is about to invoke a tool — stop assuming the
+          preceding text is a final answer." This is the load-bearing
+          signal for the constitutional honesty layer
+          (kestrel-sovereign #1042 layer 2 / #1045): pre-tool prose
+          may be a hallucinated success claim, and the chat client
+          should clear or revise the bubble once a
+          :class:`ToolCallStarted` arrives.
+        * :class:`LLMResponse` — yielded exactly once, at end-of-stream,
+          when the response includes one or more tool calls. Source of
+          truth for the assembled tool calls (id, name, arguments) and
+          for token usage. Adapters that finish the stream with
+          text-only output need not yield an :class:`LLMResponse`; the
+          stream simply terminates.
+
+        Default implementation raises :class:`NotImplementedError`.
+        Override in adapters whose backend supports streaming with
+        tools. The framework gates this on
+        :attr:`ModelInfo.supports_streaming` AND
+        :attr:`ModelInfo.supports_tools` before calling.
+
+        **Ordering invariants** (the contract):
+
+        1. ``ToolCallStarted`` events for distinct ``index`` values
+           are yielded in the order their corresponding tool calls
+           appear in the final :attr:`LLMResponse.tool_calls`.
+        2. Text chunks may be interleaved with ``ToolCallStarted``
+           events when the provider stream emits text alongside tool
+           deltas (Anthropic mixes text content blocks with tool_use
+           blocks; OpenAI may send a leading text segment before the
+           first tool delta). Consumers must handle both
+           text-before-tool and text-during-tool cases.
+        3. The terminal :class:`LLMResponse` is yielded after all text
+           chunks and ``ToolCallStarted`` events for the response.
+           Consumers can rely on its presence to know the stream is
+           complete in the tool-call case.
+
+        **Argument handling for malformed JSON**: when the accumulated
+        tool-call argument JSON cannot be parsed at end-of-stream
+        (truncated stream, model emitted invalid JSON), adapters
+        SHOULD yield the partial string under a sentinel key
+        (``{"_raw": "<accumulated string>"}``) in the final
+        :class:`LLMResponse`'s ``tool_calls[i].arguments`` rather than
+        raising — preserving forward progress so the framework can
+        report the error to the model rather than crashing the turn.
+
+        Args:
+            client: Provider-native client.
+            model: Model id.
+            messages: Chat messages in OpenAI format.
+            tools: Optional tools in OpenAI function-calling format.
+            response_format: Optional Pydantic model for structured
+                output. Some adapters (notably Anthropic) implement
+                this via the same tool-use mechanism — the framework
+                treats the structured-output path as an
+                implementation detail of the adapter, not part of the
+                streaming contract.
+            **kwargs: Provider-specific parameters.
+
+        Yields:
+            ``Union[str, ToolCallStarted, LLMResponse]`` per the rules
+            above.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support streaming with tools"
+        )
         if False:  # pragma: no cover
             yield ""
 

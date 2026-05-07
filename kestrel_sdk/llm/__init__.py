@@ -40,7 +40,7 @@ detect drift at import time::
 from .adapter import LLMAdapter
 from .model_info import ModelCategory, ModelInfo
 from .provider import ProviderInfo
-from .response import LLMResponse, ToolCall
+from .response import LLMResponse, ToolCall, ToolCallStarted
 from .types import BackendType
 
 # Bumped when the abstract surface of LLMAdapter, the wire shape of
@@ -58,4 +58,5 @@ __all__ = [
     "ProviderInfo",
     "SDK_LLM_CONTRACT_VERSION",
     "ToolCall",
+    "ToolCallStarted",
 ]

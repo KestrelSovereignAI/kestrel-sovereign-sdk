@@ -26,6 +26,7 @@ from kestrel_sdk.llm import (
     ModelInfo,
     ProviderInfo,
     ToolCall,
+    ToolCallStarted,
 )
 
 
@@ -649,4 +650,237 @@ class TestLLMAdapterContractVersion:
             "Adding optional metadata methods with None defaults is a "
             "feature addition, not a contract change. Plugins that pin "
             "version 1 must continue to load correctly under SDK 0.6.0."
+        )
+
+
+# ---------------------------------------------------------------------------
+# ToolCallStarted (SDK 0.7.0)
+# ---------------------------------------------------------------------------
+
+
+class TestToolCallStarted:
+    def test_minimal_construction_only_index(self):
+        """Pinned: index alone is sufficient. id and name default None,
+        which is the documented OpenAI-first-delta case."""
+        ev = ToolCallStarted(index=0)
+        assert ev.index == 0
+        assert ev.id is None
+        assert ev.name is None
+
+    def test_full_construction(self):
+        """Pinned: anthropic-shape emission with both id and name
+        populated at content_block_start."""
+        ev = ToolCallStarted(index=2, id="toolu_abc123", name="get_weather")
+        assert ev.index == 2
+        assert ev.id == "toolu_abc123"
+        assert ev.name == "get_weather"
+
+    def test_frozen_immutable(self):
+        """Pinned: frozen dataclass — consumers can use as set/dict
+        keys when correlating multiple concurrent calls. Mutation
+        must raise."""
+        ev = ToolCallStarted(index=0)
+        with pytest.raises(Exception):
+            # FrozenInstanceError on Python 3.11+; broad catch keeps the
+            # test stable across versions.
+            ev.id = "after-the-fact"  # type: ignore[misc]
+
+    def test_hashable_and_equality(self):
+        """Pinned: same fields -> equal -> same hash. Different index
+        -> different hash. Load-bearing for the audit hook that may
+        keep a ``set[ToolCallStarted]`` of the calls it has seen
+        announced this turn."""
+        a = ToolCallStarted(index=0, id="x", name="f")
+        b = ToolCallStarted(index=0, id="x", name="f")
+        c = ToolCallStarted(index=1, id="x", name="f")
+        assert a == b
+        assert hash(a) == hash(b)
+        assert a != c
+        assert hash(a) != hash(c)
+        # Deduplicates in a set — exactly the property the audit hook needs.
+        assert {a, b, c} == {a, c}
+
+
+# ---------------------------------------------------------------------------
+# get_streaming_response_with_tools optional method (SDK 0.7.0)
+# ---------------------------------------------------------------------------
+
+
+class TestStreamingWithToolsOptionalSurface:
+    """get_streaming_response_with_tools defaults to NotImplementedError.
+    Adapters whose backend supports it override; minimal adapters do not.
+    Matches the get_streaming_response / list_models pattern from
+    SDK 0.5.0."""
+
+    def test_default_raises(self):
+        class A(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse()
+
+        async def _drive():
+            async for _ in A().get_streaming_response_with_tools(
+                None, "m", []
+            ):
+                pass
+
+        with pytest.raises(NotImplementedError):
+            asyncio.run(_drive())
+
+    def test_signature_is_async_generator(self):
+        """The default uses the same unreachable-yield pattern as
+        get_streaming_response so static type checkers recognize it
+        as ``AsyncIterator[Union[str, ToolCallStarted, LLMResponse]]``."""
+        assert inspect.isasyncgenfunction(
+            LLMAdapter.get_streaming_response_with_tools
+        )
+
+    def test_adding_method_does_not_change_abstract_set(self):
+        """Pinned: adding a new optional method MUST NOT promote it
+        into the abstract set. A plugin that implements only
+        get_response is still fully conforming under SDK 0.7.0."""
+
+        class Echo(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse(content="echo")
+
+        Echo()  # Does not raise.
+        assert LLMAdapter.__abstractmethods__ == frozenset({"get_response"})
+
+
+class TestStreamingWithToolsOverride:
+    """An adapter that does override the method must be able to yield
+    text, ToolCallStarted, and a final LLMResponse — the documented
+    tagged-union shape."""
+
+    def test_override_yields_full_union(self):
+        captured: list = []
+
+        class Streamer(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse()
+
+            async def get_streaming_response_with_tools(
+                self, client, model, messages, **kwargs
+            ):
+                yield "Let me look that up"
+                yield ToolCallStarted(index=0, id="call_1", name="get_weather")
+                yield LLMResponse(
+                    content="Let me look that up",
+                    tool_calls=[
+                        ToolCall(
+                            id="call_1",
+                            name="get_weather",
+                            arguments={"city": "SF"},
+                        )
+                    ],
+                    input_tokens=20,
+                    output_tokens=8,
+                    total_tokens=28,
+                )
+
+        async def _drive():
+            async for item in Streamer().get_streaming_response_with_tools(
+                None, "m", []
+            ):
+                captured.append(item)
+
+        asyncio.run(_drive())
+
+        # Three items in order: text -> ToolCallStarted -> LLMResponse.
+        assert len(captured) == 3
+        assert captured[0] == "Let me look that up"
+        assert isinstance(captured[1], ToolCallStarted)
+        assert captured[1].index == 0
+        assert captured[1].id == "call_1"
+        assert isinstance(captured[2], LLMResponse)
+        assert captured[2].has_tool_calls
+
+    def test_override_text_only_path_does_not_require_llm_response(self):
+        """Adapters that finish a stream with text-only output MAY
+        terminate without yielding a final LLMResponse — the
+        contract says LLMResponse is yielded once when the response
+        includes one or more tool calls."""
+
+        class Streamer(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse()
+
+            async def get_streaming_response_with_tools(
+                self, client, model, messages, **kwargs
+            ):
+                yield "hello "
+                yield "world"
+
+        items = []
+
+        async def _drive():
+            async for item in Streamer().get_streaming_response_with_tools(
+                None, "m", []
+            ):
+                items.append(item)
+
+        asyncio.run(_drive())
+        assert items == ["hello ", "world"]
+        # No LLMResponse, no ToolCallStarted — pure text streaming
+        # through the same channel is a documented and supported path.
+
+    def test_override_can_emit_multiple_concurrent_tool_calls(self):
+        """Codex finding #2: multiple concurrent tool calls must be
+        ordered by index. The contract requires that ToolCallStarted
+        events with distinct index appear in the same order as the
+        corresponding entries in the final LLMResponse.tool_calls."""
+
+        class Streamer(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse()
+
+            async def get_streaming_response_with_tools(
+                self, client, model, messages, **kwargs
+            ):
+                yield ToolCallStarted(index=0, id="c0", name="f0")
+                yield ToolCallStarted(index=1, id="c1", name="f1")
+                yield ToolCallStarted(index=2, id="c2", name="f2")
+                yield LLMResponse(
+                    tool_calls=[
+                        ToolCall(id="c0", name="f0", arguments={}),
+                        ToolCall(id="c1", name="f1", arguments={}),
+                        ToolCall(id="c2", name="f2", arguments={}),
+                    ],
+                )
+
+        starts = []
+        final = None
+
+        async def _drive():
+            nonlocal final
+            async for item in Streamer().get_streaming_response_with_tools(
+                None, "m", []
+            ):
+                if isinstance(item, ToolCallStarted):
+                    starts.append(item)
+                elif isinstance(item, LLMResponse):
+                    final = item
+
+        asyncio.run(_drive())
+        assert [s.index for s in starts] == [0, 1, 2]
+        assert final is not None
+        # Each ToolCallStarted's index aligns with its position in
+        # the final tool_calls list.
+        for i, tc in enumerate(final.tool_calls or []):
+            assert starts[i].index == i
+            assert starts[i].id == tc.id
+            assert starts[i].name == tc.name
+
+
+class TestStreamingWithToolsContractVersion:
+    """Adding ToolCallStarted + the new optional method is a
+    feature-additive change. ``SDK_LLM_CONTRACT_VERSION`` MUST NOT
+    bump — every plugin that pinned ``>= 1`` and was working under
+    SDK 0.6.0 continues to work under 0.7.0."""
+
+    def test_contract_version_unchanged_at_1(self):
+        assert SDK_LLM_CONTRACT_VERSION == 1, (
+            "Adding ToolCallStarted + optional get_streaming_response_with_tools "
+            "is feature-additive, not a contract break. Plugins pinned at "
+            "SDK_LLM_CONTRACT_VERSION >= 1 must keep loading under 0.7.0."
         )
