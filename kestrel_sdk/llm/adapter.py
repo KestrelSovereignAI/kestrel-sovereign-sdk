@@ -203,6 +203,16 @@ class LLMAdapter(ABC):
         merge logic. It only handles ``content``-as-``str`` system
         messages — multi-part content is passed through unchanged
         because the contribution shape is text-only.
+
+        The fallback prepend (``contribute_system_prompt(model_id, None)``
+        when no system message is present) only fires when there is
+        genuinely no string-content system message. An adapter that
+        leaves existing prompts alone (``base`` returned unchanged)
+        but would inject a different overlay for ``base=None`` does
+        NOT get its no-prompt overlay double-stacked on top of the
+        existing one — encountering a string-content system message
+        marks the slot as filled, regardless of whether the
+        contribution rewrote it.
         """
         new_messages: List[Dict[str, Any]] = []
         augmented = False
@@ -213,8 +223,10 @@ class LLMAdapter(ABC):
                     contributed = self.contribute_system_prompt(model_id, content)
                     if contributed != content:
                         new_messages.append({**msg, "content": contributed})
-                        augmented = True
-                        continue
+                    else:
+                        new_messages.append(msg)
+                    augmented = True
+                    continue
             new_messages.append(msg)
 
         if not augmented:

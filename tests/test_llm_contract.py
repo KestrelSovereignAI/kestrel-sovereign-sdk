@@ -355,6 +355,40 @@ class TestLLMAdapterContributeSystemPrompt:
         a._apply_system_prompt_contribution(original, "m")
         assert original == [{"role": "system", "content": "orig"}]
 
+    def test_apply_no_double_inject_when_string_system_present_and_contribution_unchanged(self):
+        """Regression: an adapter that leaves existing system prompts
+        unchanged (``contribute(m, base)`` returns ``base``) but would
+        inject a non-empty overlay for ``base=None`` must NOT get the
+        no-prompt overlay double-stacked on top of an existing
+        string-content system message.
+
+        Found by codex review on the Wave 1A PR. The pre-fix code
+        only set ``augmented = True`` when the contribution changed
+        the content, so a "default-only" adapter would slip through
+        the loop unmodified and then trigger the fallback prepend,
+        producing two system messages.
+        """
+
+        class DefaultOnlyAdapter(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse()
+
+            def contribute_system_prompt(self, model_id, base):
+                if base is None:
+                    return "default discipline"
+                return base
+
+        a = DefaultOnlyAdapter()
+        out = a._apply_system_prompt_contribution(
+            [{"role": "system", "content": "user-supplied"}],
+            "any-model",
+        )
+        system_msgs = [m for m in out if m.get("role") == "system"]
+        assert len(system_msgs) == 1, (
+            f"expected exactly one system message, got {len(system_msgs)}: {out}"
+        )
+        assert system_msgs[0]["content"] == "user-supplied"
+
     def test_apply_skips_non_string_system_content(self):
         """Multi-part content (list of blocks) is passed through —
         contributions are text-only by contract."""
