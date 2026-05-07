@@ -342,14 +342,13 @@ def assert_response_contract(response: LLMResponse) -> None:
                 f"LLMResponse.tool_calls must be a list or None, got "
                 f"{type(response.tool_calls).__name__}"
             )
-        if len(response.tool_calls) == 0:
-            raise AssertionError(
-                "LLMResponse.tool_calls must be None when empty, not [] "
-                "— `has_tool_calls` would silently report False either "
-                "way, but downstream code that does `if "
-                "response.tool_calls:` distinguishes the cases. Adapters "
-                "that filtered all calls MUST set tool_calls=None."
-            )
+        # ``tool_calls=[]`` is treated as "no tool calls" by the
+        # dataclass itself (``has_tool_calls`` returns False for an
+        # empty list). Adapters that normalize a missing provider-side
+        # tool_calls field to ``[]`` produce a contract-valid response,
+        # so the helper does not reject this shape — the property
+        # behaves identically to ``tool_calls=None`` for downstream
+        # consumers.
         for i, tc in enumerate(response.tool_calls):
             if not isinstance(tc, ToolCall):
                 raise AssertionError(

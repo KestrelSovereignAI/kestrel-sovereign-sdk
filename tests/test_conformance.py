@@ -327,12 +327,17 @@ class TestAssertResponseContract:
             )
         )
 
-    def test_empty_tool_calls_list_is_rejected(self):
-        """tool_calls=[] is not a valid shape — adapters that filtered
-        all calls MUST set tool_calls=None."""
-        resp = LLMResponse(tool_calls=[])
-        with pytest.raises(AssertionError, match="must be None when empty"):
-            assert_response_contract(resp)
+    def test_empty_tool_calls_list_is_treated_as_no_tool_calls(self):
+        """``tool_calls=[]`` is treated as "no tool calls" by the
+        dataclass's own ``has_tool_calls`` property (which returns
+        False for an empty list as well as for ``None``). Codex
+        review pointed out that an adapter normalizing a missing
+        provider-side tool_calls field to ``[]`` produces a valid
+        response shape — the conformance helper must NOT reject it,
+        otherwise it would tighten beyond the documented dataclass
+        contract."""
+        # Should not raise.
+        assert_response_contract(LLMResponse(tool_calls=[]))
 
     def test_tool_call_with_empty_id_is_rejected(self):
         resp = LLMResponse(
