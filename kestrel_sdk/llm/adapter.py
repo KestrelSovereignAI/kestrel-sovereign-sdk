@@ -137,7 +137,7 @@ class LLMAdapter(ABC):
         if False:  # pragma: no cover
             yield ""
 
-    async def list_models(self) -> List[ModelInfo]:
+    async def list_models(self, client: Any) -> List[ModelInfo]:
         """Enumerate models this provider exposes.
 
         Default implementation raises :class:`NotImplementedError`.
@@ -146,6 +146,20 @@ class LLMAdapter(ABC):
         that cannot enumerate dynamically should still implement this
         and return a hand-rolled list — the framework's discovery
         layer treats "raises" and "returns []" differently.
+
+        Args:
+            client: The same provider-native client object the
+                framework already passes to :meth:`get_response` for
+                this route. Discovery uses the configured client (with
+                its ``base_url``, auth, custom headers) so an
+                authenticated ``/models`` endpoint returns the catalog
+                that actually matches the route. Adapters that build
+                their own client from env vars at discovery time would
+                hit the wrong endpoint for routes with non-default
+                ``base_url`` (Azure, OpenRouter-via-OpenAI-compat,
+                Kimi, DeepSeek, etc.). For local backends that do not
+                need a client (Ollama hits a fixed URL), this argument
+                may be ignored.
 
         Returns:
             List of :class:`ModelInfo` objects with model metadata.

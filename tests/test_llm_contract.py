@@ -289,7 +289,29 @@ class TestLLMAdapterOptionalSurface:
                 return LLMResponse()
 
         with pytest.raises(NotImplementedError):
-            asyncio.run(A().list_models())
+            asyncio.run(A().list_models(client=None))
+
+    def test_list_models_receives_route_client(self):
+        """Discovery must use the framework's already-initialized
+        client so authenticated /models endpoints return the catalog
+        that actually matches the route's base_url / auth. Without
+        this, an OpenAI-compatible plugin pointed at Kimi or DeepSeek
+        would have its discovery hit api.openai.com instead of the
+        configured endpoint — silently."""
+
+        seen_clients = []
+
+        class CapturingAdapter(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse()
+
+            async def list_models(self, client):
+                seen_clients.append(client)
+                return []
+
+        sentinel = object()
+        asyncio.run(CapturingAdapter().list_models(sentinel))
+        assert seen_clients == [sentinel]
 
     def test_streaming_signature_is_async_generator(self):
         """The default impl uses an unreachable ``yield`` so static
