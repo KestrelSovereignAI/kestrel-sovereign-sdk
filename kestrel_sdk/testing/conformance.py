@@ -91,12 +91,17 @@ async def drain_streaming_with_tools(
     * No two ``ToolCallStarted`` markers share the same ``index``.
       The contract requires exactly one marker per distinct
       tool-call index.
-    * The relative order of distinct ``ToolCallStarted.index``
-      values matches the order of the corresponding entries in
-      ``LLMResponse.tool_calls``. The framework dispatches by
-      ``index``; an out-of-order marker would mislead a consumer
-      that read marker order to anticipate which call was about to
-      fire.
+    * The relative *stream* order of distinct
+      ``ToolCallStarted.index`` values matches the order of the
+      corresponding entries in ``LLMResponse.tool_calls``. SDK 0.8
+      / contract version 2 explicitly: ``index`` is provider-
+      native (Anthropic ``content_block_index`` may be sparse;
+      Codex ``output_index`` likewise; OpenAI delta-tool-call-index
+      is positional by accident only). Consumers iterate markers in
+      stream order; ``tool_calls[marker.index]`` dispatch would
+      misalign for sparse-index providers and is NOT the contract.
+      An out-of-order marker would mislead a consumer that reads
+      marker stream order to anticipate which call is about to fire.
     * If the stream contains :class:`ToolCallStarted` events, the
       terminal ``LLMResponse`` MUST be present and MUST have at
       least one tool call (otherwise the marker announced a tool
