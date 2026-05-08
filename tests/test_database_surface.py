@@ -136,6 +136,23 @@ def test_resolve_rejects_unknown_string_mode():
         resolve_engine_target("definitely-not-a-mode", "postgresql://x")
 
 
+def test_resolve_accepts_unrelated_enum_with_matching_value():
+    """Sovereign's pre-#1094 `PrivacyMode(Enum)` had `.value == "normal"`.
+    `resolve_engine_target` should accept any Enum whose value matches a
+    canonical mode name — strip `.value` before coercion."""
+    from enum import Enum as _Enum
+
+    class _LegacyMode(_Enum):
+        NORMAL = "normal"
+        EPHEMERAL = "ephemeral"
+
+    persistent = resolve_engine_target(_LegacyMode.NORMAL, "postgresql://x")
+    assert persistent.persistent is True
+
+    volatile = resolve_engine_target(_LegacyMode.EPHEMERAL, None)
+    assert volatile.url == "sqlite+aiosqlite:///:memory:"
+
+
 @pytest.mark.parametrize(
     "mode", [PrivacyMode.ANONYMOUS, PrivacyMode.NORMAL, PrivacyMode.PUBLIC]
 )

@@ -127,9 +127,13 @@ def resolve_engine_target(
             configured URL through.
     """
     if not isinstance(mode, PrivacyMode):
-        # Coerce string-or-other-Enum down to the canonical SDK enum so
-        # the str-Enum equality semantics don't surprise callers passing
-        # raw strings or sovereign's pre-#1094 enum.
+        # Coerce strings (or pre-#1094 sovereign enum members whose values
+        # are still "ephemeral"/"normal"/etc.) to the canonical SDK enum.
+        # Strip the .value off any unrelated Enum first, since
+        # `PrivacyMode(SomeOtherEnum.NORMAL)` would otherwise compare the
+        # member object (not its string value) and raise ValueError.
+        if isinstance(mode, Enum):
+            mode = mode.value
         mode = PrivacyMode(mode)
 
     if mode == PrivacyMode.EPHEMERAL:
