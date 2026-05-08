@@ -31,6 +31,40 @@ class MyFeature(Feature):
         return [Tool(name="my-tool", description="Does something", handler=self.handle)]
 ```
 
+## Database surface (entity feature packages)
+
+Feature packages that need raw SQL or ORM access (e.g. `kestrel-feature-entities`)
+develop against `kestrel_sdk.storage.database`:
+
+```python
+from kestrel_sdk.storage.database import (
+    DatabaseBackend,           # async ABC: execute / fetch_* / transaction
+    PrivacyMode,               # 5-mode enum
+    EngineTarget,              # frozen dataclass: url, persistent, description
+    resolve_engine_target,     # PrivacyMode + fallback_url -> EngineTarget
+)
+
+target = resolve_engine_target(PrivacyMode.NORMAL, "postgresql+asyncpg://...")
+# target.url is the SQLAlchemy URL the feature should bind its ORM engine to.
+# Volatile modes (EPHEMERAL/ISOLATED) ignore fallback_url and return
+# in-memory or tempfile sqlite URLs with persistent=False.
+```
+
+To get the **active** `DatabaseBackend` instance at runtime, features access it
+through the agent context they already receive in their `Feature.__init__`:
+
+```python
+class MyEntityFeature(Feature):
+    def __init__(self, agent):
+        super().__init__(agent)
+        self.db: DatabaseBackend = agent.db   # provided by sovereign
+```
+
+The SDK declares the `DatabaseBackend` ABC; sovereign provides the concrete
+`SQLiteBackend` / `PostgresBackend` instance via `agent.db`. Feature packages
+should never instantiate their own backend — that creates a parallel
+connection pool and bypasses the agent's privacy enforcement.
+
 ## Configuration
 
 No environment variables required. This is a development-time dependency only.
