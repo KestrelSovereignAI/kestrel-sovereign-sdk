@@ -19,6 +19,13 @@ point of EPHEMERAL/ISOLATED. A feature package that calls
 `resolve_engine_target(EPHEMERAL, "postgresql://prod")` gets back
 ``sqlite+aiosqlite:///:memory:`` and a `persistent=False` flag, which it
 should respect (skip migrations that assume durability, etc.).
+
+`PrivacyMode` is `str`-based so equality with raw strings holds
+(`PrivacyMode.NORMAL == "normal"` is True, hashes match) — feature
+packages can read modes from TOML/JSON/CLI flags without explicit
+coercion. Code that previously relied on `isinstance(x, PrivacyMode)`
+discriminating against plain strings will need to switch to
+`type(x) is PrivacyMode`.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional, Union
 
 
 class PrivacyMode(str, Enum):
@@ -56,37 +64,74 @@ class EngineTarget:
             so feature packages can skip durability-assuming setup
             (e.g. external migration tools, snapshot exporters).
         description: Human-readable label for logs/UI/diagnostics.
+        cleanup_path: Backing file the caller should unlink at session
+            end. Set only for ISOLATED (which materialises a tempfile);
+            ``None`` for every other mode. Use `cleanup()` to remove it
+            idempotently — feature packages don't have to parse the URL.
     """
 
     url: str
     persistent: bool
     description: str
+    cleanup_path: Optional[str] = None
+
+    def cleanup(self) -> None:
+        """Idempotently remove any backing tempfile this target owns.
+
+        Safe to call repeatedly and on targets that don't own a tempfile
+        (no-op when ``cleanup_path is None``). The expected pattern is::
+
+            target = resolve_engine_target(mode, fallback_url)
+            try:
+                engine = create_async_engine(target.url)
+                ...
+            finally:
+                target.cleanup()
+        """
+        if self.cleanup_path is None:
+            return
+        try:
+            os.unlink(self.cleanup_path)
+        except FileNotFoundError:
+            pass
 
 
-_VOLATILE = {PrivacyMode.EPHEMERAL, PrivacyMode.ISOLATED}
-
-
-def resolve_engine_target(mode: PrivacyMode, fallback_url: str) -> EngineTarget:
+def resolve_engine_target(
+    mode: Union[PrivacyMode, str], fallback_url: Optional[str]
+) -> EngineTarget:
     """Return the engine target for ``mode``.
 
-    Volatile modes ignore ``fallback_url`` and return process-local
-    storage (in-memory or a tempfile). Persistent modes pass
-    ``fallback_url`` through unchanged — caller chose it.
+    Volatile modes (EPHEMERAL, ISOLATED) ignore ``fallback_url`` and
+    return process-local storage (in-memory or a tempfile). Persistent
+    modes (ANONYMOUS, NORMAL, PUBLIC) pass ``fallback_url`` through
+    unchanged — caller chose it.
 
     Args:
-        mode: Active privacy mode.
+        mode: Active privacy mode. Accepts a `PrivacyMode` instance or
+            its string value (``"normal"``, ``"ephemeral"``, …); strings
+            outside the enum raise ``ValueError``.
         fallback_url: SQLAlchemy URL to use when the mode is persistent.
-            Required for persistent modes; ignored for volatile ones.
+            Required (non-empty, non-whitespace) for persistent modes;
+            ignored for volatile ones — pass ``None`` if you don't have
+            one yet.
 
     Returns:
         An `EngineTarget` carrying the resolved URL, durability flag,
-        and a short human-readable description.
+        description, and (for ISOLATED) a `cleanup_path` the caller
+        should pass to `EngineTarget.cleanup()` at session end.
 
     Raises:
-        ValueError: If ``mode`` is persistent but ``fallback_url`` is
-            empty/None — the caller forgot to plumb the configured URL
-            through.
+        ValueError: If ``mode`` is not a recognised privacy mode, or if
+            the mode is persistent but ``fallback_url`` is empty,
+            whitespace-only, or ``None`` — the caller forgot to plumb the
+            configured URL through.
     """
+    if not isinstance(mode, PrivacyMode):
+        # Coerce string-or-other-Enum down to the canonical SDK enum so
+        # the str-Enum equality semantics don't surprise callers passing
+        # raw strings or sovereign's pre-#1094 enum.
+        mode = PrivacyMode(mode)
+
     if mode == PrivacyMode.EPHEMERAL:
         return EngineTarget(
             url="sqlite+aiosqlite:///:memory:",
@@ -94,19 +139,23 @@ def resolve_engine_target(mode: PrivacyMode, fallback_url: str) -> EngineTarget:
             description="in-memory (ephemeral)",
         )
     if mode == PrivacyMode.ISOLATED:
-        # Tempfile path — caller is responsible for cleanup at session end.
-        # NamedTemporaryFile would auto-delete on close; we want the path
-        # to outlive this function call, so mkstemp + close the fd.
+        # Caller is responsible for cleanup at session end via
+        # `EngineTarget.cleanup()`. We use mkstemp + close-fd rather
+        # than NamedTemporaryFile so the path outlives this function
+        # call without depending on Python finalisation order.
         fd, path = tempfile.mkstemp(prefix="kestrel-isolated-", suffix=".sqlite")
         os.close(fd)
         return EngineTarget(
             url=f"sqlite+aiosqlite:///{path}",
             persistent=False,
             description=f"tempfile (isolated): {path}",
+            cleanup_path=path,
         )
-    if not fallback_url:
+
+    if fallback_url is None or not fallback_url.strip():
         raise ValueError(
-            f"resolve_engine_target({mode!r}) requires a non-empty fallback_url"
+            f"resolve_engine_target({mode!r}) requires a non-empty fallback_url; "
+            f"got {fallback_url!r}"
         )
     return EngineTarget(
         url=fallback_url,
