@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 from uuid import uuid4
 
 
@@ -247,6 +247,39 @@ class SourceRegistration:
     # context the bird referenced in its response) do so inside the
     # callback.
     result_summary: Optional[Callable[[Any], str]] = None
+
+    # Constitutional injection — kestrel-sovereign#1137 Phase 1.
+    # See docs/architecture/CONSTITUTION_INJECTION.md (sovereign repo)
+    # for the full design. The dispatcher reads these fields when
+    # constructing the system prompt for a COGNITION dispatch and when
+    # verifying the per-invocation receipt.
+    #
+    # Defaults are backwards-compatible:
+    #   - `require_constitution_echo=False` keeps existing claude_code
+    #     COGNITION sources opt-out of the new phantom-tool receipt path.
+    #     The legacy guarantees (periodic _maybe_audit + hash-verified
+    #     storage retrieval at injection time) still apply.
+    #   - `prompt_template_format="claude_code"` matches the existing
+    #     in-agent dispatcher path (renders into process_input).
+    #   - `constitution_injection="none"` matches current ARTIFACT
+    #     reality: most ARTIFACT sources construct prompts internally
+    #     and inject nothing. Sources opt in by setting "full".
+    #   - `system_prompt_budget_bytes=None` means use the operator
+    #     default; per-source overrides are allowed.
+    #
+    # The registry validator enforces:
+    #   - `prompt_template_format in {"codex","local"}` REQUIRES
+    #     `require_constitution_echo=True` (those reviewer formats
+    #     exist precisely to verify; opt-out is contradictory).
+    #   - `prompt_template_format == "claude_code"` MAY have either
+    #     value; setting it to True without a docstring justification
+    #     emits a registration-time warning.
+    require_constitution_echo: bool = False
+    prompt_template_format: Literal[
+        "claude_code", "codex", "local", "bare"
+    ] = "claude_code"
+    constitution_injection: Literal["full", "none"] = "none"
+    system_prompt_budget_bytes: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
