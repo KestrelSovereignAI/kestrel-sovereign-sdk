@@ -28,7 +28,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Iterable, Mapping, Optional, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # =============================================================================
@@ -47,11 +47,32 @@ class ResourceClass(StrEnum):
 
 
 class PayerKind(StrEnum):
-    """How a resource is paid for, for a given agent."""
+    """How a resource is paid for, for a given agent.
+
+    The six funding patterns admitted by `PayerPolicy` correspond to:
+
+    - `NONE`                     — None: agent has no access to this resource.
+    - `HOST_ENV`                 — Standalone: operator's host env vars.
+    - `HOST_MASTER_PROVISIONED`  — Platform-pays: operator's master account,
+      child credential per agent. The master DID is the host's, implicit.
+    - `USER_MASTER_PROVISIONED`  — User-pays: a named user's master
+      account funds the agent. `master_did` carries the user DID.
+    - `SPONSOR`                  — Sponsor-pays: a named third party's
+      master account funds the agent. `master_did` carries the sponsor DID.
+    - `SELF_WALLET`              — Self-pays: agent's own wallet pays
+      vendors directly (e.g. x402, Lighthouse wallet-signed key).
+
+    `USER_MASTER_PROVISIONED` and `SPONSOR` share the same on-the-wire
+    mechanism (delegated master → child credential) but differ in
+    *whose* consent and audit trail the funding is recorded under.
+    Conflating them invites bugs in billing, accounting, and consent
+    UX, so they are distinct enum values.
+    """
 
     NONE = "none"
     HOST_ENV = "host_env"
     HOST_MASTER_PROVISIONED = "host_master_provisioned"
+    USER_MASTER_PROVISIONED = "user_master_provisioned"
     SELF_WALLET = "self_wallet"
     SPONSOR = "sponsor"
 
@@ -88,24 +109,28 @@ SUPPORT_MATRIX: Mapping[tuple[ResourceClass, str, PayerKind], SupportStatus] = {
     # ----- LLM / openrouter -----
     (ResourceClass.LLM, "openrouter", PayerKind.HOST_ENV): SupportStatus.READY,
     (ResourceClass.LLM, "openrouter", PayerKind.HOST_MASTER_PROVISIONED): SupportStatus.READY,
+    (ResourceClass.LLM, "openrouter", PayerKind.USER_MASTER_PROVISIONED): SupportStatus.READY,
     (ResourceClass.LLM, "openrouter", PayerKind.SPONSOR): SupportStatus.READY,
     (ResourceClass.LLM, "openrouter", PayerKind.SELF_WALLET): SupportStatus.NOT_IMPLEMENTED,
     (ResourceClass.LLM, "openrouter", PayerKind.NONE): SupportStatus.READY,
     # ----- LLM / local (ollama, llama.cpp, etc.) -----
     (ResourceClass.LLM, "local", PayerKind.HOST_ENV): SupportStatus.READY,
     (ResourceClass.LLM, "local", PayerKind.HOST_MASTER_PROVISIONED): SupportStatus.NOT_APPLICABLE,
+    (ResourceClass.LLM, "local", PayerKind.USER_MASTER_PROVISIONED): SupportStatus.NOT_APPLICABLE,
     (ResourceClass.LLM, "local", PayerKind.SPONSOR): SupportStatus.NOT_APPLICABLE,
     (ResourceClass.LLM, "local", PayerKind.SELF_WALLET): SupportStatus.NOT_APPLICABLE,
     (ResourceClass.LLM, "local", PayerKind.NONE): SupportStatus.READY,
     # ----- Storage / lighthouse -----
     (ResourceClass.STORAGE, "lighthouse", PayerKind.HOST_ENV): SupportStatus.READY,
     (ResourceClass.STORAGE, "lighthouse", PayerKind.HOST_MASTER_PROVISIONED): SupportStatus.READY,
+    (ResourceClass.STORAGE, "lighthouse", PayerKind.USER_MASTER_PROVISIONED): SupportStatus.READY,
     (ResourceClass.STORAGE, "lighthouse", PayerKind.SPONSOR): SupportStatus.READY,
     (ResourceClass.STORAGE, "lighthouse", PayerKind.SELF_WALLET): SupportStatus.READY,
     (ResourceClass.STORAGE, "lighthouse", PayerKind.NONE): SupportStatus.READY,
     # ----- Storage / local-disk -----
     (ResourceClass.STORAGE, "local-disk", PayerKind.HOST_ENV): SupportStatus.READY,
     (ResourceClass.STORAGE, "local-disk", PayerKind.HOST_MASTER_PROVISIONED): SupportStatus.NOT_APPLICABLE,
+    (ResourceClass.STORAGE, "local-disk", PayerKind.USER_MASTER_PROVISIONED): SupportStatus.NOT_APPLICABLE,
     (ResourceClass.STORAGE, "local-disk", PayerKind.SPONSOR): SupportStatus.NOT_APPLICABLE,
     (ResourceClass.STORAGE, "local-disk", PayerKind.SELF_WALLET): SupportStatus.NOT_APPLICABLE,
     (ResourceClass.STORAGE, "local-disk", PayerKind.NONE): SupportStatus.READY,
@@ -113,18 +138,21 @@ SUPPORT_MATRIX: Mapping[tuple[ResourceClass, str, PayerKind], SupportStatus] = {
     # Compute (Vast.ai, RunPod, Hyperbolic, ...) is host_env-only in this PR.
     (ResourceClass.COMPUTE, "*", PayerKind.HOST_ENV): SupportStatus.READY,
     (ResourceClass.COMPUTE, "*", PayerKind.HOST_MASTER_PROVISIONED): SupportStatus.OUT_OF_SCOPE,
+    (ResourceClass.COMPUTE, "*", PayerKind.USER_MASTER_PROVISIONED): SupportStatus.OUT_OF_SCOPE,
     (ResourceClass.COMPUTE, "*", PayerKind.SPONSOR): SupportStatus.OUT_OF_SCOPE,
     (ResourceClass.COMPUTE, "*", PayerKind.SELF_WALLET): SupportStatus.OUT_OF_SCOPE,
     (ResourceClass.COMPUTE, "*", PayerKind.NONE): SupportStatus.READY,
     # ----- Tools / generic (Tavily, Exa, ElevenLabs, ...) -----
     (ResourceClass.TOOLS, "*", PayerKind.HOST_ENV): SupportStatus.READY,
     (ResourceClass.TOOLS, "*", PayerKind.HOST_MASTER_PROVISIONED): SupportStatus.OUT_OF_SCOPE,
+    (ResourceClass.TOOLS, "*", PayerKind.USER_MASTER_PROVISIONED): SupportStatus.OUT_OF_SCOPE,
     (ResourceClass.TOOLS, "*", PayerKind.SPONSOR): SupportStatus.OUT_OF_SCOPE,
     (ResourceClass.TOOLS, "*", PayerKind.SELF_WALLET): SupportStatus.OUT_OF_SCOPE,
     (ResourceClass.TOOLS, "*", PayerKind.NONE): SupportStatus.READY,
     # ----- Comms / generic (Twilio, Resend, ...) -----
     (ResourceClass.COMMS, "*", PayerKind.HOST_ENV): SupportStatus.READY,
     (ResourceClass.COMMS, "*", PayerKind.HOST_MASTER_PROVISIONED): SupportStatus.OUT_OF_SCOPE,
+    (ResourceClass.COMMS, "*", PayerKind.USER_MASTER_PROVISIONED): SupportStatus.OUT_OF_SCOPE,
     (ResourceClass.COMMS, "*", PayerKind.SPONSOR): SupportStatus.OUT_OF_SCOPE,
     (ResourceClass.COMMS, "*", PayerKind.SELF_WALLET): SupportStatus.OUT_OF_SCOPE,
     (ResourceClass.COMMS, "*", PayerKind.NONE): SupportStatus.READY,
@@ -264,11 +292,16 @@ class PayerSpec(BaseModel):
         ...,
         description="How the agent's use of this vendor is paid for.",
     )
-    sponsor_did: Optional[str] = Field(
+    master_did: Optional[str] = Field(
         default=None,
         description=(
-            "Required when `kind == SPONSOR`; the DID of the third party "
-            "whose master credentials fund this agent's use of the vendor."
+            "DID of the principal whose master credentials fund this "
+            "agent's use of the vendor. REQUIRED when `kind` is "
+            "`USER_MASTER_PROVISIONED` (carries the user DID) or "
+            "`SPONSOR` (carries the sponsor DID). Must NOT be set for "
+            "any other kind (the host's master is implicit for "
+            "`HOST_MASTER_PROVISIONED`; `HOST_ENV`, `SELF_WALLET`, and "
+            "`NONE` have no master concept)."
         ),
     )
     monthly_cap_usd: Optional[Decimal] = Field(
@@ -280,6 +313,25 @@ class PayerSpec(BaseModel):
             "`limit_usd`) but is not obligated to enforce it locally."
         ),
     )
+
+    @model_validator(mode="after")
+    def _check_master_did(self) -> "PayerSpec":
+        kinds_requiring_master = {
+            PayerKind.USER_MASTER_PROVISIONED,
+            PayerKind.SPONSOR,
+        }
+        if self.kind in kinds_requiring_master and not self.master_did:
+            raise ValueError(
+                f"PayerSpec(kind={self.kind.value}) requires `master_did` "
+                f"to identify the principal funding the agent."
+            )
+        if self.kind not in kinds_requiring_master and self.master_did is not None:
+            raise ValueError(
+                f"PayerSpec(kind={self.kind.value}) must NOT set `master_did`; "
+                f"that field is only meaningful for "
+                f"`user_master_provisioned` and `sponsor` kinds."
+            )
+        return self
 
     def validate_against_matrix(
         self,

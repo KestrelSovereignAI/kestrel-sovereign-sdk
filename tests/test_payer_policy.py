@@ -45,8 +45,28 @@ class TestEnums:
         assert PayerKind.NONE == "none"
         assert PayerKind.HOST_ENV == "host_env"
         assert PayerKind.HOST_MASTER_PROVISIONED == "host_master_provisioned"
+        assert PayerKind.USER_MASTER_PROVISIONED == "user_master_provisioned"
         assert PayerKind.SELF_WALLET == "self_wallet"
         assert PayerKind.SPONSOR == "sponsor"
+
+    def test_payer_kind_covers_six_funding_patterns(self) -> None:
+        # The plan claims 6 funding patterns. Each must be representable
+        # as exactly one PayerKind value.
+        # Standalone           = HOST_ENV
+        # Platform-pays        = HOST_MASTER_PROVISIONED
+        # User-pays            = USER_MASTER_PROVISIONED
+        # Sponsor-pays         = SPONSOR
+        # Self-pays            = SELF_WALLET
+        # None                 = NONE
+        funding_pattern_kinds = {
+            PayerKind.HOST_ENV,
+            PayerKind.HOST_MASTER_PROVISIONED,
+            PayerKind.USER_MASTER_PROVISIONED,
+            PayerKind.SPONSOR,
+            PayerKind.SELF_WALLET,
+            PayerKind.NONE,
+        }
+        assert set(PayerKind) == funding_pattern_kinds
 
     def test_payer_kind_round_trip_string(self) -> None:
         # Critical for TOML round-trip: every kind must reconstruct from its value.
@@ -104,11 +124,13 @@ class TestSupportMatrix:
         assert is_offerable(ResourceClass.LLM, "fictional", PayerKind.HOST_ENV) is False
 
     def test_supported_kinds_for_excludes_non_ready(self) -> None:
-        # OpenRouter LLM today: HOST_ENV, HOST_MASTER_PROVISIONED, SPONSOR, NONE
-        # are READY; SELF_WALLET is NOT_IMPLEMENTED.
+        # OpenRouter LLM today: HOST_ENV, HOST_MASTER_PROVISIONED,
+        # USER_MASTER_PROVISIONED, SPONSOR, NONE are READY; SELF_WALLET is
+        # NOT_IMPLEMENTED.
         kinds = supported_kinds_for(ResourceClass.LLM, "openrouter")
         assert PayerKind.HOST_ENV in kinds
         assert PayerKind.HOST_MASTER_PROVISIONED in kinds
+        assert PayerKind.USER_MASTER_PROVISIONED in kinds
         assert PayerKind.SPONSOR in kinds
         assert PayerKind.NONE in kinds
         assert PayerKind.SELF_WALLET not in kinds
@@ -117,6 +139,7 @@ class TestSupportMatrix:
         # local LLM: there is no "master" to provision under.
         kinds = supported_kinds_for(ResourceClass.LLM, "local")
         assert PayerKind.HOST_MASTER_PROVISIONED not in kinds
+        assert PayerKind.USER_MASTER_PROVISIONED not in kinds
         assert PayerKind.SPONSOR not in kinds
         assert PayerKind.SELF_WALLET not in kinds
         assert PayerKind.HOST_ENV in kinds
@@ -156,8 +179,52 @@ class TestPayerSpec:
         spec = PayerSpec(vendor="openrouter", kind=PayerKind.HOST_ENV)
         assert spec.vendor == "openrouter"
         assert spec.kind is PayerKind.HOST_ENV
-        assert spec.sponsor_did is None
+        assert spec.master_did is None
         assert spec.monthly_cap_usd is None
+
+    def test_sponsor_requires_master_did(self) -> None:
+        # SPONSOR without master_did must fail at construction, not later.
+        with pytest.raises(Exception) as excinfo:
+            PayerSpec(vendor="openrouter", kind=PayerKind.SPONSOR)
+        assert "master_did" in str(excinfo.value).lower()
+
+    def test_user_master_requires_master_did(self) -> None:
+        with pytest.raises(Exception) as excinfo:
+            PayerSpec(vendor="openrouter", kind=PayerKind.USER_MASTER_PROVISIONED)
+        assert "master_did" in str(excinfo.value).lower()
+
+    def test_sponsor_with_master_did_succeeds(self) -> None:
+        spec = PayerSpec(
+            vendor="openrouter",
+            kind=PayerKind.SPONSOR,
+            master_did="did:pkh:eip155:1:0xSponsor",
+        )
+        assert spec.master_did == "did:pkh:eip155:1:0xSponsor"
+
+    def test_user_master_with_master_did_succeeds(self) -> None:
+        spec = PayerSpec(
+            vendor="openrouter",
+            kind=PayerKind.USER_MASTER_PROVISIONED,
+            master_did="did:pkh:eip155:1:0xUser",
+        )
+        assert spec.master_did == "did:pkh:eip155:1:0xUser"
+
+    def test_master_did_forbidden_for_other_kinds(self) -> None:
+        # Setting master_did when kind doesn't use it should fail.
+        for kind in (
+            PayerKind.HOST_ENV,
+            PayerKind.HOST_MASTER_PROVISIONED,
+            PayerKind.SELF_WALLET,
+            PayerKind.NONE,
+        ):
+            with pytest.raises(Exception) as excinfo:
+                PayerSpec(
+                    vendor="openrouter",
+                    kind=kind,
+                    master_did="did:pkh:eip155:1:0xWho",
+                )
+            # Error should be specific about why.
+            assert "master_did" in str(excinfo.value).lower()
 
     def test_frozen(self) -> None:
         spec = PayerSpec(vendor="openrouter", kind=PayerKind.HOST_ENV)
@@ -273,12 +340,12 @@ class TestTOMLRoundTrip:
         rebuilt = PayerPolicy.from_toml_section(original.to_toml_section())
         assert rebuilt.llm.monthly_cap_usd == Decimal("12.34")
 
-    def test_round_trip_preserves_sponsor_did(self) -> None:
+    def test_round_trip_preserves_master_did_for_sponsor(self) -> None:
         original = PayerPolicy(
             llm=PayerSpec(
                 vendor="openrouter",
                 kind=PayerKind.SPONSOR,
-                sponsor_did="did:pkh:eip155:1:0xSponsor",
+                master_did="did:pkh:eip155:1:0xSponsor",
             ),
             storage=PayerSpec(vendor="lighthouse", kind=PayerKind.HOST_ENV),
             compute=PayerSpec(vendor="*", kind=PayerKind.HOST_ENV),
@@ -286,7 +353,24 @@ class TestTOMLRoundTrip:
             comms=PayerSpec(vendor="*", kind=PayerKind.HOST_ENV),
         )
         rebuilt = PayerPolicy.from_toml_section(original.to_toml_section())
-        assert rebuilt.llm.sponsor_did == "did:pkh:eip155:1:0xSponsor"
+        assert rebuilt.llm.master_did == "did:pkh:eip155:1:0xSponsor"
+        assert rebuilt.llm.kind is PayerKind.SPONSOR
+
+    def test_round_trip_preserves_master_did_for_user(self) -> None:
+        original = PayerPolicy(
+            llm=PayerSpec(
+                vendor="openrouter",
+                kind=PayerKind.USER_MASTER_PROVISIONED,
+                master_did="did:pkh:eip155:1:0xUser",
+            ),
+            storage=PayerSpec(vendor="lighthouse", kind=PayerKind.HOST_ENV),
+            compute=PayerSpec(vendor="*", kind=PayerKind.HOST_ENV),
+            tools=PayerSpec(vendor="*", kind=PayerKind.HOST_ENV),
+            comms=PayerSpec(vendor="*", kind=PayerKind.HOST_ENV),
+        )
+        rebuilt = PayerPolicy.from_toml_section(original.to_toml_section())
+        assert rebuilt.llm.master_did == "did:pkh:eip155:1:0xUser"
+        assert rebuilt.llm.kind is PayerKind.USER_MASTER_PROVISIONED
 
     def test_unknown_keys_in_section_are_rejected(self) -> None:
         section = PayerPolicy.host_env_default().to_toml_section()
@@ -301,11 +385,11 @@ class TestTOMLRoundTrip:
         section = original.to_toml_section()
         for slot in section.values():
             if isinstance(slot, dict):
-                assert "sponsor_did" not in slot
+                assert "master_did" not in slot
                 assert "monthly_cap_usd" not in slot
         rebuilt = PayerPolicy.from_toml_section(section)
         for spec in (rebuilt.llm, rebuilt.storage, rebuilt.compute, rebuilt.tools, rebuilt.comms):
-            assert spec.sponsor_did is None
+            assert spec.master_did is None
             assert spec.monthly_cap_usd is None
 
 
