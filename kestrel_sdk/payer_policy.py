@@ -121,11 +121,19 @@ SUPPORT_MATRIX: Mapping[tuple[ResourceClass, str, PayerKind], SupportStatus] = {
     (ResourceClass.LLM, "local", PayerKind.SELF_WALLET): SupportStatus.NOT_APPLICABLE,
     (ResourceClass.LLM, "local", PayerKind.NONE): SupportStatus.READY,
     # ----- Storage / lighthouse -----
+    # NOTE: HOST_MASTER_PROVISIONED / USER_MASTER_PROVISIONED / SPONSOR /
+    # SELF_WALLET for Lighthouse all require the wallet-signed key flow
+    # (sign Lighthouse auth message → POST /api/auth/create_api_key →
+    # store the resulting per-agent key in ServiceKeyStorage). That flow
+    # lands in Phase 3.5 of the PayerPolicy plan. Until then these are
+    # NOT_IMPLEMENTED — matrix says deferred, resolver raises
+    # UnsupportedCombinationError, wizard refuses to offer. Phase 3.5
+    # flips these four rows to READY.
     (ResourceClass.STORAGE, "lighthouse", PayerKind.HOST_ENV): SupportStatus.READY,
-    (ResourceClass.STORAGE, "lighthouse", PayerKind.HOST_MASTER_PROVISIONED): SupportStatus.READY,
-    (ResourceClass.STORAGE, "lighthouse", PayerKind.USER_MASTER_PROVISIONED): SupportStatus.READY,
-    (ResourceClass.STORAGE, "lighthouse", PayerKind.SPONSOR): SupportStatus.READY,
-    (ResourceClass.STORAGE, "lighthouse", PayerKind.SELF_WALLET): SupportStatus.READY,
+    (ResourceClass.STORAGE, "lighthouse", PayerKind.HOST_MASTER_PROVISIONED): SupportStatus.NOT_IMPLEMENTED,
+    (ResourceClass.STORAGE, "lighthouse", PayerKind.USER_MASTER_PROVISIONED): SupportStatus.NOT_IMPLEMENTED,
+    (ResourceClass.STORAGE, "lighthouse", PayerKind.SPONSOR): SupportStatus.NOT_IMPLEMENTED,
+    (ResourceClass.STORAGE, "lighthouse", PayerKind.SELF_WALLET): SupportStatus.NOT_IMPLEMENTED,
     (ResourceClass.STORAGE, "lighthouse", PayerKind.NONE): SupportStatus.READY,
     # ----- Storage / local-disk -----
     (ResourceClass.STORAGE, "local-disk", PayerKind.HOST_ENV): SupportStatus.READY,
