@@ -94,10 +94,9 @@ class TestSupportMatrix:
             status_for(ResourceClass.LLM, "openrouter", PayerKind.SELF_WALLET)
             is SupportStatus.NOT_IMPLEMENTED
         )
-        # Phase 3a state: deferred to Phase 3.5 (wallet-signed key minting).
         assert (
             status_for(ResourceClass.STORAGE, "lighthouse", PayerKind.SELF_WALLET)
-            is SupportStatus.NOT_IMPLEMENTED
+            is SupportStatus.READY
         )
 
     def test_unknown_triple_returns_not_implemented(self) -> None:
@@ -147,24 +146,12 @@ class TestSupportMatrix:
         assert PayerKind.NONE in kinds
 
     def test_lighthouse_storage_ready_kinds(self) -> None:
-        # Phase 3a state: HOST_ENV + NONE are the only READY kinds for
-        # Lighthouse. Phase 3.5 of the PayerPolicy plan ships the
-        # wallet-signed key flow that flips HOST_MASTER_PROVISIONED /
-        # USER_MASTER_PROVISIONED / SPONSOR / SELF_WALLET to READY.
         kinds = supported_kinds_for(ResourceClass.STORAGE, "lighthouse")
-        assert PayerKind.HOST_ENV in kinds
-        assert PayerKind.NONE in kinds
-        # Delegated-master and self-wallet kinds: deferred until Phase 3.5.
-        for deferred in (
-            PayerKind.HOST_MASTER_PROVISIONED,
-            PayerKind.USER_MASTER_PROVISIONED,
-            PayerKind.SPONSOR,
+        assert set(kinds) == {
+            PayerKind.HOST_ENV,
             PayerKind.SELF_WALLET,
-        ):
-            assert deferred not in kinds, (
-                f"{deferred} should not be offerable for lighthouse storage "
-                "until Phase 3.5 ships wallet-signed key minting"
-            )
+            PayerKind.NONE,
+        }
 
     def test_matrix_has_no_overlapping_concrete_and_wildcard(self) -> None:
         # If a triple has a concrete entry, the wildcard for the same
