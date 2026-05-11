@@ -65,6 +65,34 @@ The SDK declares the `DatabaseBackend` ABC; sovereign provides the concrete
 should never instantiate their own backend — that creates a parallel
 connection pool and bypasses the agent's privacy enforcement.
 
+## Channels, Delivery, And Output Contracts
+
+Channel and delivery packages use SDK contracts rather than importing from the
+full framework:
+
+```python
+from kestrel_sdk.channels import ChannelAdapter, ChannelMessage
+from kestrel_sdk.delivery import DeliveryProvider, DeliveryTask, DeliveryResult
+from kestrel_sdk.outputs import OutputEvent, OutputKind
+```
+
+Feature packages register concrete channel adapters through:
+
+```toml
+[project.entry-points."kestrel_sovereign.channel_adapters"]
+telegram = "kestrel_channel_telegram:TelegramAdapter"
+```
+
+Delivery providers register through:
+
+```toml
+[project.entry-points."kestrel_sovereign.delivery_providers"]
+sendgrid = "kestrel_delivery_sendgrid:SendGridDeliveryProvider"
+```
+
+The SDK owns only the public contracts. The framework owns runtime privacy
+checks, signal dispatch, durable queues, and server composition.
+
 ## Configuration
 
 No environment variables required. This is a development-time dependency only.
