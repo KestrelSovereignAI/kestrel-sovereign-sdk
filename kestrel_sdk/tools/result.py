@@ -53,7 +53,7 @@ class ToolResultStatus(StrEnum):
     ``str(status) == status.value`` and f-string interpolation that
     yields the bare wire token — unlike a plain ``(str, Enum)`` mix-in,
     where ``str(ToolResultStatus.OK)`` would render as
-    ``"ToolResultStatus.OK"``. ``requires-python = ">=3.11,<3.14"`` in
+    ``"ToolResultStatus.OK"``. ``requires-python = ">=3.11,<3.15"`` in
     pyproject covers ``StrEnum`` availability.
     """
 
