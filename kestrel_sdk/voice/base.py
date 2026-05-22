@@ -38,6 +38,16 @@ class VoiceConfig:
     stt_language: str = "en"
     sample_rate: int = 24000
     output_format: str = "opus"  # opus, mp3, pcm, wav
+    # Free-form steering directive describing HOW this agent speaks
+    # (tone, persona, accent cues).  Concatenated into the Realtime
+    # session instructions and forwarded to TTS providers that support
+    # an ``instructions`` parameter (e.g. gpt-4o-mini-tts).  Voice is
+    # identity — this is part of the agent's persona, NOT operator
+    # session state.  Set via ``POST /voice/config`` from the voice
+    # picker; persisted on ``AgentIdentityPackage.voice_config`` like
+    # every other voice field above.
+    # See KestrelSovereignAI/kestrel-sovereign#1352.
+    voice_directive: str = ""
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
