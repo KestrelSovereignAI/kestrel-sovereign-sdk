@@ -21,7 +21,7 @@ class TimelineProtocol(Protocol):
 
     id: str
     agent_did: str
-    subject_name: str | None  # whose story it is (neutral field, never "elder" or "companion")
+    subject_name: str | None  # whose story it is (use this, not product-specific terms)
     title: str
     coherence_score: float
     created_at: datetime
