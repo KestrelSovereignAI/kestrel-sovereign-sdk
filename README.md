@@ -93,6 +93,23 @@ sendgrid = "kestrel_delivery_sendgrid:SendGridDeliveryProvider"
 The SDK owns only the public contracts. The framework owns runtime privacy
 checks, signal dispatch, durable queues, and server composition.
 
+## Timeline Protocols
+
+Timeline implementations (e.g., story archive, health timelines) use SDK protocols for cross-package interoperability:
+
+```python
+from kestrel_sdk.timeline import (
+    TimelineProtocol,
+    EventProtocol,
+    PersonProtocol,
+    TimelineSharingProtocol,
+    JSONTimelineSerializer,
+    VectorSearchBackend,
+)
+```
+
+These protocols define minimal duck-typed shapes that any timeline implementation must conform to. Feature packages can implement timeline functionality without inheriting from `kestrel-feature-entities`. For a full timeline implementation with persistence, embeddings, and IPFS export, see [`kestrel-feature-story-archive`](https://github.com/KestrelSovereignAI/kestrel-feature-story-archive).
+
 ## Configuration
 
 No environment variables required. This is a development-time dependency only.
