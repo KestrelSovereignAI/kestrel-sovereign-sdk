@@ -51,6 +51,7 @@ metrics = [
 # Test dependencies
 test = [
     "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
     "prometheus-client>=0.21.0",
 ]
 
