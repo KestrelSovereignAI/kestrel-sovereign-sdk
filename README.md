@@ -95,20 +95,65 @@ checks, signal dispatch, durable queues, and server composition.
 
 ## Timeline Protocols
 
-Timeline implementations (e.g., story archive, health timelines) use SDK protocols for cross-package interoperability:
+Timeline implementations (e.g., story archive, health timelines) use SDK protocols for cross-package interoperability. The SDK provides three core protocols: `TimelineProtocol` defines the minimal shape any timeline must conform to, `TimelineSharingProtocol` enables pluggable serialization formats (JSON, FHIR, IPFS), and `VectorSearchBackend` abstracts semantic search across different vector stores (pgvector, pure-Python cosine).
+
+### Implementing TimelineProtocol
+
+Any class with the required attributes can serve as a timeline:
 
 ```python
-from kestrel_sdk.timeline import (
-    TimelineProtocol,
-    EventProtocol,
-    PersonProtocol,
-    TimelineSharingProtocol,
-    JSONTimelineSerializer,
-    VectorSearchBackend,
-)
+from datetime import datetime
+
+class StoryTimeline:
+    def __init__(self):
+        self.id = "timeline-123"
+        self.agent_did = "did:key:abc"
+        self.subject_name = "Jane Doe"
+        self.title = "Jane's Life Story"
+        self.coherence_score = 0.95
+        self.created_at = datetime.now()
 ```
 
-These protocols define minimal duck-typed shapes that any timeline implementation must conform to. Feature packages can implement timeline functionality without inheriting from `kestrel-feature-entities`. For a full timeline implementation with persistence, embeddings, and IPFS export, see [`kestrel-feature-story-archive`](https://github.com/KestrelSovereignAI/kestrel-feature-story-archive).
+### Sharing and Serialization
+
+Use `JSONTimelineSerializer` for default JSON output, or implement `TimelineSharingProtocol` for custom formats:
+
+```python
+from kestrel_sdk.timeline import JSONTimelineSerializer, TimelineSharingProtocol
+import json
+
+# Default JSON sharing
+serializer = JSONTimelineSerializer()
+data = serializer.serialize(timeline, events, people)
+
+# Custom FHIR serializer
+class FHIRTimelineSerializer:
+    content_type = "application/fhir+json"
+
+    def serialize(self, timeline, events, people) -> bytes:
+        # Convert to FHIR Bundle format
+        bundle = {"resourceType": "Bundle", "entry": [...]}
+        return json.dumps(bundle).encode("utf-8")
+```
+
+### Vector Search
+
+Implement `VectorSearchBackend` for semantic timeline search. The SDK ships two reference implementations in [`kestrel-feature-story-archive`](https://github.com/KestrelSovereignAI/kestrel-feature-story-archive): `PgVectorBackend` (PostgreSQL with pgvector extension) and `PurePythonBackend` (SQLite with cosine similarity).
+
+```python
+from kestrel_sdk.timeline import VectorSearchBackend
+
+class MyVectorBackend:
+    async def knn(self, query_embedding: bytes, k: int, filter: dict | None = None):
+        # Return k-nearest neighbors by cosine similarity
+        return [("event-5", 0.95), ("event-12", 0.89)]
+
+    @property
+    def supports_filters(self) -> bool:
+        return True  # Can filter by timeline_id at query time
+```
+
+For a full timeline implementation with persistence, embeddings, and IPFS export, see [`kestrel-feature-story-archive`](https://github.com/KestrelSovereignAI/kestrel-feature-story-archive).
 
 ## Configuration
 
