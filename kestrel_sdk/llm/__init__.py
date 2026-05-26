@@ -38,6 +38,12 @@ detect drift at import time::
 """
 
 from .adapter import LLMAdapter
+from .capabilities import (
+    ProviderCapabilities,
+    StructuredOutputMode,
+    ToolStreamingMode,
+    VisionInputMode,
+)
 from .model_info import ModelCategory, ModelInfo
 from .provider import ProviderInfo
 from .response import LLMResponse, ToolCall, ToolCallStarted
@@ -47,6 +53,10 @@ from .types import BackendType
 # LLMResponse / ModelInfo / ProviderInfo, or the meaning of the
 # ``kestrel_sovereign.llm_providers`` entry-point contract changes in
 # a way that requires plugin authors to update their code.
+#
+# Version 3 (SDK 0.17.0): adds ProviderCapabilities, ProviderInfo.capabilities,
+# and LLMAdapter.provider_capabilities() so provider feature metadata lives in
+# the shared SDK contract.
 #
 # Version 2 (SDK 0.8.0): clarifies the meaning of
 # :attr:`ToolCallStarted.index`. The dataclass shape is unchanged
@@ -62,7 +72,7 @@ from .types import BackendType
 # read ``marker.index`` directly continue to work; plugins that
 # wrote consumer code against the old (positional) wording must
 # update to read by stream order.
-SDK_LLM_CONTRACT_VERSION = 2
+SDK_LLM_CONTRACT_VERSION = 3
 
 __all__ = [
     "BackendType",
@@ -70,8 +80,12 @@ __all__ = [
     "LLMResponse",
     "ModelCategory",
     "ModelInfo",
+    "ProviderCapabilities",
     "ProviderInfo",
     "SDK_LLM_CONTRACT_VERSION",
+    "StructuredOutputMode",
     "ToolCall",
     "ToolCallStarted",
+    "ToolStreamingMode",
+    "VisionInputMode",
 ]

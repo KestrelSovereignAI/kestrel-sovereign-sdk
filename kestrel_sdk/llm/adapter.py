@@ -42,6 +42,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Type, Union
 
 from pydantic import BaseModel
 
+from .capabilities import ProviderCapabilities
 from .model_info import ModelInfo
 from .response import LLMResponse, ToolCallStarted
 
@@ -449,3 +450,13 @@ class LLMAdapter(ABC):
         not a hard constraint.
         """
         return None
+
+    def provider_capabilities(self) -> ProviderCapabilities:
+        """Return adapter-level feature capabilities.
+
+        This describes the provider route surface, not a specific model.
+        Adapters should override this when they support tools, streaming,
+        vision, or structured output. The default is conservative so minimal
+        text-only plugins remain valid.
+        """
+        return ProviderCapabilities()
