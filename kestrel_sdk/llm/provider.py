@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
+from .capabilities import ProviderCapabilities
+
 
 @dataclass
 class ProviderInfo:
@@ -49,6 +51,9 @@ class ProviderInfo:
         selection_hints: Free-form labels the model selection layer
             consults when picking between routes (e.g. ``"prefer-cheap"``,
             ``"plan-only"``). Adapter-supplied; routing-meaningful.
+        capabilities: Adapter-level feature contract for this route.
+            Per-model ``ModelInfo`` remains authoritative for
+            model-dependent providers.
     """
 
     name: str
@@ -61,3 +66,4 @@ class ProviderInfo:
     is_local: bool = False
     base_url: Optional[str] = None
     selection_hints: List[str] = field(default_factory=list)
+    capabilities: ProviderCapabilities = field(default_factory=ProviderCapabilities)

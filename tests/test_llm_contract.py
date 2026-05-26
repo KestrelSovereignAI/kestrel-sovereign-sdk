@@ -24,9 +24,13 @@ from kestrel_sdk.llm import (
     LLMResponse,
     ModelCategory,
     ModelInfo,
+    ProviderCapabilities,
     ProviderInfo,
     ToolCall,
     ToolCallStarted,
+    StructuredOutputMode,
+    ToolStreamingMode,
+    VisionInputMode,
 )
 
 
@@ -238,6 +242,7 @@ class TestProviderInfo:
         assert p.is_local is False
         assert p.base_url is None
         assert p.selection_hints == []
+        assert p.capabilities == ProviderCapabilities()
 
     def test_selection_hints_is_per_instance_list(self):
         """`field(default_factory=list)` — not a shared mutable default."""
@@ -249,6 +254,104 @@ class TestProviderInfo:
         )
         p1.selection_hints.append("prefer-cheap")
         assert p2.selection_hints == []
+
+    def test_capabilities_is_per_instance_value(self):
+        p1 = ProviderInfo(
+            name="a:r", vendor="a", route="r", client=None, adapter=None, model="auto"
+        )
+        p2 = ProviderInfo(
+            name="b:r", vendor="b", route="r", client=None, adapter=None, model="auto"
+        )
+        assert p1.capabilities is not p2.capabilities
+        assert p1.capabilities == p2.capabilities == ProviderCapabilities()
+
+
+class TestProviderCapabilities:
+    def test_defaults_are_conservative(self):
+        capabilities = ProviderCapabilities()
+
+        assert capabilities.supports_tools is False
+        assert capabilities.supports_streaming is False
+        assert capabilities.supports_vision is False
+        assert capabilities.supports_structured_output is False
+        assert capabilities.structured_output_mode == StructuredOutputMode.NONE
+        assert capabilities.tool_streaming_mode == ToolStreamingMode.NONE
+        assert capabilities.vision_input_mode == VisionInputMode.NONE
+        assert capabilities.model_dependent == ()
+        assert capabilities.notes == ()
+
+    def test_to_dict_uses_wire_values(self):
+        capabilities = ProviderCapabilities(
+            supports_tools=True,
+            supports_streaming=True,
+            supports_vision=True,
+            supports_structured_output=True,
+            structured_output_mode=StructuredOutputMode.JSON_SCHEMA,
+            tool_streaming_mode=ToolStreamingMode.NATIVE_DELTA,
+            vision_input_mode=VisionInputMode.OPENAI_IMAGE_URL,
+            model_dependent=("vision",),
+            notes=("model-dependent",),
+        )
+
+        assert capabilities.to_dict() == {
+            "supports_tools": True,
+            "supports_streaming": True,
+            "supports_vision": True,
+            "supports_structured_output": True,
+            "structured_output_mode": "json_schema",
+            "tool_streaming_mode": "native_delta",
+            "vision_input_mode": "openai_image_url",
+            "model_dependent": ["vision"],
+            "notes": ["model-dependent"],
+        }
+
+    def test_from_mapping_accepts_plugin_dicts(self):
+        capabilities = ProviderCapabilities.from_mapping(
+            {
+                "supports_tools": True,
+                "supports_streaming": True,
+                "supports_vision": True,
+                "supports_structured_output": True,
+                "structured_output_mode": "json_schema",
+                "tool_streaming_mode": "native_delta",
+                "vision_input_mode": "openai_image_url",
+                "model_dependent": ["vision"],
+                "notes": ["plugin"],
+            }
+        )
+
+        assert capabilities.supports_tools is True
+        assert capabilities.structured_output_mode == StructuredOutputMode.JSON_SCHEMA
+        assert capabilities.tool_streaming_mode == ToolStreamingMode.NATIVE_DELTA
+        assert capabilities.vision_input_mode == VisionInputMode.OPENAI_IMAGE_URL
+        assert capabilities.model_dependent == ("vision",)
+        assert capabilities.notes == ("plugin",)
+
+    def test_to_dict_round_trips_through_from_mapping(self):
+        original = ProviderCapabilities(
+            supports_tools=True,
+            supports_streaming=True,
+            supports_structured_output=True,
+            structured_output_mode=StructuredOutputMode.TOOL_FORCED,
+            tool_streaming_mode=ToolStreamingMode.NATIVE_DELTA,
+            model_dependent=("structured_output",),
+            notes=("forced tool",),
+        )
+
+        assert ProviderCapabilities.from_mapping(original.to_dict()) == original
+
+    def test_from_mapping_unknown_modes_fall_back_conservatively(self):
+        capabilities = ProviderCapabilities.from_mapping(
+            {
+                "structured_output_mode": "typo",
+                "tool_streaming_mode": "typo",
+                "vision_input_mode": "typo",
+            }
+        )
+
+        assert capabilities.structured_output_mode == StructuredOutputMode.NONE
+        assert capabilities.tool_streaming_mode == ToolStreamingMode.NONE
+        assert capabilities.vision_input_mode == VisionInputMode.NONE
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +658,9 @@ class TestLLMAdapterProviderMetadata:
     def test_deliberation_style_defaults_to_none(self):
         assert self._make_minimal_adapter().deliberation_style() is None
 
+    def test_provider_capabilities_defaults_to_conservative_value(self):
+        assert self._make_minimal_adapter().provider_capabilities() == ProviderCapabilities()
+
 
 class TestLLMAdapterProviderMetadataOverrides:
     """Concrete adapters that override the metadata methods report
@@ -611,6 +717,23 @@ class TestLLMAdapterProviderMetadataOverrides:
 
         assert GroqAdapter().deliberation_style() == "parallel"
 
+    def test_provider_capabilities_round_trip(self):
+        class VisionAdapter(LLMAdapter):
+            async def get_response(self, *a, **kw):
+                return LLMResponse()
+
+            def provider_capabilities(self):
+                return ProviderCapabilities(
+                    supports_streaming=True,
+                    supports_vision=True,
+                    vision_input_mode=VisionInputMode.OPENAI_IMAGE_URL,
+                )
+
+        capabilities = VisionAdapter().provider_capabilities()
+        assert capabilities.supports_streaming is True
+        assert capabilities.supports_vision is True
+        assert capabilities.vision_input_mode == VisionInputMode.OPENAI_IMAGE_URL
+
 
 class TestLLMAdapterMetadataAreNonAbstract:
     """Adding the metadata methods MUST NOT break minimal adapters
@@ -630,6 +753,7 @@ class TestLLMAdapterMetadataAreNonAbstract:
         assert adapter.display_name() is None
         assert adapter.key_env_var() is None
         assert adapter.deliberation_style() is None
+        assert adapter.provider_capabilities() == ProviderCapabilities()
 
     def test_abstract_methods_unchanged(self):
         """Pinned: only get_response is abstract. Adding metadata
@@ -649,18 +773,17 @@ class TestLLMAdapterContractVersion:
         ``>= 1`` and never read ``marker.index`` directly keep
         working; plugins that wrote consumer code against the old
         positional reading must update.
+      * 3 — added ProviderCapabilities, ProviderInfo.capabilities, and
+        LLMAdapter.provider_capabilities() (SDK 0.17.0).
     """
 
-    def test_contract_version_is_2(self):
+    def test_contract_version_is_3(self):
         from kestrel_sdk.llm import SDK_LLM_CONTRACT_VERSION
 
-        assert SDK_LLM_CONTRACT_VERSION == 2, (
-            "SDK 0.8.0 bumps the LLM contract version from 1 to 2 to "
-            "signal the ToolCallStarted.index docstring clarification "
-            "(provider-native, stream-order pin). Plugins that read "
-            "``marker.index`` as a positional index into "
-            "``LLMResponse.tool_calls`` must migrate to stream-order "
-            "iteration."
+        assert SDK_LLM_CONTRACT_VERSION == 3, (
+            "SDK 0.17.0 bumps the LLM contract version from 2 to 3 to "
+            "publish provider capability metadata on the shared plugin "
+            "surface."
         )
 
 
@@ -889,13 +1012,5 @@ class TestStreamingWithToolsContractVersion:
     ``ToolCallStarted.index`` semantics in 0.8.0 IS a documented
     contract change and bumps the version to 2."""
 
-    def test_contract_version_is_2(self):
-        assert SDK_LLM_CONTRACT_VERSION == 2, (
-            "SDK 0.8.0 clarified that ToolCallStarted.index is "
-            "provider-native (Anthropic block_index, Codex output_index, "
-            "OpenAI delta-tool-call-index) and that consumers iterate "
-            "markers in stream order rather than indexing tool_calls by "
-            "marker.index. Plugin authors who wrote consumer code "
-            "against the prior 'position in tool_calls' wording need "
-            "to update — hence the contract version bump to 2."
-        )
+    def test_contract_version_is_at_least_2(self):
+        assert SDK_LLM_CONTRACT_VERSION >= 2
