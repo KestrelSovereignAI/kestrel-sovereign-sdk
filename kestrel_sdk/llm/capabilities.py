@@ -60,9 +60,12 @@ class ProviderCapabilities:
     supports_streaming: bool = False
     supports_vision: bool = False
     supports_structured_output: bool = False
+    supports_embeddings: bool = False
     structured_output_mode: StructuredOutputMode = StructuredOutputMode.NONE
     tool_streaming_mode: ToolStreamingMode = ToolStreamingMode.NONE
     vision_input_mode: VisionInputMode = VisionInputMode.NONE
+    embedding_model: str | None = None
+    embedding_dim: int | None = None
     model_dependent: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
 
@@ -89,6 +92,7 @@ class ProviderCapabilities:
             supports_structured_output=bool(
                 data.get("supports_structured_output", False)
             ),
+            supports_embeddings=bool(data.get("supports_embeddings", False)),
             structured_output_mode=_enum_value(
                 StructuredOutputMode,
                 data.get("structured_output_mode"),
@@ -104,6 +108,12 @@ class ProviderCapabilities:
                 data.get("vision_input_mode"),
                 VisionInputMode.NONE,
             ),
+            embedding_model=(
+                str(data["embedding_model"])
+                if data.get("embedding_model") is not None
+                else None
+            ),
+            embedding_dim=_positive_int_or_none(data.get("embedding_dim")),
             model_dependent=tuple(data.get("model_dependent") or ()),
             notes=tuple(data.get("notes") or ()),
         )
@@ -122,3 +132,13 @@ def _enum_value(
         return enum_type(str(value))
     except ValueError:
         return default
+
+
+def _positive_int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None

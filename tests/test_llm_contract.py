@@ -274,9 +274,12 @@ class TestProviderCapabilities:
         assert capabilities.supports_streaming is False
         assert capabilities.supports_vision is False
         assert capabilities.supports_structured_output is False
+        assert capabilities.supports_embeddings is False
         assert capabilities.structured_output_mode == StructuredOutputMode.NONE
         assert capabilities.tool_streaming_mode == ToolStreamingMode.NONE
         assert capabilities.vision_input_mode == VisionInputMode.NONE
+        assert capabilities.embedding_model is None
+        assert capabilities.embedding_dim is None
         assert capabilities.model_dependent == ()
         assert capabilities.notes == ()
 
@@ -286,9 +289,12 @@ class TestProviderCapabilities:
             supports_streaming=True,
             supports_vision=True,
             supports_structured_output=True,
+            supports_embeddings=True,
             structured_output_mode=StructuredOutputMode.JSON_SCHEMA,
             tool_streaming_mode=ToolStreamingMode.NATIVE_DELTA,
             vision_input_mode=VisionInputMode.OPENAI_IMAGE_URL,
+            embedding_model="text-embedding-3-small",
+            embedding_dim=1536,
             model_dependent=("vision",),
             notes=("model-dependent",),
         )
@@ -298,9 +304,12 @@ class TestProviderCapabilities:
             "supports_streaming": True,
             "supports_vision": True,
             "supports_structured_output": True,
+            "supports_embeddings": True,
             "structured_output_mode": "json_schema",
             "tool_streaming_mode": "native_delta",
             "vision_input_mode": "openai_image_url",
+            "embedding_model": "text-embedding-3-small",
+            "embedding_dim": 1536,
             "model_dependent": ["vision"],
             "notes": ["model-dependent"],
         }
@@ -312,9 +321,12 @@ class TestProviderCapabilities:
                 "supports_streaming": True,
                 "supports_vision": True,
                 "supports_structured_output": True,
+                "supports_embeddings": True,
                 "structured_output_mode": "json_schema",
                 "tool_streaming_mode": "native_delta",
                 "vision_input_mode": "openai_image_url",
+                "embedding_model": "text-embedding-004",
+                "embedding_dim": "768",
                 "model_dependent": ["vision"],
                 "notes": ["plugin"],
             }
@@ -324,6 +336,9 @@ class TestProviderCapabilities:
         assert capabilities.structured_output_mode == StructuredOutputMode.JSON_SCHEMA
         assert capabilities.tool_streaming_mode == ToolStreamingMode.NATIVE_DELTA
         assert capabilities.vision_input_mode == VisionInputMode.OPENAI_IMAGE_URL
+        assert capabilities.supports_embeddings is True
+        assert capabilities.embedding_model == "text-embedding-004"
+        assert capabilities.embedding_dim == 768
         assert capabilities.model_dependent == ("vision",)
         assert capabilities.notes == ("plugin",)
 
@@ -346,12 +361,14 @@ class TestProviderCapabilities:
                 "structured_output_mode": "typo",
                 "tool_streaming_mode": "typo",
                 "vision_input_mode": "typo",
+                "embedding_dim": "not-an-int",
             }
         )
 
         assert capabilities.structured_output_mode == StructuredOutputMode.NONE
         assert capabilities.tool_streaming_mode == ToolStreamingMode.NONE
         assert capabilities.vision_input_mode == VisionInputMode.NONE
+        assert capabilities.embedding_dim is None
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +771,34 @@ class TestLLMAdapterMetadataAreNonAbstract:
         assert adapter.key_env_var() is None
         assert adapter.deliberation_style() is None
         assert adapter.provider_capabilities() == ProviderCapabilities()
+        assert asyncio.run(adapter.aembed(None, "hello")) is None
+        assert asyncio.run(adapter.aembed_batch(None, ["hello", "world"])) == [None, None]
+
+    def test_common_embedding_contract_is_plain_float_vectors(self):
+        class Embedder(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse(content="echo")
+
+            async def aembed(self, client, text, *, model=None, **kwargs):
+                return [float(len(text)), 1.0]
+
+            def provider_capabilities(self):
+                return ProviderCapabilities(
+                    supports_embeddings=True,
+                    embedding_model="example-embed",
+                    embedding_dim=2,
+                )
+
+        adapter = Embedder()
+
+        assert asyncio.run(adapter.aembed(None, "abc")) == [3.0, 1.0]
+        assert asyncio.run(adapter.aembed_batch(None, ["a", "abcd"])) == [
+            [1.0, 1.0],
+            [4.0, 1.0],
+        ]
+        capabilities = adapter.provider_capabilities()
+        assert capabilities.supports_embeddings is True
+        assert capabilities.embedding_dim == 2
 
     def test_abstract_methods_unchanged(self):
         """Pinned: only get_response is abstract. Adding metadata
@@ -775,15 +820,17 @@ class TestLLMAdapterContractVersion:
         positional reading must update.
       * 3 — added ProviderCapabilities, ProviderInfo.capabilities, and
         LLMAdapter.provider_capabilities() (SDK 0.17.0).
+      * 4 — added provider-owned embeddings through a common
+        Optional[list[float]] / batch vector contract and embedding
+        capability metadata (SDK 0.18.0).
     """
 
-    def test_contract_version_is_3(self):
+    def test_contract_version_is_4(self):
         from kestrel_sdk.llm import SDK_LLM_CONTRACT_VERSION
 
-        assert SDK_LLM_CONTRACT_VERSION == 3, (
-            "SDK 0.17.0 bumps the LLM contract version from 2 to 3 to "
-            "publish provider capability metadata on the shared plugin "
-            "surface."
+        assert SDK_LLM_CONTRACT_VERSION == 4, (
+            "SDK 0.18.0 bumps the LLM contract version from 3 to 4 to "
+            "publish the common provider embedding surface."
         )
 
 
