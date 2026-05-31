@@ -263,6 +263,43 @@ class LLMAdapter(ABC):
             f"{self.__class__.__name__} does not support model listing"
         )
 
+    async def aembed(
+        self,
+        client: Any,
+        text: str,
+        *,
+        model: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Optional[List[float]]:
+        """Generate an embedding for ``text`` using this provider route.
+
+        Default returns ``None`` so chat-only providers remain conforming and
+        callers can degrade to keyword search. Providers that expose embedding
+        APIs should override this and declare ``supports_embeddings`` plus
+        ``embedding_model`` / ``embedding_dim`` in
+        :meth:`provider_capabilities`.
+        """
+        return None
+
+    async def aembed_batch(
+        self,
+        client: Any,
+        texts: List[str],
+        *,
+        model: Optional[str] = None,
+        **kwargs: Any,
+    ) -> List[Optional[List[float]]]:
+        """Generate embeddings for multiple texts.
+
+        Providers can override for native batch APIs. The default preserves a
+        single common embedding contract for adapters that only implement
+        :meth:`aembed`.
+        """
+        return [
+            await self.aembed(client, text, model=model, **kwargs)
+            for text in texts
+        ]
+
     def contribute_system_prompt(
         self,
         model_id: str,

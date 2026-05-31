@@ -58,6 +58,10 @@ from .types import BackendType
 # and LLMAdapter.provider_capabilities() so provider feature metadata lives in
 # the shared SDK contract.
 #
+# Version 4 (SDK 0.18.0): adds optional provider-owned embeddings via
+# LLMAdapter.aembed()/aembed_batch() and ProviderCapabilities embedding
+# metadata.
+#
 # Version 2 (SDK 0.8.0): clarifies the meaning of
 # :attr:`ToolCallStarted.index`. The dataclass shape is unchanged
 # from version 1, but the documented contract for *consumers* of
@@ -72,7 +76,7 @@ from .types import BackendType
 # read ``marker.index`` directly continue to work; plugins that
 # wrote consumer code against the old (positional) wording must
 # update to read by stream order.
-SDK_LLM_CONTRACT_VERSION = 3
+SDK_LLM_CONTRACT_VERSION = 4
 
 __all__ = [
     "BackendType",
