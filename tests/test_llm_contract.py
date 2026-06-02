@@ -275,6 +275,7 @@ class TestProviderCapabilities:
         assert capabilities.supports_vision is False
         assert capabilities.supports_structured_output is False
         assert capabilities.supports_embeddings is False
+        assert capabilities.supports_inline_system is False
         assert capabilities.structured_output_mode == StructuredOutputMode.NONE
         assert capabilities.tool_streaming_mode == ToolStreamingMode.NONE
         assert capabilities.vision_input_mode == VisionInputMode.NONE
@@ -290,6 +291,7 @@ class TestProviderCapabilities:
             supports_vision=True,
             supports_structured_output=True,
             supports_embeddings=True,
+            supports_inline_system=True,
             structured_output_mode=StructuredOutputMode.JSON_SCHEMA,
             tool_streaming_mode=ToolStreamingMode.NATIVE_DELTA,
             vision_input_mode=VisionInputMode.OPENAI_IMAGE_URL,
@@ -305,6 +307,7 @@ class TestProviderCapabilities:
             "supports_vision": True,
             "supports_structured_output": True,
             "supports_embeddings": True,
+            "supports_inline_system": True,
             "structured_output_mode": "json_schema",
             "tool_streaming_mode": "native_delta",
             "vision_input_mode": "openai_image_url",
@@ -322,6 +325,7 @@ class TestProviderCapabilities:
                 "supports_vision": True,
                 "supports_structured_output": True,
                 "supports_embeddings": True,
+                "supports_inline_system": True,
                 "structured_output_mode": "json_schema",
                 "tool_streaming_mode": "native_delta",
                 "vision_input_mode": "openai_image_url",
@@ -337,6 +341,7 @@ class TestProviderCapabilities:
         assert capabilities.tool_streaming_mode == ToolStreamingMode.NATIVE_DELTA
         assert capabilities.vision_input_mode == VisionInputMode.OPENAI_IMAGE_URL
         assert capabilities.supports_embeddings is True
+        assert capabilities.supports_inline_system is True
         assert capabilities.embedding_model == "text-embedding-004"
         assert capabilities.embedding_dim == 768
         assert capabilities.model_dependent == ("vision",)

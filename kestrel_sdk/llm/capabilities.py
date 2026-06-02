@@ -61,6 +61,7 @@ class ProviderCapabilities:
     supports_vision: bool = False
     supports_structured_output: bool = False
     supports_embeddings: bool = False
+    supports_inline_system: bool = False
     structured_output_mode: StructuredOutputMode = StructuredOutputMode.NONE
     tool_streaming_mode: ToolStreamingMode = ToolStreamingMode.NONE
     vision_input_mode: VisionInputMode = VisionInputMode.NONE
@@ -93,6 +94,9 @@ class ProviderCapabilities:
                 data.get("supports_structured_output", False)
             ),
             supports_embeddings=bool(data.get("supports_embeddings", False)),
+            supports_inline_system=bool(
+                data.get("supports_inline_system", False)
+            ),
             structured_output_mode=_enum_value(
                 StructuredOutputMode,
                 data.get("structured_output_mode"),
