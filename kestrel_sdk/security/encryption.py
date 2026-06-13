@@ -24,7 +24,7 @@ Provides:
 
 Key Hierarchy:
     KESTREL_DATA_KEY (env var or secrets file)
-        | (SHA-256 if passphrase)
+        | (PBKDF2-HMAC-SHA256 if passphrase)
     Master Key (32-byte raw key, base64-encodable for legacy Fernet shape)
         | (HKDF with agent DID as salt)
     Agent Key
@@ -38,10 +38,12 @@ import hashlib
 import base64
 import logging
 import os
+from pathlib import Path
 from typing import Optional, Dict, Tuple, Any
 
 from cryptography.fernet import Fernet  # validation-only: Fernet still used to detect raw-Fernet-key shape
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 
 from .aead import AEADCipher
@@ -61,6 +63,10 @@ logger = logging.getLogger(__name__)
 ENV_VAR_NAME = "KESTREL_DATA_KEY"
 KEY_SIZE = 32  # 256 bits
 NONCE_SIZE = 12  # 96 bits (legacy AES-GCM, kept for compatibility)
+PASSPHRASE_KDF_ITERATIONS = 600_000
+PASSPHRASE_SALT_SIZE = 32
+SALT_ENV_VAR_NAME = "KESTREL_DATA_KEY_SALT_FILE"
+DEFAULT_SALT_FILE = ".kestrel/kestrel_data_key.salt"
 
 # Valid purposes for purpose-specific encryption
 VALID_PURPOSES = frozenset([
@@ -137,6 +143,93 @@ def _get_data_key() -> Optional[str]:
     return None
 
 
+def _get_configured_key_file() -> Optional[str]:
+    """Return the configured key-file path only when it provides the data key."""
+    key_file = os.environ.get("KESTREL_DATA_KEY_FILE")
+    if key_file and _read_key_from_file(key_file):
+        return key_file
+    return None
+
+
+def _get_passphrase_salt_path() -> Path:
+    """Return the deterministic salt-file path for passphrase-derived keys."""
+    explicit = os.environ.get(SALT_ENV_VAR_NAME)
+    if explicit:
+        return Path(explicit).expanduser()
+
+    key_file = _get_configured_key_file()
+    if key_file:
+        return Path(key_file).expanduser().with_name(Path(key_file).name + ".salt")
+
+    return Path.home() / DEFAULT_SALT_FILE
+
+
+def _load_or_create_passphrase_salt() -> bytes:
+    """Load or persist the non-secret salt used for passphrase KDF."""
+    salt_path = _get_passphrase_salt_path()
+    if salt_path.is_file():
+        encoded = salt_path.read_text(encoding="utf-8").strip()
+        salt = base64.urlsafe_b64decode(encoded.encode("ascii"))
+        if len(salt) != PASSPHRASE_SALT_SIZE:
+            raise ValueError(
+                f"{salt_path} must contain a base64-encoded {PASSPHRASE_SALT_SIZE}-byte salt"
+            )
+        return salt
+
+    salt = os.urandom(PASSPHRASE_SALT_SIZE)
+    salt_path.parent.mkdir(parents=True, exist_ok=True)
+    salt_path.write_text(base64.urlsafe_b64encode(salt).decode("ascii"), encoding="utf-8")
+    try:
+        salt_path.chmod(0o600)
+    except OSError:
+        logger.debug("Could not chmod passphrase salt file %s", salt_path)
+    return salt
+
+
+def _is_fernet_key(key: str) -> bool:
+    """Return True when key is already a raw Fernet/AEAD key value."""
+    try:
+        Fernet(key.encode("ascii"))
+        return True
+    except Exception:
+        return False
+
+
+def _derive_passphrase_master_key(key: str) -> bytes:
+    """Derive the current salted PBKDF2 master key from a passphrase."""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=KEY_SIZE,
+        salt=_load_or_create_passphrase_salt(),
+        iterations=PASSPHRASE_KDF_ITERATIONS,
+    )
+    return kdf.derive(key.encode("utf-8"))
+
+
+def _derive_legacy_passphrase_master_key(key: str) -> bytes:
+    """Derive the pre-#26 unsalted SHA-256 master key for read fallback."""
+    return hashlib.sha256(key.encode("utf-8")).digest()
+
+
+class _ReadFallbackCipher:
+    """Cipher wrapper that writes with the current key and reads legacy data."""
+
+    __slots__ = ("_primary", "_legacy")
+
+    def __init__(self, primary: AEADCipher, legacy: AEADCipher):
+        self._primary = primary
+        self._legacy = legacy
+
+    def encrypt(self, plaintext: bytes | str, aad: Optional[bytes] = None) -> bytes:
+        return self._primary.encrypt(plaintext, aad=aad)
+
+    def decrypt(self, token: bytes | str, aad: Optional[bytes] = None) -> bytes:
+        try:
+            return self._primary.decrypt(token, aad=aad)
+        except DecryptionError:
+            return self._legacy.decrypt(token, aad=aad)
+
+
 def _get_master_key() -> bytes:
     """
     Get the master key, raising if not configured.
@@ -154,8 +247,23 @@ def _get_master_key() -> bytes:
             "Encryption requires this to be configured."
         )
 
-    # Normalize to 32 bytes via SHA-256
-    return hashlib.sha256(key.encode("utf-8")).digest()
+    if _is_fernet_key(key):
+        # Preserve the historical purpose-key behavior for raw Fernet-shaped
+        # KESTREL_DATA_KEY values; only passphrases move to PBKDF2.
+        return _derive_legacy_passphrase_master_key(key)
+
+    return _derive_passphrase_master_key(key)
+
+
+def _get_legacy_master_key() -> bytes:
+    """Get the legacy unsalted-SHA-256 master key for read fallback."""
+    key = _get_data_key()
+    if not key:
+        raise MasterKeyNotConfiguredError(
+            f"{ENV_VAR_NAME} environment variable is not set. "
+            "Encryption requires this to be configured."
+        )
+    return _derive_legacy_passphrase_master_key(key)
 
 
 # =============================================================================
@@ -180,14 +288,13 @@ def get_fernet() -> Optional[AEADCipher]:
     if not key:
         return None
 
-    try:
-        Fernet(key)  # Validate raw-Fernet-key shape
+    if _is_fernet_key(key):
         return AEADCipher(key)
-    except Exception as e:
-        # Derive a 32-byte key from passphrase using SHA-256
-        logger.debug(f"Key is not a raw Fernet key, deriving from passphrase: {e}")
-        digest = hashlib.sha256(key.encode('utf-8')).digest()
-        return AEADCipher(digest)
+
+    logger.debug("Key is not a raw Fernet key, deriving from passphrase")
+    primary = AEADCipher(_derive_passphrase_master_key(key))
+    legacy = AEADCipher(_derive_legacy_passphrase_master_key(key))
+    return _ReadFallbackCipher(primary, legacy)  # type: ignore[return-value]
 
 
 def get_master_key_bytes() -> Optional[bytes]:
@@ -207,14 +314,33 @@ def get_master_key_bytes() -> Optional[bytes]:
     if not key:
         return None
 
-    try:
-        key_bytes = key.encode() if isinstance(key, str) else key
-        Fernet(key_bytes)  # Validate raw-Fernet-key shape
+    if _is_fernet_key(key):
+        key_bytes = key.encode()
         return key_bytes
-    except Exception as e:
-        logger.debug(f"Key is not a raw Fernet key, deriving bytes from passphrase: {e}")
-        digest = hashlib.sha256(key.encode('utf-8')).digest()
-        return base64.urlsafe_b64encode(digest)
+
+    logger.debug("Key is not a raw Fernet key, deriving bytes from passphrase")
+    return base64.urlsafe_b64encode(_derive_passphrase_master_key(key))
+
+
+def _get_legacy_master_key_bytes() -> Optional[bytes]:
+    """Get legacy passphrase master bytes for read fallback."""
+    key = _get_data_key()
+    if not key:
+        return None
+    if _is_fernet_key(key):
+        return key.encode()
+    return base64.urlsafe_b64encode(_derive_legacy_passphrase_master_key(key))
+
+
+def _derive_agent_cipher_key(master: bytes, agent_id: str) -> bytes:
+    """Derive the get_agent_fernet per-agent key from master bytes."""
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=KEY_SIZE,
+        salt=agent_id.encode("utf-8"),
+        info=b"kestrel-agent-v1",
+    )
+    return hkdf.derive(master)
 
 
 def get_agent_fernet(agent_id: str) -> Optional[AEADCipher]:
@@ -238,14 +364,13 @@ def get_agent_fernet(agent_id: str) -> Optional[AEADCipher]:
         return get_fernet()
 
     try:
-        hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=agent_id.encode('utf-8'),
-            info=b"kestrel-agent-v1"
-        )
-        derived = hkdf.derive(master)
-        return AEADCipher(derived)
+        derived = _derive_agent_cipher_key(master, agent_id)
+        cipher = AEADCipher(derived)
+        legacy_master = _get_legacy_master_key_bytes()
+        if legacy_master and legacy_master != master:
+            legacy = AEADCipher(_derive_agent_cipher_key(legacy_master, agent_id))
+            return _ReadFallbackCipher(cipher, legacy)  # type: ignore[return-value]
+        return cipher
     except Exception as e:
         logger.error(f"Failed to derive agent key: {e}")
         return None
@@ -279,8 +404,10 @@ def get_agent_key(agent_did: str, purpose: str) -> bytes:
             f"Invalid purpose '{purpose}'. Must be one of: {', '.join(sorted(VALID_PURPOSES))}"
         )
 
-    master_key = _get_master_key()
+    return _derive_purpose_key(_get_master_key(), agent_did, purpose)
 
+
+def _derive_purpose_key(master_key: bytes, agent_did: str, purpose: str) -> bytes:
     # First HKDF: derive agent master key
     hkdf_agent = HKDF(
         algorithm=hashes.SHA256(),
@@ -299,6 +426,11 @@ def get_agent_key(agent_did: str, purpose: str) -> bytes:
         info=info,
     )
     return hkdf_purpose.derive(agent_master_key)
+
+
+def _get_legacy_agent_key(agent_did: str, purpose: str) -> bytes:
+    """Derive the pre-#26 purpose key for decrypt-only fallback."""
+    return _derive_purpose_key(_get_legacy_master_key(), agent_did, purpose)
 
 
 def encrypt(agent_did: str, purpose: str, plaintext: bytes) -> bytes:
@@ -320,8 +452,17 @@ def decrypt(agent_did: str, purpose: str, ciphertext: bytes) -> bytes:
     key = get_agent_key(agent_did, purpose)
     try:
         return AEADCipher(key).decrypt(ciphertext)
-    except DecryptionError:
-        raise
+    except DecryptionError as primary_error:
+        try:
+            legacy_key = _get_legacy_agent_key(agent_did, purpose)
+        except Exception:
+            raise primary_error
+        if legacy_key == key:
+            raise primary_error
+        try:
+            return AEADCipher(legacy_key).decrypt(ciphertext)
+        except DecryptionError:
+            raise primary_error
     except Exception as e:
         raise DecryptionError(f"Decryption failed: {e}") from e
 
