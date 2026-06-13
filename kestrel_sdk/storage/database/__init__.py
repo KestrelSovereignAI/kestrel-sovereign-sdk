@@ -5,7 +5,7 @@ implementations from the contract that feature packages develop against:
 
 * `DatabaseBackend` — async ABC for execute/fetch/transaction (sqlite-style ?
   placeholders, the backend rewrites for PostgreSQL).
-* `PrivacyMode` — the canonical 5-mode enum used across the agent.
+* `PrivacyMode` — the canonical 6-mode enum used across the agent.
 * `EngineTarget` + `resolve_engine_target` — translates a privacy mode into
   the concrete SQLAlchemy URL a feature package should bind its ORM engine to.
 

@@ -39,7 +39,7 @@ develop against `kestrel_sdk.storage.database`:
 ```python
 from kestrel_sdk.storage.database import (
     DatabaseBackend,           # async ABC: execute / fetch_* / transaction
-    PrivacyMode,               # 5-mode enum
+    PrivacyMode,               # 6-mode enum
     EngineTarget,              # frozen dataclass: url, persistent, description
     resolve_engine_target,     # PrivacyMode + fallback_url -> EngineTarget
 )
