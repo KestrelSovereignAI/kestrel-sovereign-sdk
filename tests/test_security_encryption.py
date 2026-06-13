@@ -149,6 +149,40 @@ def test_key_file_passphrase_persists_salt_next_to_key(monkeypatch, tmp_path):
     assert key_file.with_name(key_file.name + ".salt").is_file()
 
 
+def test_key_file_passphrase_salt_write_failure_falls_back_to_legacy(monkeypatch, caplog, tmp_path):
+    key_file = tmp_path / "kestrel_data_key"
+    passphrase = "read only secret mount passphrase"
+    key_file.write_text(passphrase, encoding="utf-8")
+    real_write_text = encryption.Path.write_text
+
+    def fail_salt_write(self, *args, **kwargs):
+        if str(self).endswith(".salt"):
+            raise OSError("read-only secret mount")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setenv("KESTREL_DATA_KEY_FILE", str(key_file))
+    monkeypatch.delenv(encryption.ENV_VAR_NAME, raising=False)
+    monkeypatch.delenv(encryption.SALT_VALUE_ENV_VAR_NAME, raising=False)
+    monkeypatch.delenv(encryption.SALT_ENV_VAR_NAME, raising=False)
+    monkeypatch.setattr(encryption.Path, "write_text", fail_salt_write)
+
+    first = encryption.get_master_key_bytes()
+    second = encryption.get_master_key_bytes()
+    legacy = base64.urlsafe_b64encode(hashlib.sha256(passphrase.encode("utf-8")).digest())
+
+    assert first == legacy
+    assert second == legacy
+    assert not key_file.with_name(key_file.name + ".salt").exists()
+    assert caplog.text.count("legacy unsalted SHA-256 mode") == 1
+
+    agent_did = "did:key:z6MkReadOnlySecret"
+    purpose = "conversations"
+    ciphertext = encryption.encrypt(agent_did, purpose, b"legacy write")
+
+    assert encryption.decrypt(agent_did, purpose, ciphertext) == b"legacy write"
+    assert AEADCipher(_old_purpose_key(passphrase, agent_did, purpose)).decrypt(ciphertext) == b"legacy write"
+
+
 def test_passphrase_master_key_is_cached_for_encrypt_decrypt(monkeypatch):
     passphrase = "cached deployment passphrase"
     salt = base64.urlsafe_b64encode(b"\x24" * encryption.PASSPHRASE_SALT_SIZE).decode("ascii")

@@ -182,16 +182,20 @@ def _load_passphrase_salt_file(salt_path: Path) -> bytes:
     )
 
 
-def _load_or_create_key_file_salt(key_file: str) -> bytes:
+def _load_or_create_key_file_salt(key_file: str) -> Optional[bytes]:
     """Load or persist a passphrase salt next to KESTREL_DATA_KEY_FILE."""
     salt_path = Path(key_file).expanduser().with_name(Path(key_file).name + ".salt")
     if salt_path.is_file():
         return _load_passphrase_salt_file(salt_path)
 
     salt = os.urandom(PASSPHRASE_SALT_SIZE)
-    salt_path.parent.mkdir(parents=True, exist_ok=True)
-    salt_path.write_text(base64.urlsafe_b64encode(salt).decode("ascii"), encoding="utf-8")
-    _chmod_salt_file(salt_path)
+    try:
+        salt_path.parent.mkdir(parents=True, exist_ok=True)
+        salt_path.write_text(base64.urlsafe_b64encode(salt).decode("ascii"), encoding="utf-8")
+        _chmod_salt_file(salt_path)
+    except OSError:
+        logger.debug("Could not create passphrase salt file %s", salt_path)
+        return None
     return salt
 
 
@@ -278,7 +282,8 @@ def _warn_passphrase_without_salt_once() -> None:
     logger.warning(
         "Passphrase KESTREL_DATA_KEY is running in legacy unsalted SHA-256 mode "
         "because no KESTREL_DATA_KEY_SALT or KESTREL_DATA_KEY_SALT_FILE is configured. "
-        "Configure a shared base64-encoded 32-byte salt to enable PBKDF2-HMAC-SHA256."
+        "Configure KESTREL_DATA_KEY_SALT or a writable KESTREL_DATA_KEY_SALT_FILE "
+        "with a shared base64-encoded 32-byte salt to enable PBKDF2-HMAC-SHA256."
     )
     _PASSPHRASE_NO_SALT_WARNING_EMITTED = True
 
