@@ -1,8 +1,7 @@
 """Privacy → engine target mapping for feature ORM packages.
 
-The framework's full `PrivacyConfig` (storage, llm_location, shareable,
-computer_access) lives in `kestrel_sovereign.privacy` and stays sovereign-
-private. The SDK exposes only the 5-mode enum and a deterministic mapping
+The framework's full `PrivacyConfig` lives in `kestrel_sovereign.privacy`
+and stays sovereign-private. The SDK exposes only the 6-mode enum and a deterministic mapping
 from mode → SQLAlchemy URL so feature packages (e.g. `kestrel-feature-
 entities`) can bind their ORM engine to the same target the agent uses.
 
@@ -13,6 +12,11 @@ Mapping:
   ANONYMOUS  → fallback_url                                    (persistent)
   NORMAL     → fallback_url                                    (persistent)
   PUBLIC     → fallback_url                                    (persistent)
+  DEIDENTIFIED → fallback_url                                  (persistent)
+
+The SDK only resolves the engine target. It does not transform PHI/PII or
+create de-identification evidence artifacts; sovereign and feature packages
+must enforce those higher-level semantics before writing data.
 
 Volatile modes intentionally ignore `fallback_url` — that is the entire
 point of EPHEMERAL/ISOLATED. A feature package that calls
@@ -35,10 +39,11 @@ import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Union
+from urllib.parse import urlsplit, urlunsplit
 
 
 class PrivacyMode(str, Enum):
-    """5-mode privacy enum shared by sovereign and feature packages.
+    """6-mode privacy enum shared by sovereign and feature packages.
 
     Inherits from `str` so values round-trip through TOML/JSON/CLI flags
     without explicit conversion (``PrivacyMode("normal")`` works, and
@@ -50,6 +55,23 @@ class PrivacyMode(str, Enum):
     ANONYMOUS = "anonymous"
     NORMAL = "normal"
     PUBLIC = "public"
+    DEIDENTIFIED = "deidentified"
+
+
+def _redact_url_for_description(url: str) -> str:
+    """Return a log-safe URL description without inline credentials."""
+    try:
+        parts = urlsplit(url)
+        if not parts.netloc:
+            return url
+        host = parts.hostname or ""
+        if parts.port is not None:
+            host = f"{host}:{parts.port}"
+    except (TypeError, ValueError):
+        return "<redacted-url>"
+    if "@" in parts.netloc:
+        host = f"<credentials>@{host}"
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 
 @dataclass(frozen=True)
@@ -103,7 +125,7 @@ def resolve_engine_target(
 
     Volatile modes (EPHEMERAL, ISOLATED) ignore ``fallback_url`` and
     return process-local storage (in-memory or a tempfile). Persistent
-    modes (ANONYMOUS, NORMAL, PUBLIC) pass ``fallback_url`` through
+    modes (ANONYMOUS, NORMAL, PUBLIC, DEIDENTIFIED) pass ``fallback_url`` through
     unchanged — caller chose it.
 
     Args:
@@ -164,7 +186,10 @@ def resolve_engine_target(
     return EngineTarget(
         url=fallback_url,
         persistent=True,
-        description=f"persistent ({mode.value}): {fallback_url}",
+        description=(
+            f"persistent ({mode.value}): "
+            f"{_redact_url_for_description(fallback_url)}"
+        ),
     )
 
 

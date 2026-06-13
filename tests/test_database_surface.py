@@ -61,6 +61,7 @@ def test_privacy_mode_string_round_trip():
         "anonymous",
         "normal",
         "public",
+        "deidentified",
     }
 
 
@@ -102,7 +103,12 @@ def test_non_isolated_cleanup_is_noop():
 
 
 @pytest.mark.parametrize(
-    "mode", [PrivacyMode.ANONYMOUS, PrivacyMode.NORMAL, PrivacyMode.PUBLIC]
+    "mode", [
+        PrivacyMode.ANONYMOUS,
+        PrivacyMode.NORMAL,
+        PrivacyMode.PUBLIC,
+        PrivacyMode.DEIDENTIFIED,
+    ]
 )
 def test_resolve_persistent_modes_pass_fallback_through(mode):
     target = resolve_engine_target(mode, "postgresql+asyncpg://u:p@h/db")
@@ -110,10 +116,23 @@ def test_resolve_persistent_modes_pass_fallback_through(mode):
     assert target.persistent is True
     assert target.cleanup_path is None
     assert mode.value in target.description
+    assert "u:p" not in target.description
+    assert "<credentials>@h" in target.description
+
+
+def test_resolve_description_redaction_does_not_validate_url_port():
+    target = resolve_engine_target(
+        PrivacyMode.NORMAL,
+        "postgresql+asyncpg://user:pass@host:notaport/db",
+    )
+
+    assert target.url == "postgresql+asyncpg://user:pass@host:notaport/db"
+    assert target.persistent is True
+    assert target.description == "persistent (normal): <redacted-url>"
 
 
 @pytest.mark.parametrize(
-    "mode_value", ["anonymous", "normal", "public"]
+    "mode_value", ["anonymous", "normal", "public", "deidentified"]
 )
 def test_resolve_accepts_raw_string_for_persistent_modes(mode_value):
     target = resolve_engine_target(mode_value, "postgresql+asyncpg://u:p@h/db")
@@ -154,7 +173,12 @@ def test_resolve_accepts_unrelated_enum_with_matching_value():
 
 
 @pytest.mark.parametrize(
-    "mode", [PrivacyMode.ANONYMOUS, PrivacyMode.NORMAL, PrivacyMode.PUBLIC]
+    "mode", [
+        PrivacyMode.ANONYMOUS,
+        PrivacyMode.NORMAL,
+        PrivacyMode.PUBLIC,
+        PrivacyMode.DEIDENTIFIED,
+    ]
 )
 @pytest.mark.parametrize("bad", [None, "", "   ", "\t\n"])
 def test_resolve_persistent_requires_non_blank_fallback(mode, bad):
