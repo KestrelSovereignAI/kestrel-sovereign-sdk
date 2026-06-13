@@ -65,8 +65,8 @@ KEY_SIZE = 32  # 256 bits
 NONCE_SIZE = 12  # 96 bits (legacy AES-GCM, kept for compatibility)
 PASSPHRASE_KDF_ITERATIONS = 600_000
 PASSPHRASE_SALT_SIZE = 32
+SALT_VALUE_ENV_VAR_NAME = "KESTREL_DATA_KEY_SALT"
 SALT_ENV_VAR_NAME = "KESTREL_DATA_KEY_SALT_FILE"
-DEFAULT_SALT_FILE = ".kestrel/kestrel_data_key.salt"
 
 # Valid purposes for purpose-specific encryption
 VALID_PURPOSES = frozenset([
@@ -75,6 +75,8 @@ VALID_PURPOSES = frozenset([
     "wallet",
     "backup",
 ])
+
+_PASSPHRASE_MASTER_KEY_CACHE: Dict[Tuple[bytes, bytes], bytes] = {}
 
 
 # =============================================================================
@@ -151,30 +153,38 @@ def _get_configured_key_file() -> Optional[str]:
     return None
 
 
-def _get_passphrase_salt_path() -> Path:
-    """Return the deterministic salt-file path for passphrase-derived keys."""
-    explicit = os.environ.get(SALT_ENV_VAR_NAME)
-    if explicit:
-        return Path(explicit).expanduser()
+def _decode_passphrase_salt(encoded: str, source: str) -> bytes:
+    """Decode and validate a configured base64 passphrase salt."""
+    try:
+        salt = base64.urlsafe_b64decode(encoded.encode("ascii"))
+    except Exception as e:
+        raise ValueError(
+            f"{source} must contain a base64-encoded {PASSPHRASE_SALT_SIZE}-byte salt"
+        ) from e
+    if len(salt) != PASSPHRASE_SALT_SIZE:
+        raise ValueError(
+            f"{source} must contain a base64-encoded {PASSPHRASE_SALT_SIZE}-byte salt"
+        )
+    return salt
 
-    key_file = _get_configured_key_file()
-    if key_file:
-        return Path(key_file).expanduser().with_name(Path(key_file).name + ".salt")
 
-    return Path.home() / DEFAULT_SALT_FILE
-
-
-def _load_or_create_passphrase_salt() -> bytes:
-    """Load or persist the non-secret salt used for passphrase KDF."""
-    salt_path = _get_passphrase_salt_path()
+def _load_passphrase_salt_file(salt_path: Path) -> bytes:
+    """Load the non-secret salt used for passphrase KDF from a file."""
     if salt_path.is_file():
         encoded = salt_path.read_text(encoding="utf-8").strip()
-        salt = base64.urlsafe_b64decode(encoded.encode("ascii"))
-        if len(salt) != PASSPHRASE_SALT_SIZE:
-            raise ValueError(
-                f"{salt_path} must contain a base64-encoded {PASSPHRASE_SALT_SIZE}-byte salt"
-            )
-        return salt
+        return _decode_passphrase_salt(encoded, str(salt_path))
+
+    raise MasterKeyNotConfiguredError(
+        f"{SALT_ENV_VAR_NAME} points to {salt_path}, but that salt file does not exist. "
+        "Create it with a shared base64-encoded 32-byte salt before using a passphrase key."
+    )
+
+
+def _load_or_create_key_file_salt(key_file: str) -> bytes:
+    """Load or persist a passphrase salt next to KESTREL_DATA_KEY_FILE."""
+    salt_path = Path(key_file).expanduser().with_name(Path(key_file).name + ".salt")
+    if salt_path.is_file():
+        return _load_passphrase_salt_file(salt_path)
 
     salt = os.urandom(PASSPHRASE_SALT_SIZE)
     salt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -184,6 +194,40 @@ def _load_or_create_passphrase_salt() -> bytes:
     except OSError:
         logger.debug("Could not chmod passphrase salt file %s", salt_path)
     return salt
+
+
+def _load_passphrase_salt() -> bytes:
+    """
+    Resolve the salt for passphrase-derived master keys.
+
+    Explicit ``KESTREL_DATA_KEY_SALT`` must be a base64-encoded 32-byte value.
+    Explicit ``KESTREL_DATA_KEY_SALT_FILE`` must point to an existing file
+    containing that value. When ``KESTREL_DATA_KEY_FILE`` supplies the
+    passphrase, the SDK creates or reuses a sibling ``.salt`` file so the key
+    and salt live on the same persistent secret volume. A bare
+    ``KESTREL_DATA_KEY`` passphrase has no stable salt source, so it fails
+    loudly instead of creating per-host state that would break shared storage.
+    """
+    explicit_salt = os.environ.get(SALT_VALUE_ENV_VAR_NAME)
+    if explicit_salt:
+        return _decode_passphrase_salt(
+            _strip_quotes(explicit_salt).strip(),
+            SALT_VALUE_ENV_VAR_NAME,
+        )
+
+    explicit_salt_file = os.environ.get(SALT_ENV_VAR_NAME)
+    if explicit_salt_file:
+        return _load_passphrase_salt_file(Path(explicit_salt_file).expanduser())
+
+    key_file = _get_configured_key_file()
+    if key_file:
+        return _load_or_create_key_file_salt(key_file)
+
+    raise MasterKeyNotConfiguredError(
+        f"Passphrase {ENV_VAR_NAME} requires {SALT_VALUE_ENV_VAR_NAME} or {SALT_ENV_VAR_NAME}. "
+        "Configure a shared base64-encoded 32-byte salt; the SDK will not create "
+        "a per-host salt for environment-only passphrases."
+    )
 
 
 def _is_fernet_key(key: str) -> bool:
@@ -197,13 +241,21 @@ def _is_fernet_key(key: str) -> bool:
 
 def _derive_passphrase_master_key(key: str) -> bytes:
     """Derive the current salted PBKDF2 master key from a passphrase."""
+    salt = _load_passphrase_salt()
+    cache_key = (hashlib.sha256(key.encode("utf-8")).digest(), salt)
+    cached = _PASSPHRASE_MASTER_KEY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=KEY_SIZE,
-        salt=_load_or_create_passphrase_salt(),
+        salt=salt,
         iterations=PASSPHRASE_KDF_ITERATIONS,
     )
-    return kdf.derive(key.encode("utf-8"))
+    derived = kdf.derive(key.encode("utf-8"))
+    _PASSPHRASE_MASTER_KEY_CACHE[cache_key] = derived
+    return derived
 
 
 def _derive_legacy_passphrase_master_key(key: str) -> bytes:
@@ -248,9 +300,9 @@ def _get_master_key() -> bytes:
         )
 
     if _is_fernet_key(key):
-        # Preserve the historical purpose-key behavior for raw Fernet-shaped
-        # KESTREL_DATA_KEY values; only passphrases move to PBKDF2.
-        return _derive_legacy_passphrase_master_key(key)
+        # Fernet keys are base64-encoded 32-byte values; decode to get
+        # the raw key material for HKDF derivation (same as AEADCipher does).
+        return base64.urlsafe_b64decode(key.encode("ascii"))
 
     return _derive_passphrase_master_key(key)
 
@@ -263,6 +315,9 @@ def _get_legacy_master_key() -> bytes:
             f"{ENV_VAR_NAME} environment variable is not set. "
             "Encryption requires this to be configured."
         )
+    if _is_fernet_key(key):
+        # Fernet keys have no legacy derivation - decode to 32 bytes (same as current)
+        return base64.urlsafe_b64decode(key.encode("ascii"))
     return _derive_legacy_passphrase_master_key(key)
 
 
@@ -355,8 +410,9 @@ def get_agent_fernet(agent_id: str) -> Optional[AEADCipher]:
     Returns:
         AEADCipher with agent-specific key, or None if no master key.
     """
-    master = get_master_key_bytes()
-    if not master:
+    try:
+        master = _get_master_key()
+    except MasterKeyNotConfiguredError:
         return None
 
     if not agent_id:
@@ -366,8 +422,11 @@ def get_agent_fernet(agent_id: str) -> Optional[AEADCipher]:
     try:
         derived = _derive_agent_cipher_key(master, agent_id)
         cipher = AEADCipher(derived)
-        legacy_master = _get_legacy_master_key_bytes()
-        if legacy_master and legacy_master != master:
+        try:
+            legacy_master = _get_legacy_master_key()
+        except MasterKeyNotConfiguredError:
+            return cipher
+        if legacy_master != master:
             legacy = AEADCipher(_derive_agent_cipher_key(legacy_master, agent_id))
             return _ReadFallbackCipher(cipher, legacy)  # type: ignore[return-value]
         return cipher
