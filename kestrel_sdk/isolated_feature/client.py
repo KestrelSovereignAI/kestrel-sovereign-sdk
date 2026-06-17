@@ -183,7 +183,11 @@ class SubprocessIsolatedFeatureClient:
             *self.command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            # Inherit the parent's stderr rather than PIPE: a service that logs
+            # to stderr would otherwise fill an unread pipe buffer and block,
+            # hanging the JSON-RPC protocol on stdout. Inheriting keeps the
+            # service's logs visible to the host and removes the deadlock.
+            stderr=None,
             env=self.env,
             cwd=self.cwd,
         )
@@ -215,7 +219,12 @@ class SubprocessIsolatedFeatureClient:
         client = self.client
         if client is not None:
             try:
-                await client.shutdown()
+                # Bound the graceful-shutdown RPC: if the child is wedged or no
+                # longer reading stdin, an unbounded wait would never reach the
+                # terminate/kill fallback below.
+                await asyncio.wait_for(client.shutdown(), timeout=3)
+            except Exception:
+                pass  # wedged/already-closed — fall through to terminate/kill
             finally:
                 await client.close()
         if process is not None and process.returncode is None:
