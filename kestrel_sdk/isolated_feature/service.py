@@ -46,6 +46,36 @@ class IsolatedFeatureService:
         self._handlers: dict[str, ToolHandler] = {}
         self._writer: Any = None
         self._stopping = False
+        # Host-provided configuration delivered through the initialize handshake.
+        # Empty until the host calls initialize with a ``config`` param, at which
+        # point it is populated and ``configure()`` runs.
+        self.host_config: dict[str, Any] = {}
+        self._channel_capability: dict[str, Any] | None = None
+
+    def advertise_channel(
+        self,
+        *,
+        channel_type: str,
+        send_tool: str,
+        status_tool: str | None = None,
+    ) -> None:
+        """Declare that this service backs a messaging channel.
+
+        The host bridges this into ``ChannelFeature.registry`` as a forwarding
+        adapter so the generic channels API (``channels_send``/``channels_list``)
+        works against an isolated channel feature. ``send_tool`` is the
+        registered tool the adapter calls to send (it must accept ``to`` and
+        ``message`` arguments); ``status_tool`` is an optional tool used to
+        report live link state.
+        """
+
+        capability: dict[str, Any] = {
+            "channel_type": channel_type,
+            "send_tool": send_tool,
+        }
+        if status_tool is not None:
+            capability["status_tool"] = status_tool
+        self._channel_capability = capability
 
     def register_tool(self, metadata: ToolMetadata, handler: ToolHandler) -> None:
         """Register one callable tool and its advertised metadata."""
@@ -69,11 +99,26 @@ class IsolatedFeatureService:
             raise ProtocolError(
                 f"unsupported protocolVersion {requested!r}; expected {self.protocol_version!r}"
             )
+        config = params.get("config")
+        if isinstance(config, dict):
+            self.host_config = config
+            await self.configure(config)
+        capabilities: dict[str, Any] = {"tools": True, "events": True}
+        if self._channel_capability is not None:
+            capabilities["channel"] = dict(self._channel_capability)
         return {
             "protocolVersion": self.protocol_version,
             "serverInfo": {"name": self.name, "version": self.version},
-            "capabilities": {"tools": True, "events": True},
+            "capabilities": capabilities,
         }
+
+    async def configure(self, config: dict[str, Any]) -> None:
+        """Apply host-provided configuration from the initialize handshake.
+
+        Override to consume persisted/UI feature config that the host forwards
+        (the service is launched as a bare process, so this handshake is the
+        only path for non-environment configuration). Default is a no-op.
+        """
 
     async def on_shutdown(self) -> dict[str, Any]:
         self._stopping = True

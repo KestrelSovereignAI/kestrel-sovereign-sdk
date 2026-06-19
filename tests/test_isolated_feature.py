@@ -182,3 +182,57 @@ def test_feature_event_notification_round_trip():
     assert isinstance(message, JsonRpcNotification)
     assert message.method == FEATURE_EVENT
     assert message.params == {"type": "ready"}
+
+
+@pytest.mark.asyncio
+async def test_initialize_forwards_host_config_to_service():
+    """Host config in the initialize handshake reaches the service and drives configure()."""
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+
+    applied: list[dict] = []
+
+    class ConfigurableService(IsolatedFeatureService):
+        async def configure(self, config):
+            applied.append(config)
+
+    service = ConfigurableService(name="fake-feature", version="1.0.0")
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(host_reader, host_writer)
+
+    try:
+        await client.initialize(config={"provider": "web", "allowed_senders": ["+1303"]})
+        assert applied == [{"provider": "web", "allowed_senders": ["+1303"]}]
+        assert service.host_config == {"provider": "web", "allowed_senders": ["+1303"]}
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_service_advertises_channel_capability():
+    """A channel-backing service surfaces its bridge metadata via initialize capabilities."""
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+
+    service = IsolatedFeatureService(name="wa-feature", version="1.0.0")
+    service.advertise_channel(
+        channel_type="whatsapp",
+        send_tool="whatsapp_send",
+        status_tool="whatsapp_status",
+    )
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(host_reader, host_writer)
+
+    try:
+        initialized = await client.initialize()
+        assert initialized["capabilities"]["channel"] == {
+            "channel_type": "whatsapp",
+            "send_tool": "whatsapp_send",
+            "status_tool": "whatsapp_status",
+        }
+        # client caches capabilities for the host-side bridge
+        assert client.capabilities["channel"]["channel_type"] == "whatsapp"
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
