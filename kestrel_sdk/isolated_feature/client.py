@@ -56,15 +56,21 @@ class IsolatedFeatureClient:
     def on_event(self, handler: EventHandler) -> None:
         self._event_handlers.append(handler)
 
-    async def initialize(self, client_info: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def initialize(
+        self,
+        client_info: dict[str, Any] | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         await self.start()
-        result = await self.request(
-            INITIALIZE,
-            {
-                "protocolVersion": self.protocol_version,
-                "clientInfo": client_info or {"name": "kestrel-sdk-host"},
-            },
-        )
+        params: dict[str, Any] = {
+            "protocolVersion": self.protocol_version,
+            "clientInfo": client_info or {"name": "kestrel-sdk-host"},
+        }
+        if config is not None:
+            # Forward host-side feature config so it reaches the isolated service,
+            # which is otherwise launched with no configuration but env vars.
+            params["config"] = config
+        result = await self.request(INITIALIZE, params)
         if not isinstance(result, dict):
             raise ProtocolError("initialize result must be an object")
         if result.get("protocolVersion") != self.protocol_version:
@@ -172,6 +178,9 @@ class SubprocessIsolatedFeatureClient:
     cwd: str | None = None
     protocol_version: str = PROTOCOL_VERSION
     ready_timeout: float = 10.0
+    # Appended after the existing fields to keep the dataclass-generated
+    # positional constructor backward-compatible for feature packages.
+    config: dict[str, Any] | None = None
 
     process: asyncio.subprocess.Process | None = None
     client: IsolatedFeatureClient | None = None
@@ -198,9 +207,15 @@ class SubprocessIsolatedFeatureClient:
             self.process.stdin,
             protocol_version=self.protocol_version,
         )
-        await self.client.initialize()
+        await self.client.initialize(config=self.config)
         await self._wait_until_ready()
         await self.client.list_tools()
+
+    @property
+    def capabilities(self) -> dict[str, Any]:
+        """Capabilities advertised by the service in the initialize handshake."""
+
+        return self.client.capabilities if self.client is not None else {}
 
     async def health(self) -> dict[str, Any]:
         return await self._require_client().health()
