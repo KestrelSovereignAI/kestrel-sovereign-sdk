@@ -176,9 +176,11 @@ class SubprocessIsolatedFeatureClient:
     command: Sequence[str]
     env: dict[str, str] | None = None
     cwd: str | None = None
-    config: dict[str, Any] | None = None
     protocol_version: str = PROTOCOL_VERSION
     ready_timeout: float = 10.0
+    # Appended after the existing fields to keep the dataclass-generated
+    # positional constructor backward-compatible for feature packages.
+    config: dict[str, Any] | None = None
 
     process: asyncio.subprocess.Process | None = None
     client: IsolatedFeatureClient | None = None
