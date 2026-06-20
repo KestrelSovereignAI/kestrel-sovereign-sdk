@@ -54,10 +54,6 @@ class IsolatedFeatureClient:
         self._next_id = 0
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._event_handlers: list[EventHandler] = []
-        # The first handler registered; buffered startup events are replayed only
-        # to it (later subscribers don't receive events emitted before they
-        # subscribed).
-        self._first_handler: EventHandler | None = None
         self._read_task: asyncio.Task[None] | None = None
         # Notifications that arrive before any handler is registered are buffered
         # and flushed to the first handler. A service may emit feature events
@@ -75,26 +71,26 @@ class IsolatedFeatureClient:
     def on_event(self, handler: EventHandler) -> None:
         first_handler = not self._event_handlers
         self._event_handlers.append(handler)
-        if first_handler:
-            self._first_handler = handler
-            if self._pending_notifications:
-                asyncio.create_task(self._drain_pending())
+        if first_handler and self._pending_notifications:
+            asyncio.create_task(self._drain_pending())
 
     async def _drain_pending(self) -> None:
         async with self._event_lock:
-            await self._replay_buffered()
+            await self._flush_buffer()
 
-    async def _replay_buffered(self) -> None:
-        """Deliver buffered (pre-subscribe) events to the first handler only."""
+    async def _flush_buffer(self) -> None:
+        """Deliver buffered (pre-subscribe) events to current handlers, in order.
+
+        Buffering covers the startup window before any handler is registered;
+        handlers SHOULD subscribe immediately after start. Events emitted while
+        no handler was registered are delivered to the handlers present when the
+        buffer flushes (best effort — the wire/read-loop boundary between
+        "buffered" and "live" is not otherwise observable).
+        """
         buffered = self._pending_notifications
         self._pending_notifications = deque(maxlen=_MAX_PENDING_EVENTS)
-        handler = self._first_handler
-        if handler is None:
-            return
         for params in buffered:
-            result = handler(params)
-            if asyncio.iscoroutine(result):
-                await result
+            await self._dispatch_event(params)
 
     async def _dispatch_event(self, params: dict[str, Any]) -> None:
         for handler in list(self._event_handlers):
@@ -216,10 +212,9 @@ class IsolatedFeatureClient:
                 self._pending_notifications.append(notification.params)
                 return
             # Deliver any still-buffered events first so stream order is kept even
-            # if a live event arrives before _drain_pending runs (to the first
-            # handler only — they predate later subscribers).
+            # if a live event arrives before _drain_pending runs.
             if self._pending_notifications:
-                await self._replay_buffered()
+                await self._flush_buffer()
             await self._dispatch_event(notification.params)
 
 
