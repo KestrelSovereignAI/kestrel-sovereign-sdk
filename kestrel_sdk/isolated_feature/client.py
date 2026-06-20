@@ -48,13 +48,31 @@ class IsolatedFeatureClient:
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._event_handlers: list[EventHandler] = []
         self._read_task: asyncio.Task[None] | None = None
+        # Notifications that arrive before any handler is registered are buffered
+        # and flushed to the first handler. A service may emit feature events
+        # (e.g. channel.inbound from an already-linked session) during startup,
+        # before the host has called on_event — without this they would be lost.
+        self._pending_notifications: list[dict[str, Any]] = []
 
     async def start(self) -> None:
         if self._read_task is None:
             self._read_task = asyncio.create_task(self._read_loop())
 
     def on_event(self, handler: EventHandler) -> None:
+        first_handler = not self._event_handlers
         self._event_handlers.append(handler)
+        if first_handler and self._pending_notifications:
+            buffered = self._pending_notifications
+            self._pending_notifications = []
+            asyncio.create_task(self._flush_pending(handler, buffered))
+
+    async def _flush_pending(
+        self, handler: EventHandler, buffered: list[dict[str, Any]]
+    ) -> None:
+        for params in buffered:
+            result = handler(params)
+            if asyncio.iscoroutine(result):
+                await result
 
     async def initialize(
         self,
@@ -162,6 +180,11 @@ class IsolatedFeatureClient:
 
     async def _handle_notification(self, notification: JsonRpcNotification) -> None:
         if notification.method != FEATURE_EVENT:
+            return
+        if not self._event_handlers:
+            # Buffer until a handler is registered (see on_event), so startup
+            # events emitted before the host subscribes are not dropped.
+            self._pending_notifications.append(notification.params)
             return
         for handler in list(self._event_handlers):
             result = handler(notification.params)
