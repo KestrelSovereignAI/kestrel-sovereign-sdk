@@ -200,8 +200,14 @@ async def test_events_before_handler_are_buffered_and_flushed():
         await asyncio.sleep(0)  # let the host read loop buffer it
 
         received: list[dict] = []
-        client.on_event(received.append)  # registering flushes the buffer
-        await asyncio.sleep(0)
+        delivered = asyncio.Event()
+
+        def handler(params):
+            received.append(params)
+            delivered.set()
+
+        client.on_event(handler)  # registering flushes the buffer (scheduled task)
+        await asyncio.wait_for(delivered.wait(), timeout=1)
         assert received == [{"type": "channel.inbound", "payload": {"content": "early"}}]
 
         await client.shutdown()
