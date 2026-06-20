@@ -217,6 +217,35 @@ async def test_events_before_handler_are_buffered_and_flushed():
 
 
 @pytest.mark.asyncio
+async def test_buffered_events_only_replay_to_first_handler():
+    """A handler registered after the first must not receive pre-subscribe events."""
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = IsolatedFeatureService(name="fake-feature", version="1.0.0")
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(host_reader, host_writer)
+
+    try:
+        await client.initialize()
+        await service.emit_event("e", {"n": 1})
+        await asyncio.sleep(0)
+
+        first: list = []
+        second: list = []
+        got = asyncio.Event()
+        client.on_event(lambda p: (first.append(p), got.set()))
+        client.on_event(second.append)  # late subscriber
+        await asyncio.wait_for(got.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert len(first) == 1
+        assert second == []  # buffered event not replayed to the late handler
+
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_buffered_events_preserve_stream_order():
     """Buffered startup events are delivered before later live events, in order."""
     host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
