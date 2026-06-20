@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,12 @@ from .protocol import (
 )
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
+
+# Cap on feature events buffered before any handler subscribes, so a host that
+# only uses tools (never calls on_event) can't accumulate events unbounded.
+# Oldest events are dropped past this — the buffer exists to cover the brief
+# startup window, not to be a durable queue.
+_MAX_PENDING_EVENTS = 256
 
 
 class IsolatedFeatureClient:
@@ -52,7 +59,7 @@ class IsolatedFeatureClient:
         # and flushed to the first handler. A service may emit feature events
         # (e.g. channel.inbound from an already-linked session) during startup,
         # before the host has called on_event — without this they would be lost.
-        self._pending_notifications: list[dict[str, Any]] = []
+        self._pending_notifications: deque[dict[str, Any]] = deque(maxlen=_MAX_PENDING_EVENTS)
         # Serializes event delivery so a buffered-event flush cannot interleave
         # with (or reorder relative to) live notifications from the read loop.
         self._event_lock = asyncio.Lock()
@@ -70,7 +77,7 @@ class IsolatedFeatureClient:
     async def _drain_pending(self) -> None:
         async with self._event_lock:
             buffered = self._pending_notifications
-            self._pending_notifications = []
+            self._pending_notifications = deque(maxlen=_MAX_PENDING_EVENTS)
             for params in buffered:
                 await self._dispatch_event(params)
 
@@ -197,7 +204,7 @@ class IsolatedFeatureClient:
             # if a live event arrives before _drain_pending runs.
             if self._pending_notifications:
                 buffered = self._pending_notifications
-                self._pending_notifications = []
+                self._pending_notifications = deque(maxlen=_MAX_PENDING_EVENTS)
                 for params in buffered:
                     await self._dispatch_event(params)
             await self._dispatch_event(notification.params)
