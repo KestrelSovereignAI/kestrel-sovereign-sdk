@@ -185,6 +185,71 @@ def test_feature_event_notification_round_trip():
 
 
 @pytest.mark.asyncio
+async def test_events_before_handler_are_buffered_and_flushed():
+    """Feature events emitted before the host subscribes are buffered, not lost,
+    and delivered to the first handler registered."""
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = IsolatedFeatureService(name="fake-feature", version="1.0.0")
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(host_reader, host_writer)
+
+    try:
+        await client.initialize()
+        # emit BEFORE any handler is registered
+        await service.emit_event("channel.inbound", {"content": "early"})
+        await asyncio.sleep(0)  # let the host read loop buffer it
+
+        received: list[dict] = []
+        delivered = asyncio.Event()
+
+        def handler(params):
+            received.append(params)
+            delivered.set()
+
+        client.on_event(handler)  # registering flushes the buffer (scheduled task)
+        await asyncio.wait_for(delivered.wait(), timeout=1)
+        assert received == [{"type": "channel.inbound", "payload": {"content": "early"}}]
+
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_buffered_events_preserve_stream_order():
+    """Buffered startup events are delivered before later live events, in order."""
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = IsolatedFeatureService(name="fake-feature", version="1.0.0")
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(host_reader, host_writer)
+
+    try:
+        await client.initialize()
+        await service.emit_event("e", {"n": 1})
+        await service.emit_event("e", {"n": 2})
+        await asyncio.sleep(0)  # buffered (no handler yet)
+
+        received: list[int] = []
+        done = asyncio.Event()
+
+        def handler(params):
+            received.append(params["payload"]["n"])
+            if params["payload"]["n"] == 3:
+                done.set()
+
+        client.on_event(handler)
+        await service.emit_event("e", {"n": 3})  # live event after registration
+        await asyncio.wait_for(done.wait(), timeout=1)
+        assert received == [1, 2, 3]
+
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_initialize_forwards_host_config_to_service():
     """Host config in the initialize handshake reaches the service and drives configure()."""
     host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +27,12 @@ from .protocol import (
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
 
+# Cap on feature events buffered before any handler subscribes, so a host that
+# only uses tools (never calls on_event) can't accumulate events unbounded.
+# Oldest events are dropped past this — the buffer exists to cover the brief
+# startup window, not to be a durable queue.
+_MAX_PENDING_EVENTS = 256
+
 
 class IsolatedFeatureClient:
     """Low-level client over connected line-oriented stdin/stdout streams."""
@@ -48,13 +55,48 @@ class IsolatedFeatureClient:
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._event_handlers: list[EventHandler] = []
         self._read_task: asyncio.Task[None] | None = None
+        # Notifications that arrive before any handler is registered are buffered
+        # and flushed to the first handler. A service may emit feature events
+        # (e.g. channel.inbound from an already-linked session) during startup,
+        # before the host has called on_event — without this they would be lost.
+        self._pending_notifications: deque[dict[str, Any]] = deque(maxlen=_MAX_PENDING_EVENTS)
+        # Serializes event delivery so a buffered-event flush cannot interleave
+        # with (or reorder relative to) live notifications from the read loop.
+        self._event_lock = asyncio.Lock()
 
     async def start(self) -> None:
         if self._read_task is None:
             self._read_task = asyncio.create_task(self._read_loop())
 
     def on_event(self, handler: EventHandler) -> None:
+        first_handler = not self._event_handlers
         self._event_handlers.append(handler)
+        if first_handler and self._pending_notifications:
+            asyncio.create_task(self._drain_pending())
+
+    async def _drain_pending(self) -> None:
+        async with self._event_lock:
+            await self._flush_buffer()
+
+    async def _flush_buffer(self) -> None:
+        """Deliver buffered (pre-subscribe) events to current handlers, in order.
+
+        Buffering covers the startup window before any handler is registered;
+        handlers SHOULD subscribe immediately after start. Events emitted while
+        no handler was registered are delivered to the handlers present when the
+        buffer flushes (best effort — the wire/read-loop boundary between
+        "buffered" and "live" is not otherwise observable).
+        """
+        buffered = self._pending_notifications
+        self._pending_notifications = deque(maxlen=_MAX_PENDING_EVENTS)
+        for params in buffered:
+            await self._dispatch_event(params)
+
+    async def _dispatch_event(self, params: dict[str, Any]) -> None:
+        for handler in list(self._event_handlers):
+            result = handler(params)
+            if asyncio.iscoroutine(result):
+                await result
 
     async def initialize(
         self,
@@ -163,10 +205,17 @@ class IsolatedFeatureClient:
     async def _handle_notification(self, notification: JsonRpcNotification) -> None:
         if notification.method != FEATURE_EVENT:
             return
-        for handler in list(self._event_handlers):
-            result = handler(notification.params)
-            if asyncio.iscoroutine(result):
-                await result
+        async with self._event_lock:
+            if not self._event_handlers:
+                # Buffer until a handler is registered (see on_event), so startup
+                # events emitted before the host subscribes are not dropped.
+                self._pending_notifications.append(notification.params)
+                return
+            # Deliver any still-buffered events first so stream order is kept even
+            # if a live event arrives before _drain_pending runs.
+            if self._pending_notifications:
+                await self._flush_buffer()
+            await self._dispatch_event(notification.params)
 
 
 @dataclass
