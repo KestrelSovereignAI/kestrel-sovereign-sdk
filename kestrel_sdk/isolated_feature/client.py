@@ -53,6 +53,9 @@ class IsolatedFeatureClient:
         # (e.g. channel.inbound from an already-linked session) during startup,
         # before the host has called on_event — without this they would be lost.
         self._pending_notifications: list[dict[str, Any]] = []
+        # Serializes event delivery so a buffered-event flush cannot interleave
+        # with (or reorder relative to) live notifications from the read loop.
+        self._event_lock = asyncio.Lock()
 
     async def start(self) -> None:
         if self._read_task is None:
@@ -62,14 +65,17 @@ class IsolatedFeatureClient:
         first_handler = not self._event_handlers
         self._event_handlers.append(handler)
         if first_handler and self._pending_notifications:
+            asyncio.create_task(self._drain_pending())
+
+    async def _drain_pending(self) -> None:
+        async with self._event_lock:
             buffered = self._pending_notifications
             self._pending_notifications = []
-            asyncio.create_task(self._flush_pending(handler, buffered))
+            for params in buffered:
+                await self._dispatch_event(params)
 
-    async def _flush_pending(
-        self, handler: EventHandler, buffered: list[dict[str, Any]]
-    ) -> None:
-        for params in buffered:
+    async def _dispatch_event(self, params: dict[str, Any]) -> None:
+        for handler in list(self._event_handlers):
             result = handler(params)
             if asyncio.iscoroutine(result):
                 await result
@@ -181,15 +187,20 @@ class IsolatedFeatureClient:
     async def _handle_notification(self, notification: JsonRpcNotification) -> None:
         if notification.method != FEATURE_EVENT:
             return
-        if not self._event_handlers:
-            # Buffer until a handler is registered (see on_event), so startup
-            # events emitted before the host subscribes are not dropped.
-            self._pending_notifications.append(notification.params)
-            return
-        for handler in list(self._event_handlers):
-            result = handler(notification.params)
-            if asyncio.iscoroutine(result):
-                await result
+        async with self._event_lock:
+            if not self._event_handlers:
+                # Buffer until a handler is registered (see on_event), so startup
+                # events emitted before the host subscribes are not dropped.
+                self._pending_notifications.append(notification.params)
+                return
+            # Deliver any still-buffered events first so stream order is kept even
+            # if a live event arrives before _drain_pending runs.
+            if self._pending_notifications:
+                buffered = self._pending_notifications
+                self._pending_notifications = []
+                for params in buffered:
+                    await self._dispatch_event(params)
+            await self._dispatch_event(notification.params)
 
 
 @dataclass

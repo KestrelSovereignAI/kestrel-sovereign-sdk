@@ -217,6 +217,39 @@ async def test_events_before_handler_are_buffered_and_flushed():
 
 
 @pytest.mark.asyncio
+async def test_buffered_events_preserve_stream_order():
+    """Buffered startup events are delivered before later live events, in order."""
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = IsolatedFeatureService(name="fake-feature", version="1.0.0")
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(host_reader, host_writer)
+
+    try:
+        await client.initialize()
+        await service.emit_event("e", {"n": 1})
+        await service.emit_event("e", {"n": 2})
+        await asyncio.sleep(0)  # buffered (no handler yet)
+
+        received: list[int] = []
+        done = asyncio.Event()
+
+        def handler(params):
+            received.append(params["payload"]["n"])
+            if params["payload"]["n"] == 3:
+                done.set()
+
+        client.on_event(handler)
+        await service.emit_event("e", {"n": 3})  # live event after registration
+        await asyncio.wait_for(done.wait(), timeout=1)
+        assert received == [1, 2, 3]
+
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_initialize_forwards_host_config_to_service():
     """Host config in the initialize handshake reaches the service and drives configure()."""
     host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
