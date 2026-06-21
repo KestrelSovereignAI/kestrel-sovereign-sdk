@@ -2,6 +2,7 @@
 
 from .base import AgentTool, ToolCategory, ToolParameter, ToolSchema, ToolExecutionError
 from .result import ToolResult, ToolResultStatus
+from .waitable import Outcome, WaitStatus, Waitable
 
 __all__ = [
     "AgentTool",
@@ -11,4 +12,7 @@ __all__ = [
     "ToolExecutionError",
     "ToolResult",
     "ToolResultStatus",
+    "Outcome",
+    "WaitStatus",
+    "Waitable",
 ]
