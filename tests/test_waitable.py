@@ -125,3 +125,34 @@ class TestWaitableProtocol:
         s = await _GoodProvider().poll("job_42")
         assert s.outcome is Outcome.DONE
         assert "job_42" in s.summary
+
+
+class _MonitorableProvider:
+    kind = "mon"
+    signal = "mon.complete"
+
+    async def poll(self, handle: str) -> WaitStatus:
+        return WaitStatus(Outcome.DONE, handle)
+
+    async def active_handles(self) -> list:
+        return ["a", "b"]
+
+
+class TestMonitorableWaitable:
+    def test_monitorable_is_also_a_waitable(self):
+        from kestrel_sdk.tools import MonitorableWaitable
+
+        p = _MonitorableProvider()
+        assert isinstance(p, MonitorableWaitable)
+        assert isinstance(p, Waitable)
+
+    def test_poll_only_provider_is_not_monitorable(self):
+        from kestrel_sdk.tools import MonitorableWaitable
+
+        # _GoodProvider implements poll but not active_handles.
+        assert isinstance(_GoodProvider(), Waitable)
+        assert not isinstance(_GoodProvider(), MonitorableWaitable)
+
+    @pytest.mark.asyncio
+    async def test_active_handles_enumerates(self):
+        assert await _MonitorableProvider().active_handles() == ["a", "b"]

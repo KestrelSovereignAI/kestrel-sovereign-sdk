@@ -179,3 +179,43 @@ class Waitable(Protocol):
         timing, and backoff are the engine's responsibility.
         """
         ...
+
+
+@runtime_checkable
+class MonitorableWaitable(Waitable, Protocol):
+    """A :class:`Waitable` that can enumerate its own in-flight handles.
+
+    The principle: *every async waitable should be wakeable*. A blocking
+    ``wait("talon:job")`` already polls a single handle; a monitorable
+    provider additionally tells the generic reconciler cron which handles
+    are currently in flight, so the reconciler can wake the agent on ANY
+    of them reaching a terminal state — without the agent having held a
+    turn or even explicitly asked to wait. This generalizes what a
+    per-feature monitor (e.g. talon's old ``talon_monitor``) did for one
+    kind to every async provider.
+
+    Implementing this is optional: a provider that only supports explicit
+    blocking waits omits it, and the reconciler simply skips enumeration
+    for that kind. The reconciler detects support structurally
+    (``isinstance(provider, MonitorableWaitable)`` /
+    ``hasattr(provider, "active_handles")``), so poll-only providers stay
+    valid against the base :class:`Waitable`.
+
+    A provider that declares :attr:`Waitable.signal` should generally be
+    monitorable too — otherwise nothing drives the signal-resume path for
+    handles the agent didn't explicitly block on.
+    """
+
+    async def active_handles(self) -> list[str]:
+        """Return the handles currently in flight for this kind.
+
+        These are the non-terminal handles the reconciler should poll and
+        potentially emit a completion signal for (the part after the
+        ``kind:`` prefix — e.g. talon job ids for dispatched-but-unfinished
+        jobs). Return an empty list when nothing is in flight.
+
+        Should be cheap and side-effect-free beyond reading durable state;
+        the reconciler calls it every cron tick. Classifying and signaling
+        are the reconciler's job — this only enumerates.
+        """
+        ...
