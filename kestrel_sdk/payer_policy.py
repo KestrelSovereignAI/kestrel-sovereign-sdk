@@ -49,7 +49,7 @@ class ResourceClass(StrEnum):
 class PayerKind(StrEnum):
     """How a resource is paid for, for a given agent.
 
-    The six funding patterns admitted by `PayerPolicy` correspond to:
+    The funding patterns admitted by `PayerPolicy` correspond to:
 
     - `NONE`                     — None: agent has no access to this resource.
     - `HOST_ENV`                 — Standalone: operator's host env vars.
@@ -57,6 +57,12 @@ class PayerKind(StrEnum):
       child credential per agent. The master DID is the host's, implicit.
     - `USER_MASTER_PROVISIONED`  — User-pays: a named user's master
       account funds the agent. `master_did` carries the user DID.
+    - `USER_BYOK`                — User-pays, zero-knowledge: the user
+      supplies a passphrase per request; the wrapping key is derived from
+      it, the provider credential is decrypted for that request only, and
+      no platform-decryptable copy is ever stored. Because the platform
+      cannot read the key without the passphrase, this kind forgoes
+      platform-side child-key minting, caps, and rotation.
     - `SPONSOR`                  — Sponsor-pays: a named third party's
       master account funds the agent. `master_did` carries the sponsor DID.
     - `SELF_WALLET`              — Self-pays: agent's own wallet pays
@@ -73,6 +79,7 @@ class PayerKind(StrEnum):
     HOST_ENV = "host_env"
     HOST_MASTER_PROVISIONED = "host_master_provisioned"
     USER_MASTER_PROVISIONED = "user_master_provisioned"
+    USER_BYOK = "user_byok"
     SELF_WALLET = "self_wallet"
     SPONSOR = "sponsor"
 
@@ -110,6 +117,8 @@ SUPPORT_MATRIX: Mapping[tuple[ResourceClass, str, PayerKind], SupportStatus] = {
     (ResourceClass.LLM, "openrouter", PayerKind.HOST_ENV): SupportStatus.READY,
     (ResourceClass.LLM, "openrouter", PayerKind.HOST_MASTER_PROVISIONED): SupportStatus.READY,
     (ResourceClass.LLM, "openrouter", PayerKind.USER_MASTER_PROVISIONED): SupportStatus.READY,
+    # Zero-knowledge passphrase BYOK; no platform minting, caps, or rotation.
+    (ResourceClass.LLM, "openrouter", PayerKind.USER_BYOK): SupportStatus.READY,
     (ResourceClass.LLM, "openrouter", PayerKind.SPONSOR): SupportStatus.READY,
     (ResourceClass.LLM, "openrouter", PayerKind.SELF_WALLET): SupportStatus.NOT_IMPLEMENTED,
     (ResourceClass.LLM, "openrouter", PayerKind.NONE): SupportStatus.READY,
@@ -334,6 +343,12 @@ class PayerSpec(BaseModel):
                 f"PayerSpec(kind={self.kind.value}) must NOT set `master_did`; "
                 f"that field is only meaningful for "
                 f"`user_master_provisioned` and `sponsor` kinds."
+            )
+        if self.kind is PayerKind.USER_BYOK and self.monthly_cap_usd is not None:
+            raise ValueError(
+                "PayerSpec(kind=user_byok) must NOT set `monthly_cap_usd`; "
+                "zero-knowledge BYOK forgoes platform-side caps (the platform "
+                "cannot read the user's key to enforce them)."
             )
         return self
 

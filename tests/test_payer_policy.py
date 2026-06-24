@@ -46,22 +46,25 @@ class TestEnums:
         assert PayerKind.HOST_ENV == "host_env"
         assert PayerKind.HOST_MASTER_PROVISIONED == "host_master_provisioned"
         assert PayerKind.USER_MASTER_PROVISIONED == "user_master_provisioned"
+        assert PayerKind.USER_BYOK == "user_byok"
         assert PayerKind.SELF_WALLET == "self_wallet"
         assert PayerKind.SPONSOR == "sponsor"
 
-    def test_payer_kind_covers_six_funding_patterns(self) -> None:
-        # The plan claims 6 funding patterns. Each must be representable
-        # as exactly one PayerKind value.
-        # Standalone           = HOST_ENV
-        # Platform-pays        = HOST_MASTER_PROVISIONED
-        # User-pays            = USER_MASTER_PROVISIONED
-        # Sponsor-pays         = SPONSOR
-        # Self-pays            = SELF_WALLET
-        # None                 = NONE
+    def test_payer_kind_covers_funding_patterns(self) -> None:
+        # Each funding pattern must be representable as exactly one
+        # PayerKind value.
+        # Standalone               = HOST_ENV
+        # Platform-pays            = HOST_MASTER_PROVISIONED
+        # User-pays                = USER_MASTER_PROVISIONED
+        # User-pays (zero-knowled) = USER_BYOK
+        # Sponsor-pays             = SPONSOR
+        # Self-pays                = SELF_WALLET
+        # None                     = NONE
         funding_pattern_kinds = {
             PayerKind.HOST_ENV,
             PayerKind.HOST_MASTER_PROVISIONED,
             PayerKind.USER_MASTER_PROVISIONED,
+            PayerKind.USER_BYOK,
             PayerKind.SPONSOR,
             PayerKind.SELF_WALLET,
             PayerKind.NONE,
@@ -216,6 +219,7 @@ class TestPayerSpec:
         for kind in (
             PayerKind.HOST_ENV,
             PayerKind.HOST_MASTER_PROVISIONED,
+            PayerKind.USER_BYOK,
             PayerKind.SELF_WALLET,
             PayerKind.NONE,
         ):
@@ -227,6 +231,28 @@ class TestPayerSpec:
                 )
             # Error should be specific about why.
             assert "master_did" in str(excinfo.value).lower()
+
+    def test_user_byok_llm_openrouter_is_ready(self) -> None:
+        # Zero-knowledge BYOK is a supported LLM/openrouter funding pattern.
+        assert (
+            status_for(ResourceClass.LLM, "openrouter", PayerKind.USER_BYOK)
+            is SupportStatus.READY
+        )
+
+    def test_user_byok_accepts_no_master_did(self) -> None:
+        spec = PayerSpec(vendor="openrouter", kind=PayerKind.USER_BYOK)
+        assert spec.kind is PayerKind.USER_BYOK
+        assert spec.master_did is None
+
+    def test_user_byok_forbids_monthly_cap(self) -> None:
+        # The platform cannot read the user's key, so it cannot enforce caps.
+        with pytest.raises(Exception) as excinfo:
+            PayerSpec(
+                vendor="openrouter",
+                kind=PayerKind.USER_BYOK,
+                monthly_cap_usd=Decimal("10"),
+            )
+        assert "cap" in str(excinfo.value).lower()
 
     def test_frozen(self) -> None:
         spec = PayerSpec(vendor="openrouter", kind=PayerKind.HOST_ENV)
