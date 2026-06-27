@@ -44,7 +44,17 @@ from pydantic import BaseModel
 
 from .capabilities import ProviderCapabilities
 from .model_info import ModelInfo
-from .response import LLMResponse, ToolCallStarted
+from .response import (
+    BatchHandle,
+    BatchRequest,
+    BatchResult,
+    FileRef,
+    LLMResponse,
+    RawResponse,
+    RequestOptions,
+    TokenCount,
+    ToolCallStarted,
+)
 
 
 class LLMAdapter(ABC):
@@ -299,6 +309,148 @@ class LLMAdapter(ABC):
             await self.aembed(client, text, model=model, **kwargs)
             for text in texts
         ]
+
+    async def count_tokens(
+        self,
+        client: Any,
+        model: str,
+        messages: List[Dict[str, Any]],
+        **kwargs: Any,
+    ) -> Optional[TokenCount]:
+        """Count tokens for a prospective provider request.
+
+        Default returns ``None`` so adapters without a token-counting
+        endpoint remain conforming. Adapters that implement this should
+        declare ``supports_token_counting`` in :meth:`provider_capabilities`.
+        """
+        return None
+
+    async def batch_submit(
+        self,
+        client: Any,
+        requests: List[BatchRequest],
+        **kwargs: Any,
+    ) -> BatchHandle:
+        """Submit a provider batch request."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support batch submission"
+        )
+
+    async def batch_poll(
+        self,
+        client: Any,
+        handle: BatchHandle,
+        **kwargs: Any,
+    ) -> BatchHandle:
+        """Poll a provider batch handle."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support batch polling"
+        )
+
+    async def batch_results(
+        self,
+        client: Any,
+        handle: BatchHandle,
+        **kwargs: Any,
+    ) -> List[BatchResult]:
+        """Fetch completed provider batch results."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support batch results"
+        )
+
+    async def batch_cancel(
+        self,
+        client: Any,
+        handle: BatchHandle,
+        **kwargs: Any,
+    ) -> BatchHandle:
+        """Cancel a provider batch handle."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support batch cancellation"
+        )
+
+    async def file_upload(
+        self,
+        client: Any,
+        file: Any,
+        *,
+        purpose: Optional[str] = None,
+        **kwargs: Any,
+    ) -> FileRef:
+        """Upload a file to the provider."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support file upload"
+        )
+
+    async def file_list(
+        self,
+        client: Any,
+        **kwargs: Any,
+    ) -> List[FileRef]:
+        """List files known to the provider route."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support file listing"
+        )
+
+    async def file_get(
+        self,
+        client: Any,
+        file_id: str,
+        **kwargs: Any,
+    ) -> Optional[FileRef]:
+        """Fetch one provider file reference if available."""
+        return None
+
+    async def file_delete(
+        self,
+        client: Any,
+        file_id: str,
+        **kwargs: Any,
+    ) -> bool:
+        """Delete a provider file."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support file deletion"
+        )
+
+    def file_reference(self, file_ref: FileRef) -> Dict[str, Any]:
+        """Translate a neutral file reference to provider-native kwargs."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support file references"
+        )
+
+    def apply_request_options(
+        self,
+        request_kwargs: Dict[str, Any],
+        options: RequestOptions,
+        *,
+        model: str,
+    ) -> Dict[str, Any]:
+        """Translate neutral request options into provider-native kwargs.
+
+        The default returns ``request_kwargs`` unchanged. Providers that
+        support prompt-cache shaping, reasoning controls, or server-managed
+        tools can override this without changing ``get_response``.
+        """
+        return request_kwargs
+
+    async def raw_request(
+        self,
+        client: Any,
+        operation: str,
+        payload: Optional[Any] = None,
+        *,
+        http_method: Optional[str] = None,
+        path: Optional[str] = None,
+        **kwargs: Any,
+    ) -> RawResponse:
+        """Run a provider-native operation through the initialized client."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support raw passthrough"
+        )
+
+    def contract_features(self) -> frozenset[str]:
+        """Return v5 optional contract features this adapter implements."""
+        return frozenset()
 
     def contribute_system_prompt(
         self,
