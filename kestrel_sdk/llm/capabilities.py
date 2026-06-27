@@ -47,6 +47,63 @@ class VisionInputMode(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ReasoningControlMode(str, Enum):
+    """How an adapter exposes provider reasoning controls."""
+
+    NONE = "none"
+    EFFORT = "effort"
+    THINKING_BUDGET = "thinking_budget"
+    PROVIDER_NATIVE = "provider_native"
+    UNKNOWN = "unknown"
+
+
+class PromptCacheMode(str, Enum):
+    """How prompt-cache shaping is requested."""
+
+    NONE = "none"
+    AUTOMATIC = "automatic"
+    EXPLICIT_BREAKPOINTS = "explicit_breakpoints"
+    PROVIDER_NATIVE = "provider_native"
+    UNKNOWN = "unknown"
+
+
+class BatchMode(str, Enum):
+    """How batch requests are submitted."""
+
+    NONE = "none"
+    PROVIDER_NATIVE = "provider_native"
+    FILE_BASED = "file_based"
+    UNKNOWN = "unknown"
+
+
+class FilesMode(str, Enum):
+    """How provider file APIs are exposed."""
+
+    NONE = "none"
+    PROVIDER_NATIVE = "provider_native"
+    UPLOAD = "upload"
+    REFERENCE_ONLY = "reference_only"
+    UNKNOWN = "unknown"
+
+
+class TokenCountMode(str, Enum):
+    """How token counting is implemented."""
+
+    NONE = "none"
+    PROVIDER_NATIVE = "provider_native"
+    ESTIMATE = "estimate"
+    UNKNOWN = "unknown"
+
+
+class ServerToolMode(str, Enum):
+    """How server-managed tools are invoked."""
+
+    NONE = "none"
+    PROVIDER_NATIVE = "provider_native"
+    REQUEST_OPTION = "request_option"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class ProviderCapabilities:
     """Adapter-level capabilities for one initialized provider route.
@@ -69,6 +126,28 @@ class ProviderCapabilities:
     embedding_dim: int | None = None
     model_dependent: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
+    supports_token_counting: bool = False
+    supports_batch: bool = False
+    supports_files: bool = False
+    supports_prompt_cache: bool = False
+    supports_reasoning_control: bool = False
+    supports_web_search: bool = False
+    supports_code_execution: bool = False
+    supports_computer_use: bool = False
+    supports_mcp_connector: bool = False
+    supports_citations: bool = False
+    supports_fine_grained_tool_streaming: bool = False
+    supports_raw_passthrough: bool = False
+    reasoning_control_mode: ReasoningControlMode = ReasoningControlMode.NONE
+    prompt_cache_mode: PromptCacheMode = PromptCacheMode.NONE
+    batch_mode: BatchMode = BatchMode.NONE
+    files_mode: FilesMode = FilesMode.NONE
+    token_count_mode: TokenCountMode = TokenCountMode.NONE
+    server_tool_mode: ServerToolMode = ServerToolMode.NONE
+    max_thinking_budget_tokens: int | None = None
+    reasoning_effort_levels: tuple[str, ...] = ()
+    max_cache_breakpoints: int | None = None
+    raw_operations: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -76,12 +155,20 @@ class ProviderCapabilities:
             "structured_output_mode",
             "tool_streaming_mode",
             "vision_input_mode",
+            "reasoning_control_mode",
+            "prompt_cache_mode",
+            "batch_mode",
+            "files_mode",
+            "token_count_mode",
+            "server_tool_mode",
         ):
             value = data[key]
             if isinstance(value, Enum):
                 data[key] = value.value
         data["model_dependent"] = list(self.model_dependent)
         data["notes"] = list(self.notes)
+        data["reasoning_effort_levels"] = list(self.reasoning_effort_levels)
+        data["raw_operations"] = list(self.raw_operations)
         return data
 
     @classmethod
@@ -120,6 +207,76 @@ class ProviderCapabilities:
             embedding_dim=_positive_int_or_none(data.get("embedding_dim")),
             model_dependent=tuple(data.get("model_dependent") or ()),
             notes=tuple(data.get("notes") or ()),
+            supports_token_counting=bool(
+                data.get("supports_token_counting", False)
+            ),
+            supports_batch=bool(data.get("supports_batch", False)),
+            supports_files=bool(data.get("supports_files", False)),
+            supports_prompt_cache=bool(
+                data.get("supports_prompt_cache", False)
+            ),
+            supports_reasoning_control=bool(
+                data.get("supports_reasoning_control", False)
+            ),
+            supports_web_search=bool(
+                data.get("supports_web_search", False)
+            ),
+            supports_code_execution=bool(
+                data.get("supports_code_execution", False)
+            ),
+            supports_computer_use=bool(
+                data.get("supports_computer_use", False)
+            ),
+            supports_mcp_connector=bool(
+                data.get("supports_mcp_connector", False)
+            ),
+            supports_citations=bool(data.get("supports_citations", False)),
+            supports_fine_grained_tool_streaming=bool(
+                data.get("supports_fine_grained_tool_streaming", False)
+            ),
+            supports_raw_passthrough=bool(
+                data.get("supports_raw_passthrough", False)
+            ),
+            reasoning_control_mode=_enum_value(
+                ReasoningControlMode,
+                data.get("reasoning_control_mode"),
+                ReasoningControlMode.NONE,
+            ),
+            prompt_cache_mode=_enum_value(
+                PromptCacheMode,
+                data.get("prompt_cache_mode"),
+                PromptCacheMode.NONE,
+            ),
+            batch_mode=_enum_value(
+                BatchMode,
+                data.get("batch_mode"),
+                BatchMode.NONE,
+            ),
+            files_mode=_enum_value(
+                FilesMode,
+                data.get("files_mode"),
+                FilesMode.NONE,
+            ),
+            token_count_mode=_enum_value(
+                TokenCountMode,
+                data.get("token_count_mode"),
+                TokenCountMode.NONE,
+            ),
+            server_tool_mode=_enum_value(
+                ServerToolMode,
+                data.get("server_tool_mode"),
+                ServerToolMode.NONE,
+            ),
+            max_thinking_budget_tokens=_positive_int_or_none(
+                data.get("max_thinking_budget_tokens")
+            ),
+            reasoning_effort_levels=tuple(
+                data.get("reasoning_effort_levels") or ()
+            ),
+            max_cache_breakpoints=_positive_int_or_none(
+                data.get("max_cache_breakpoints")
+            ),
+            raw_operations=tuple(data.get("raw_operations") or ()),
         )
 
 

@@ -20,7 +20,8 @@ itself, so third-party provider packages can depend only on
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
@@ -143,6 +144,175 @@ class ToolCallStarted:
 
 
 @dataclass
+class TokenCount:
+    """Provider token-count result for a prospective or completed request."""
+
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    raw: Any = None
+
+
+@dataclass
+class FileRef:
+    """Provider-neutral reference to an uploaded or remote provider file."""
+
+    id: str = ""
+    filename: Optional[str] = None
+    purpose: Optional[str] = None
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    created_at: Any = None
+    expires_at: Any = None
+    raw: Any = None
+
+
+@dataclass
+class CacheMarker:
+    """Neutral marker for provider prompt-cache breakpoint shaping."""
+
+    index: Optional[int] = None
+    label: Optional[str] = None
+    raw: Any = None
+
+
+@dataclass
+class WebSearchOptions:
+    """Neutral web-search server-tool options."""
+
+    enabled: bool = True
+    max_results: Optional[int] = None
+    search_context_size: Optional[str] = None
+    user_location: Optional[Dict[str, Any]] = None
+    raw: Any = None
+
+
+@dataclass
+class CodeExecOptions:
+    """Neutral code-execution server-tool options."""
+
+    enabled: bool = True
+    container: Optional[str] = None
+    timeout_seconds: Optional[int] = None
+    raw: Any = None
+
+
+@dataclass
+class ComputerUseOptions:
+    """Neutral computer-use server-tool options."""
+
+    enabled: bool = True
+    environment: Optional[str] = None
+    display_width: Optional[int] = None
+    display_height: Optional[int] = None
+    raw: Any = None
+
+
+@dataclass
+class MCPConnector:
+    """Neutral MCP connector declaration for provider-native tool use."""
+
+    name: str = ""
+    server_url: Optional[str] = None
+    headers: Dict[str, str] = field(default_factory=dict)
+    raw: Any = None
+
+
+@dataclass
+class RequestOptions:
+    """Provider-neutral request options adapters may translate to kwargs."""
+
+    cache_markers: List[CacheMarker] = field(default_factory=list)
+    reasoning_effort: Optional[str] = None
+    thinking_budget_tokens: Optional[int] = None
+    web_search: Optional[WebSearchOptions] = None
+    code_execution: Optional[CodeExecOptions] = None
+    computer_use: Optional[ComputerUseOptions] = None
+    mcp_connectors: List[MCPConnector] = field(default_factory=list)
+    raw: Any = None
+
+
+@dataclass
+class BatchRequest:
+    """One provider-neutral request submitted through a batch API."""
+
+    custom_id: str = ""
+    model: Optional[str] = None
+    messages: List[Dict[str, Any]] = field(default_factory=list)
+    format: Optional[str] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    request_options: Optional[RequestOptions] = None
+    kwargs: Dict[str, Any] = field(default_factory=dict)
+    raw: Any = None
+
+
+class BatchStatus(str, Enum):
+    """Provider-neutral batch lifecycle states."""
+
+    UNKNOWN = "unknown"
+    SUBMITTED = "submitted"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+
+
+@dataclass
+class BatchHandle:
+    """Provider-neutral handle returned by batch submission."""
+
+    id: str = ""
+    status: BatchStatus = BatchStatus.UNKNOWN
+    created_at: Any = None
+    expires_at: Any = None
+    raw: Any = None
+
+
+@dataclass
+class BatchResult:
+    """Provider-neutral result for one completed batch item."""
+
+    custom_id: str = ""
+    response: Optional["LLMResponse"] = None
+    error: Optional[str] = None
+    raw: Any = None
+
+
+@dataclass
+class RawResponse:
+    """Raw provider passthrough response."""
+
+    operation: str = ""
+    data: Any = None
+    status_code: Optional[int] = None
+    headers: Dict[str, Any] = field(default_factory=dict)
+    raw: Any = None
+
+
+@dataclass
+class Citation:
+    """Provider-neutral citation attached to model output."""
+
+    title: Optional[str] = None
+    url: Optional[str] = None
+    start_index: Optional[int] = None
+    end_index: Optional[int] = None
+    raw: Any = None
+
+
+@dataclass
+class ServerToolUse:
+    """Provider-neutral record of a server-managed tool invocation."""
+
+    id: Optional[str] = None
+    name: str = ""
+    input: Optional[Dict[str, Any]] = None
+    output: Any = None
+    raw: Any = None
+
+
+@dataclass
 class LLMResponse:
     """Unified response from an LLM adapter.
 
@@ -188,6 +358,8 @@ class LLMResponse:
 
     cache_creation_input_tokens: Optional[int] = None
     cache_read_input_tokens: Optional[int] = None
+    citations: List[Citation] = field(default_factory=list)
+    server_tool_calls: List[ServerToolUse] = field(default_factory=list)
 
     @property
     def has_tool_calls(self) -> bool:

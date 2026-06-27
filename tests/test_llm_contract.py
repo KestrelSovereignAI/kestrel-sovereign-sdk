@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from dataclasses import fields
 from datetime import datetime, timezone
 
 import pytest
@@ -20,12 +21,25 @@ import pytest
 from kestrel_sdk.llm import (
     SDK_LLM_CONTRACT_VERSION,
     BackendType,
+    BatchHandle,
+    BatchMode,
+    BatchRequest,
+    BatchResult,
+    FileRef,
+    FilesMode,
     LLMAdapter,
     LLMResponse,
     ModelCategory,
     ModelInfo,
+    PromptCacheMode,
     ProviderCapabilities,
     ProviderInfo,
+    RawResponse,
+    ReasoningControlMode,
+    RequestOptions,
+    ServerToolMode,
+    TokenCount,
+    TokenCountMode,
     ToolCall,
     ToolCallStarted,
     StructuredOutputMode,
@@ -84,6 +98,8 @@ class TestLLMResponse:
         assert resp.total_tokens is None
         assert resp.cache_creation_input_tokens is None
         assert resp.cache_read_input_tokens is None
+        assert resp.citations == []
+        assert resp.server_tool_calls == []
 
     def test_text_only_response(self):
         resp = LLMResponse(content="hello", input_tokens=10, output_tokens=5, total_tokens=15)
@@ -283,6 +299,28 @@ class TestProviderCapabilities:
         assert capabilities.embedding_dim is None
         assert capabilities.model_dependent == ()
         assert capabilities.notes == ()
+        assert capabilities.supports_token_counting is False
+        assert capabilities.supports_batch is False
+        assert capabilities.supports_files is False
+        assert capabilities.supports_prompt_cache is False
+        assert capabilities.supports_reasoning_control is False
+        assert capabilities.supports_web_search is False
+        assert capabilities.supports_code_execution is False
+        assert capabilities.supports_computer_use is False
+        assert capabilities.supports_mcp_connector is False
+        assert capabilities.supports_citations is False
+        assert capabilities.supports_fine_grained_tool_streaming is False
+        assert capabilities.supports_raw_passthrough is False
+        assert capabilities.reasoning_control_mode == ReasoningControlMode.NONE
+        assert capabilities.prompt_cache_mode == PromptCacheMode.NONE
+        assert capabilities.batch_mode == BatchMode.NONE
+        assert capabilities.files_mode == FilesMode.NONE
+        assert capabilities.token_count_mode == TokenCountMode.NONE
+        assert capabilities.server_tool_mode == ServerToolMode.NONE
+        assert capabilities.max_thinking_budget_tokens is None
+        assert capabilities.reasoning_effort_levels == ()
+        assert capabilities.max_cache_breakpoints is None
+        assert capabilities.raw_operations == ()
 
     def test_to_dict_uses_wire_values(self):
         capabilities = ProviderCapabilities(
@@ -299,9 +337,32 @@ class TestProviderCapabilities:
             embedding_dim=1536,
             model_dependent=("vision",),
             notes=("model-dependent",),
+            supports_token_counting=True,
+            supports_batch=True,
+            supports_files=True,
+            supports_prompt_cache=True,
+            supports_reasoning_control=True,
+            supports_web_search=True,
+            supports_code_execution=True,
+            supports_computer_use=True,
+            supports_mcp_connector=True,
+            supports_citations=True,
+            supports_fine_grained_tool_streaming=True,
+            supports_raw_passthrough=True,
+            reasoning_control_mode=ReasoningControlMode.EFFORT,
+            prompt_cache_mode=PromptCacheMode.EXPLICIT_BREAKPOINTS,
+            batch_mode=BatchMode.PROVIDER_NATIVE,
+            files_mode=FilesMode.PROVIDER_NATIVE,
+            token_count_mode=TokenCountMode.PROVIDER_NATIVE,
+            server_tool_mode=ServerToolMode.REQUEST_OPTION,
+            max_thinking_budget_tokens=32000,
+            reasoning_effort_levels=("low", "medium", "high"),
+            max_cache_breakpoints=4,
+            raw_operations=("responses.create",),
         )
 
-        assert capabilities.to_dict() == {
+        data = capabilities.to_dict()
+        assert data == {
             "supports_tools": True,
             "supports_streaming": True,
             "supports_vision": True,
@@ -315,7 +376,30 @@ class TestProviderCapabilities:
             "embedding_dim": 1536,
             "model_dependent": ["vision"],
             "notes": ["model-dependent"],
+            "supports_token_counting": True,
+            "supports_batch": True,
+            "supports_files": True,
+            "supports_prompt_cache": True,
+            "supports_reasoning_control": True,
+            "supports_web_search": True,
+            "supports_code_execution": True,
+            "supports_computer_use": True,
+            "supports_mcp_connector": True,
+            "supports_citations": True,
+            "supports_fine_grained_tool_streaming": True,
+            "supports_raw_passthrough": True,
+            "reasoning_control_mode": "effort",
+            "prompt_cache_mode": "explicit_breakpoints",
+            "batch_mode": "provider_native",
+            "files_mode": "provider_native",
+            "token_count_mode": "provider_native",
+            "server_tool_mode": "request_option",
+            "max_thinking_budget_tokens": 32000,
+            "reasoning_effort_levels": ["low", "medium", "high"],
+            "max_cache_breakpoints": 4,
+            "raw_operations": ["responses.create"],
         }
+        assert set(data) == {field.name for field in fields(ProviderCapabilities)}
 
     def test_from_mapping_accepts_plugin_dicts(self):
         capabilities = ProviderCapabilities.from_mapping(
@@ -333,6 +417,17 @@ class TestProviderCapabilities:
                 "embedding_dim": "768",
                 "model_dependent": ["vision"],
                 "notes": ["plugin"],
+                "supports_token_counting": True,
+                "reasoning_control_mode": "thinking_budget",
+                "prompt_cache_mode": "automatic",
+                "batch_mode": "file_based",
+                "files_mode": "reference_only",
+                "token_count_mode": "estimate",
+                "server_tool_mode": "provider_native",
+                "max_thinking_budget_tokens": "12000",
+                "reasoning_effort_levels": ["low", "high"],
+                "max_cache_breakpoints": "2",
+                "raw_operations": ["models.retrieve"],
             }
         )
 
@@ -346,6 +441,17 @@ class TestProviderCapabilities:
         assert capabilities.embedding_dim == 768
         assert capabilities.model_dependent == ("vision",)
         assert capabilities.notes == ("plugin",)
+        assert capabilities.supports_token_counting is True
+        assert capabilities.reasoning_control_mode == ReasoningControlMode.THINKING_BUDGET
+        assert capabilities.prompt_cache_mode == PromptCacheMode.AUTOMATIC
+        assert capabilities.batch_mode == BatchMode.FILE_BASED
+        assert capabilities.files_mode == FilesMode.REFERENCE_ONLY
+        assert capabilities.token_count_mode == TokenCountMode.ESTIMATE
+        assert capabilities.server_tool_mode == ServerToolMode.PROVIDER_NATIVE
+        assert capabilities.max_thinking_budget_tokens == 12000
+        assert capabilities.reasoning_effort_levels == ("low", "high")
+        assert capabilities.max_cache_breakpoints == 2
+        assert capabilities.raw_operations == ("models.retrieve",)
 
     def test_to_dict_round_trips_through_from_mapping(self):
         original = ProviderCapabilities(
@@ -356,9 +462,34 @@ class TestProviderCapabilities:
             tool_streaming_mode=ToolStreamingMode.NATIVE_DELTA,
             model_dependent=("structured_output",),
             notes=("forced tool",),
+            supports_token_counting=True,
+            supports_batch=True,
+            supports_files=True,
+            supports_prompt_cache=True,
+            supports_reasoning_control=True,
+            supports_web_search=True,
+            supports_code_execution=True,
+            supports_computer_use=True,
+            supports_mcp_connector=True,
+            supports_citations=True,
+            supports_fine_grained_tool_streaming=True,
+            supports_raw_passthrough=True,
+            reasoning_control_mode=ReasoningControlMode.EFFORT,
+            prompt_cache_mode=PromptCacheMode.EXPLICIT_BREAKPOINTS,
+            batch_mode=BatchMode.PROVIDER_NATIVE,
+            files_mode=FilesMode.PROVIDER_NATIVE,
+            token_count_mode=TokenCountMode.PROVIDER_NATIVE,
+            server_tool_mode=ServerToolMode.REQUEST_OPTION,
+            max_thinking_budget_tokens=4096,
+            reasoning_effort_levels=("minimal", "high"),
+            max_cache_breakpoints=4,
+            raw_operations=("responses.create",),
         )
 
         assert ProviderCapabilities.from_mapping(original.to_dict()) == original
+        assert set(original.to_dict()) == {
+            field.name for field in fields(ProviderCapabilities)
+        }
 
     def test_from_mapping_unknown_modes_fall_back_conservatively(self):
         capabilities = ProviderCapabilities.from_mapping(
@@ -367,6 +498,14 @@ class TestProviderCapabilities:
                 "tool_streaming_mode": "typo",
                 "vision_input_mode": "typo",
                 "embedding_dim": "not-an-int",
+                "reasoning_control_mode": "typo",
+                "prompt_cache_mode": "typo",
+                "batch_mode": "typo",
+                "files_mode": "typo",
+                "token_count_mode": "typo",
+                "server_tool_mode": "typo",
+                "max_thinking_budget_tokens": "0",
+                "max_cache_breakpoints": "-1",
             }
         )
 
@@ -374,6 +513,14 @@ class TestProviderCapabilities:
         assert capabilities.tool_streaming_mode == ToolStreamingMode.NONE
         assert capabilities.vision_input_mode == VisionInputMode.NONE
         assert capabilities.embedding_dim is None
+        assert capabilities.reasoning_control_mode == ReasoningControlMode.NONE
+        assert capabilities.prompt_cache_mode == PromptCacheMode.NONE
+        assert capabilities.batch_mode == BatchMode.NONE
+        assert capabilities.files_mode == FilesMode.NONE
+        assert capabilities.token_count_mode == TokenCountMode.NONE
+        assert capabilities.server_tool_mode == ServerToolMode.NONE
+        assert capabilities.max_thinking_budget_tokens is None
+        assert capabilities.max_cache_breakpoints is None
 
 
 # ---------------------------------------------------------------------------
@@ -812,6 +959,75 @@ class TestLLMAdapterMetadataAreNonAbstract:
         assert LLMAdapter.__abstractmethods__ == frozenset({"get_response"})
 
 
+class TestLLMAdapterV5OptionalSurface:
+    def _make_minimal_adapter(self):
+        class A(LLMAdapter):
+            async def get_response(self, client, model, messages, **kwargs):
+                return LLMResponse()
+
+        return A()
+
+    def test_count_tokens_default_returns_none(self):
+        adapter = self._make_minimal_adapter()
+
+        result = asyncio.run(adapter.count_tokens(None, "m", []))
+
+        assert result is None
+
+    def test_batch_defaults_raise_not_implemented(self):
+        adapter = self._make_minimal_adapter()
+        handle = BatchHandle(id="batch-1")
+
+        with pytest.raises(NotImplementedError):
+            asyncio.run(adapter.batch_submit(None, [BatchRequest(custom_id="1")]))
+        with pytest.raises(NotImplementedError):
+            asyncio.run(adapter.batch_poll(None, handle))
+        with pytest.raises(NotImplementedError):
+            asyncio.run(adapter.batch_results(None, handle))
+        with pytest.raises(NotImplementedError):
+            asyncio.run(adapter.batch_cancel(None, handle))
+
+    def test_file_defaults_raise_except_get_returns_none(self):
+        adapter = self._make_minimal_adapter()
+
+        with pytest.raises(NotImplementedError):
+            asyncio.run(adapter.file_upload(None, b"data"))
+        with pytest.raises(NotImplementedError):
+            asyncio.run(adapter.file_list(None))
+        assert asyncio.run(adapter.file_get(None, "file-1")) is None
+        with pytest.raises(NotImplementedError):
+            asyncio.run(adapter.file_delete(None, "file-1"))
+        with pytest.raises(NotImplementedError):
+            adapter.file_reference(FileRef(id="file-1"))
+
+    def test_apply_request_options_default_returns_kwargs_unchanged(self):
+        adapter = self._make_minimal_adapter()
+        kwargs = {"temperature": 0.2}
+
+        result = adapter.apply_request_options(kwargs, RequestOptions(), model="m")
+
+        assert result is kwargs
+        assert result == {"temperature": 0.2}
+
+    def test_raw_request_default_raises(self):
+        adapter = self._make_minimal_adapter()
+
+        with pytest.raises(NotImplementedError):
+            asyncio.run(adapter.raw_request(None, "models.retrieve"))
+
+    def test_contract_features_default_empty(self):
+        adapter = self._make_minimal_adapter()
+
+        assert adapter.contract_features() == frozenset()
+        assert LLMAdapter.__abstractmethods__ == frozenset({"get_response"})
+
+    def test_v5_neutral_dataclasses_are_default_constructible(self):
+        assert TokenCount().raw is None
+        assert BatchRequest().messages == []
+        assert BatchResult().response is None
+        assert RawResponse().headers == {}
+
+
 class TestLLMAdapterContractVersion:
     """SDK_LLM_CONTRACT_VERSION pin tracking.
 
@@ -828,14 +1044,18 @@ class TestLLMAdapterContractVersion:
       * 4 — added provider-owned embeddings through a common
         Optional[list[float]] / batch vector contract and embedding
         capability metadata (SDK 0.18.0).
+      * 5 — added optional provider-surface negotiation and neutral
+        dataclasses for batch, files, token counting, request options,
+        citations, server tools, and raw passthrough.
     """
 
-    def test_contract_version_is_4(self):
+    def test_contract_version_is_5(self):
         from kestrel_sdk.llm import SDK_LLM_CONTRACT_VERSION
 
-        assert SDK_LLM_CONTRACT_VERSION == 4, (
-            "SDK 0.18.0 bumps the LLM contract version from 3 to 4 to "
-            "publish the common provider embedding surface."
+        assert SDK_LLM_CONTRACT_VERSION == 5, (
+            "LLM contract version 5 publishes the additive provider "
+            "surface expansion while keeping get_response as the only "
+            "abstract method."
         )
 
 

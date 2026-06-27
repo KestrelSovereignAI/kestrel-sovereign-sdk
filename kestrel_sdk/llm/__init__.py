@@ -39,14 +39,39 @@ detect drift at import time::
 
 from .adapter import LLMAdapter
 from .capabilities import (
+    BatchMode,
+    FilesMode,
+    PromptCacheMode,
     ProviderCapabilities,
+    ReasoningControlMode,
+    ServerToolMode,
     StructuredOutputMode,
+    TokenCountMode,
     ToolStreamingMode,
     VisionInputMode,
 )
 from .model_info import ModelCategory, ModelInfo
 from .provider import ProviderInfo
-from .response import LLMResponse, ToolCall, ToolCallStarted
+from .response import (
+    BatchHandle,
+    BatchRequest,
+    BatchResult,
+    BatchStatus,
+    CacheMarker,
+    Citation,
+    CodeExecOptions,
+    ComputerUseOptions,
+    FileRef,
+    LLMResponse,
+    MCPConnector,
+    RawResponse,
+    RequestOptions,
+    ServerToolUse,
+    TokenCount,
+    ToolCall,
+    ToolCallStarted,
+    WebSearchOptions,
+)
 from .types import BackendType
 
 # Bumped when the abstract surface of LLMAdapter, the wire shape of
@@ -62,6 +87,12 @@ from .types import BackendType
 # LLMAdapter.aembed()/aembed_batch() and ProviderCapabilities embedding
 # metadata.
 #
+# Version 5: adds optional provider-surface negotiation for token counting,
+# batch, files, prompt-cache shaping, reasoning controls, server tools,
+# citations, raw passthrough, and neutral request/response dataclasses. This
+# is additive; adapters pinning >=4 continue to work because get_response
+# remains the only abstract method.
+#
 # Version 2 (SDK 0.8.0): clarifies the meaning of
 # :attr:`ToolCallStarted.index`. The dataclass shape is unchanged
 # from version 1, but the documented contract for *consumers* of
@@ -76,20 +107,41 @@ from .types import BackendType
 # read ``marker.index`` directly continue to work; plugins that
 # wrote consumer code against the old (positional) wording must
 # update to read by stream order.
-SDK_LLM_CONTRACT_VERSION = 4
+SDK_LLM_CONTRACT_VERSION = 5
 
 __all__ = [
     "BackendType",
+    "BatchHandle",
+    "BatchMode",
+    "BatchRequest",
+    "BatchResult",
+    "BatchStatus",
+    "CacheMarker",
+    "Citation",
+    "CodeExecOptions",
+    "ComputerUseOptions",
+    "FileRef",
+    "FilesMode",
     "LLMAdapter",
     "LLMResponse",
+    "MCPConnector",
     "ModelCategory",
     "ModelInfo",
+    "PromptCacheMode",
     "ProviderCapabilities",
     "ProviderInfo",
+    "RawResponse",
+    "ReasoningControlMode",
+    "RequestOptions",
     "SDK_LLM_CONTRACT_VERSION",
+    "ServerToolMode",
+    "ServerToolUse",
     "StructuredOutputMode",
+    "TokenCount",
+    "TokenCountMode",
     "ToolCall",
     "ToolCallStarted",
     "ToolStreamingMode",
     "VisionInputMode",
+    "WebSearchOptions",
 ]
