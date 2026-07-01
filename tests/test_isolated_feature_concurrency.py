@@ -81,3 +81,35 @@ async def test_slow_tool_does_not_block_health_or_other_requests():
         service_reader.close()
         service_task.cancel()
         await asyncio.gather(service_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_terminates_even_with_a_stuck_handler():
+    """A blocked handler must not keep serve() from returning on shutdown."""
+    from kestrel_sdk.isolated_feature import SHUTDOWN
+
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = IsolatedFeatureService(name="fake", version="1.0.0")
+
+    never = asyncio.Event()  # never set — the handler is permanently stuck
+
+    async def stuck(arguments):
+        await never.wait()
+        return {}
+
+    service.register_tool(ToolMetadata(name="stuck", description="", input_schema=_OBJ), stuck)
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    try:
+        service_reader.feed(encode_message(JsonRpcRequest(
+            id=1, method=TOOLS_CALL, params={"name": "stuck", "arguments": {}})))
+        await asyncio.sleep(0.05)  # let it reach the stuck handler
+        service_reader.feed(encode_message(JsonRpcRequest(id=2, method=SHUTDOWN)))
+
+        # serve() must return (grace period, then cancel the stuck handler) —
+        # not hang forever waiting on the blocked task.
+        await asyncio.wait_for(service_task, timeout=6.0)
+    finally:
+        never.set()
+        if not service_task.done():
+            service_task.cancel()
+            await asyncio.gather(service_task, return_exceptions=True)

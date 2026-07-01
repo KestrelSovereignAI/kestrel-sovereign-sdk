@@ -171,10 +171,14 @@ class IsolatedFeatureService:
                     )
                     continue
                 if isinstance(message, JsonRpcRequest):
-                    if message.method == SHUTDOWN:
-                        # Terminal + sets ``_stopping``. Handle inline so the loop
-                        # observes the flag and exits promptly — a task would set
-                        # it only after we'd already re-blocked on ``readline()``.
+                    if message.method in (INITIALIZE, SHUTDOWN):
+                        # Handle inline (not concurrently):
+                        #  * INITIALIZE must finish the handshake + apply host
+                        #    config before any later request runs, or a pipelined
+                        #    health/tools-call could hit an uninitialized service;
+                        #  * SHUTDOWN is terminal and sets ``_stopping`` — inline
+                        #    so the loop observes the flag and exits promptly (a
+                        #    task would set it only after we'd re-blocked on read).
                         await self._handle_request(message)
                         continue
                     # Handle every other request concurrently: awaiting each
@@ -188,10 +192,17 @@ class IsolatedFeatureService:
                     self._inflight.add(task)
                     task.add_done_callback(self._inflight.discard)
         finally:
-            # Let in-flight handlers finish so their responses aren't dropped;
-            # a shutdown request sets ``_stopping`` and breaks the read loop.
-            if self._inflight:
-                await asyncio.gather(*list(self._inflight), return_exceptions=True)
+            # Give in-flight handlers a brief grace period to finish so their
+            # responses aren't dropped, then CANCEL any still stuck — otherwise a
+            # blocked handler (the exact stuck-network case this fix tolerates)
+            # would keep ``serve()`` from ever returning on shutdown.
+            pending = list(self._inflight)
+            if pending:
+                _, still = await asyncio.wait(pending, timeout=2.0)
+                for task in still:
+                    task.cancel()
+                if still:
+                    await asyncio.gather(*still, return_exceptions=True)
             self._writer = None
 
     async def run_stdio(self) -> None:
