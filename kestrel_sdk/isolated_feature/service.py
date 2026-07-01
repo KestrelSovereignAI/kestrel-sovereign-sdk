@@ -46,6 +46,10 @@ class IsolatedFeatureService:
         self._handlers: dict[str, ToolHandler] = {}
         self._writer: Any = None
         self._stopping = False
+        # Requests are handled concurrently (see ``serve``); serialize the actual
+        # writes so two in-flight handlers can't interleave bytes on the wire.
+        self._write_lock = asyncio.Lock()
+        self._inflight: set[asyncio.Task[Any]] = set()
         # Host-provided configuration delivered through the initialize handshake.
         # Empty until the host calls initialize with a ``config`` param, at which
         # point it is populated and ``configure()`` runs.
@@ -158,8 +162,6 @@ class IsolatedFeatureService:
                     break
                 try:
                     message = decode_message(line)
-                    if isinstance(message, JsonRpcRequest):
-                        await self._handle_request(message)
                 except ProtocolError as exc:
                     await self._send(
                         JsonRpcResponse(
@@ -167,7 +169,29 @@ class IsolatedFeatureService:
                             error=JsonRpcError(code=-32600, message=str(exc)),
                         )
                     )
+                    continue
+                if isinstance(message, JsonRpcRequest):
+                    if message.method == SHUTDOWN:
+                        # Terminal + sets ``_stopping``. Handle inline so the loop
+                        # observes the flag and exits promptly — a task would set
+                        # it only after we'd already re-blocked on ``readline()``.
+                        await self._handle_request(message)
+                        continue
+                    # Handle every other request concurrently: awaiting each
+                    # handler inline would let a single slow/stuck tool call (e.g.
+                    # a blocked network connect) starve every other request —
+                    # including HEALTH, which the host supervisor polls, so the
+                    # whole service (and its caller) would wedge silently.
+                    # Responses are id-matched, so out-of-order completion is
+                    # fine; ``_send`` serializes the bytes.
+                    task = asyncio.ensure_future(self._handle_request(message))
+                    self._inflight.add(task)
+                    task.add_done_callback(self._inflight.discard)
         finally:
+            # Let in-flight handlers finish so their responses aren't dropped;
+            # a shutdown request sets ``_stopping`` and breaks the read loop.
+            if self._inflight:
+                await asyncio.gather(*list(self._inflight), return_exceptions=True)
             self._writer = None
 
     async def run_stdio(self) -> None:
@@ -225,7 +249,14 @@ class IsolatedFeatureService:
         raise ProtocolError(f"unknown method: {request.method}")
 
     async def _send(self, message: JsonRpcResponse | JsonRpcNotification) -> None:
-        self._writer.write(encode_message(message))
-        drain = getattr(self._writer, "drain", None)
-        if drain is not None:
-            await drain()
+        # Serialize concurrent writes (handlers now run concurrently) so a
+        # message's bytes + drain complete before another's begin — otherwise two
+        # handlers could interleave lines / drains on the same writer.
+        async with self._write_lock:
+            writer = self._writer
+            if writer is None:
+                return
+            writer.write(encode_message(message))
+            drain = getattr(writer, "drain", None)
+            if drain is not None:
+                await drain()
