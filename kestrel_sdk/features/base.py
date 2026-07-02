@@ -12,8 +12,22 @@ Feature packages should import from here:
 import inspect
 import logging
 import re
+import types
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checkable, TYPE_CHECKING
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+    runtime_checkable,
+    TYPE_CHECKING,
+)
 
 from kestrel_sdk.tools.base import ToolSchema, ToolParameter, ToolCategory, AgentTool
 from kestrel_sdk.a2a.agent_card import AgentCard, AgentSkill, AgentCapabilities
@@ -88,6 +102,56 @@ def parse_docstring_params(docstring: Optional[str]) -> Dict[str, str]:
             param_descriptions[param_name] = description
 
     return param_descriptions
+
+
+_JSON_TYPE_MAP = {
+    str: "string",
+    int: "integer",
+    bool: "boolean",
+    float: "number",
+    list: "array",
+    dict: "object",
+}
+
+
+def _resolve_json_type(annotation: Any) -> tuple[str, Optional[Dict[str, Any]], bool]:
+    """Map a resolved type annotation to (json_type, items_schema, nullable).
+
+    Handles the cases the old identity-only lookup dropped to ``"string"``:
+    ``Optional[X]`` / ``X | None`` (unwrapped to X, nullable=True), other unions
+    (first concrete member), and ``List[X]`` items. ``annotation`` must already
+    be a real type object — callers resolve PEP 563 string annotations via
+    :func:`typing.get_type_hints` before calling this.
+    """
+
+    if annotation is inspect.Parameter.empty:
+        return "string", None, False
+
+    origin = get_origin(annotation)
+
+    # Optional[X] / Union[...] / PEP 604 X | Y — unwrap None and recurse.
+    if origin is Union or origin is getattr(types, "UnionType", ()):
+        args = get_args(annotation)
+        nullable = type(None) in args
+        concrete = [a for a in args if a is not type(None)]
+        if len(concrete) == 1:
+            inner_type, items, _ = _resolve_json_type(concrete[0])
+            return inner_type, items, nullable
+        # Genuinely ambiguous multi-type union: fall back to string.
+        return "string", None, nullable
+
+    if origin is not None:
+        json_type = _JSON_TYPE_MAP.get(origin, "string")
+        items_schema = None
+        if json_type == "array":
+            type_args = get_args(annotation)
+            if type_args:
+                inner_type = _JSON_TYPE_MAP.get(type_args[0])
+                if inner_type:
+                    items_schema = {"type": inner_type}
+        return json_type, items_schema, False
+
+    return _JSON_TYPE_MAP.get(annotation, "string"), None, False
 
 
 class Feature(ABC):
@@ -370,35 +434,39 @@ def tool(name: str, description: str, category: ToolCategory = ToolCategory.SYST
         sig = inspect.signature(func)
         parameters = []
 
-        type_map = {
-            str: "string",
-            int: "integer",
-            bool: "boolean",
-            float: "number",
-            list: "array",
-            dict: "object"
-        }
+        # Resolve annotations to real types. Under ``from __future__ import
+        # annotations`` (PEP 563) every annotation in ``sig`` is a STRING;
+        # get_type_hints evaluates them back to types so Optional[int]/int|None/
+        # List[str] don't all silently degrade to "string". Fall back to the raw
+        # signature annotations if evaluation fails (e.g. a name not importable
+        # at decoration time).
+        try:
+            resolved_hints = get_type_hints(func)
+        except Exception as exc:  # noqa: BLE001 — degrade to raw annotations
+            logger.warning(
+                "Could not resolve type hints for tool %r (%s); "
+                "parameter types may be imprecise",
+                getattr(func, "__name__", name),
+                exc,
+            )
+            resolved_hints = {}
 
         for param_name, param in sig.parameters.items():
             if param_name == 'self':
                 continue
 
-            # Handle typing generics
-            from typing import get_origin, get_args
-            origin = get_origin(param.annotation)
-            items_schema = None
-            if origin is not None:
-                param_type = type_map.get(origin, "string")
-                # For List[X], derive items schema from the type argument
-                if param_type == "array":
-                    type_args = get_args(param.annotation)
-                    if type_args:
-                        inner = type_args[0]
-                        inner_type = type_map.get(inner, None)
-                        if inner_type:
-                            items_schema = {"type": inner_type}
-            else:
-                param_type = type_map.get(param.annotation, "string")
+            annotation = resolved_hints.get(param_name, param.annotation)
+            param_type, items_schema, _nullable = _resolve_json_type(annotation)
+            if (
+                param_type == "string"
+                and annotation is not inspect.Parameter.empty
+                and annotation not in (str, "str")
+            ):
+                logger.warning(
+                    "Tool %r param %r annotation %r did not map to a JSON schema "
+                    "type; advertising it as 'string' to the LLM",
+                    name, param_name, annotation,
+                )
             required = param.default == inspect.Parameter.empty
 
             # Get description from parsed docstring, fallback to placeholder
