@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from inspect import isawaitable
+from inspect import isawaitable, iscoroutinefunction
 from typing import Any
 import asyncio
+import os
 import sys
 
 from .protocol import (
@@ -29,6 +30,21 @@ from .protocol import (
 ToolHandler = Callable[[dict[str, Any]], Awaitable[Any] | Any]
 
 
+def _is_async_callable(handler: ToolHandler) -> bool:
+    """True if calling ``handler`` returns a coroutine to await.
+
+    Covers plain ``async def`` functions, ``functools.partial`` around them
+    (``iscoroutinefunction`` unwraps partials), and callable instances whose
+    ``__call__`` is ``async def``. Everything else is treated as sync and
+    offloaded to a thread in :meth:`IsolatedFeatureService.call_tool`.
+    """
+
+    if iscoroutinefunction(handler):
+        return True
+    call = getattr(handler, "__call__", None)
+    return call is not None and iscoroutinefunction(call)
+
+
 class IsolatedFeatureService:
     """Base service for stdio JSON-RPC isolated features."""
 
@@ -44,6 +60,11 @@ class IsolatedFeatureService:
         self.protocol_version = protocol_version
         self._tools: dict[str, ToolMetadata] = {}
         self._handlers: dict[str, ToolHandler] = {}
+        # Whether each handler is a native coroutine function. Sync handlers are
+        # offloaded to a worker thread in ``call_tool`` so a blocking body can
+        # never wedge the event loop (and with it HEALTH, which the supervisor
+        # polls). Decided once at registration rather than per call.
+        self._handler_is_async: dict[str, bool] = {}
         self._writer: Any = None
         self._stopping = False
         # Requests are handled concurrently (see ``serve``); serialize the actual
@@ -86,6 +107,7 @@ class IsolatedFeatureService:
 
         self._tools[metadata.name] = metadata
         self._handlers[metadata.name] = handler
+        self._handler_is_async[metadata.name] = _is_async_callable(handler)
 
     async def get_tools(self) -> list[ToolMetadata]:
         """Return tools exposed by this service."""
@@ -134,7 +156,16 @@ class IsolatedFeatureService:
         handler = self._handlers.get(name)
         if handler is None:
             raise ProtocolError(f"unknown tool: {name}")
-        result = handler(arguments)
+        if self._handler_is_async.get(name):
+            # Native coroutine handler: it owns its own await points and must
+            # not block between them (documented contract).
+            return await handler(arguments)
+        # Sync handler: run it on a worker thread so a blocking call inside it
+        # (network connect without an OS timeout, subprocess, time.sleep) can
+        # never freeze the event loop and starve HEALTH / other concurrent
+        # requests. Preserve the legacy "sync function returns an awaitable"
+        # shape by awaiting the result back on the loop.
+        result = await asyncio.to_thread(handler, arguments)
         if isawaitable(result):
             return await result
         return result
@@ -212,9 +243,19 @@ class IsolatedFeatureService:
         loop = asyncio.get_running_loop()
         protocol = asyncio.StreamReaderProtocol(reader)
         await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
+        # Claim a PRIVATE duplicate of the real stdout fd for the JSON-RPC wire,
+        # then repoint the process's stdout (fd 1 and sys.stdout) at stderr.
+        # After this, a stray print(), C-extension banner, or dependency
+        # deprecation notice written to stdout lands on the inherited stderr as
+        # a harmless log line instead of corrupting protocol framing and killing
+        # the connection. The protocol owns a fd nothing else can reach.
+        wire_fd = os.dup(1)
+        wire = os.fdopen(wire_fd, "wb", buffering=0)
+        os.dup2(2, 1)
+        sys.stdout = sys.stderr
         write_transport, write_protocol = await loop.connect_write_pipe(
             asyncio.streams.FlowControlMixin,
-            sys.stdout.buffer,
+            wire,
         )
         writer = asyncio.StreamWriter(write_transport, write_protocol, reader, loop)
         await self.serve(reader, writer)

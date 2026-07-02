@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 import asyncio
 
@@ -55,6 +55,11 @@ class IsolatedFeatureClient:
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._event_handlers: list[EventHandler] = []
         self._read_task: asyncio.Task[None] | None = None
+        # Latched once the read loop terminates (EOF, decode error, cancel).
+        # After this is set the stream is dead: request()/start() fail fast with
+        # it instead of writing to a broken pipe and awaiting a reply that can
+        # never arrive.
+        self._closed_exc: BaseException | None = None
         # Notifications that arrive before any handler is registered are buffered
         # and flushed to the first handler. A service may emit feature events
         # (e.g. channel.inbound from an already-linked session) during startup,
@@ -168,18 +173,34 @@ class IsolatedFeatureClient:
 
     async def request(self, method: str, params: dict[str, Any] | None = None) -> Any:
         await self.start()
+        # Fail fast on a dead stream rather than writing to a broken pipe and
+        # awaiting a reply that will never come (the wedge this fixes).
+        if self._closed_exc is not None:
+            raise self._closed_exc
         self._next_id += 1
         request_id = self._next_id
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Any] = loop.create_future()
         self._pending[request_id] = future
-        self.writer.write(encode_message(JsonRpcRequest(method=method, params=params or {}, id=request_id)))
-        drain = getattr(self.writer, "drain", None)
-        if drain is not None:
-            await drain()
+        # Re-check after registering: if the read loop died between the guard
+        # above and now, its terminal drain already ran and would never see this
+        # future — resolve it against the latched error instead of hanging.
+        if self._closed_exc is not None:
+            self._pending.pop(request_id, None)
+            raise self._closed_exc
+        try:
+            self.writer.write(encode_message(JsonRpcRequest(method=method, params=params or {}, id=request_id)))
+            drain = getattr(self.writer, "drain", None)
+            if drain is not None:
+                await drain()
+        except Exception:
+            self._pending.pop(request_id, None)
+            raise
         return await future
 
     async def _read_loop(self) -> None:
+        # Default terminal cause if the loop somehow exits without raising.
+        exc: BaseException = ConnectionError("isolated feature stream closed")
         try:
             while True:
                 line = await self.reader.readline()
@@ -196,7 +217,18 @@ class IsolatedFeatureClient:
                         pending.set_result(message.result)
                 elif isinstance(message, JsonRpcNotification):
                     await self._handle_notification(message)
-        except Exception as exc:
+        except asyncio.CancelledError as cancelled:
+            # close() cancels us deliberately; still fail in-flight requests
+            # (see finally) so a tool call outstanding during a restart doesn't
+            # hang forever, then propagate so the task ends cancelled as awaited.
+            exc = cancelled
+            raise
+        except Exception as loop_exc:  # noqa: BLE001 — terminal; surfaced via futures
+            exc = loop_exc
+        finally:
+            # Latch the terminal condition and fail EVERY pending request so no
+            # waiter is stranded, and so later request() calls fail fast.
+            self._closed_exc = exc
             for pending in self._pending.values():
                 if not pending.done():
                     pending.set_exception(exc)
@@ -233,6 +265,11 @@ class SubprocessIsolatedFeatureClient:
 
     process: asyncio.subprocess.Process | None = None
     client: IsolatedFeatureClient | None = None
+    # Event handlers registered via on_event. Persisted on the wrapper (which
+    # survives restarts) rather than only on the inner client (which is rebuilt
+    # on every start), so a supervised restart re-attaches them to the fresh
+    # client instead of silently dropping every subsequent feature event.
+    _handlers: list[EventHandler] = field(default_factory=list)
 
     async def start(self) -> None:
         if self.process is not None:
@@ -256,6 +293,12 @@ class SubprocessIsolatedFeatureClient:
             self.process.stdin,
             protocol_version=self.protocol_version,
         )
+        # Re-attach persisted handlers BEFORE initialize so the inner client's
+        # startup-event buffer flushes to them (a relinked service may emit
+        # channel.inbound during the handshake). On a first start this list is
+        # empty and this is a no-op; on a restart it restores delivery.
+        for handler in self._handlers:
+            self.client.on_event(handler)
         await self.client.initialize(config=self.config)
         await self._wait_until_ready()
         await self.client.list_tools()
@@ -276,7 +319,11 @@ class SubprocessIsolatedFeatureClient:
         return await self._require_client().call_tool(name, arguments)
 
     def on_event(self, handler: EventHandler) -> None:
-        self._require_client().on_event(handler)
+        # Record on the wrapper so restarts re-attach it (see start()), and
+        # register on the live client if one already exists.
+        self._handlers.append(handler)
+        if self.client is not None:
+            self.client.on_event(handler)
 
     async def stop(self) -> None:
         process = self.process
