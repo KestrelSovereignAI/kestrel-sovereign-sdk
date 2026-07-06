@@ -111,21 +111,39 @@ _JSON_TYPE_MAP = {
     float: "number",
     list: "array",
     dict: "object",
+    # Bare-string forms (PEP 563): when ``get_type_hints()`` can't resolve a
+    # function's hints (e.g. one param is an unimportable forward ref), every
+    # annotation falls back to its raw string. A valid ``x: str`` sitting next
+    # to that must still resolve cleanly rather than warn.
+    "str": "string",
+    "int": "integer",
+    "bool": "boolean",
+    "float": "number",
+    "list": "array",
+    "dict": "object",
 }
 
 
-def _resolve_json_type(annotation: Any) -> tuple[str, Optional[Dict[str, Any]], bool]:
-    """Map a resolved type annotation to (json_type, items_schema, nullable).
+def _resolve_json_type(
+    annotation: Any,
+) -> tuple[str, Optional[Dict[str, Any]], bool, bool]:
+    """Map a resolved type annotation to (json_type, items_schema, nullable, resolved).
 
     Handles the cases the old identity-only lookup dropped to ``"string"``:
     ``Optional[X]`` / ``X | None`` (unwrapped to X, nullable=True), other unions
     (first concrete member), and ``List[X]`` items. ``annotation`` must already
     be a real type object — callers resolve PEP 563 string annotations via
     :func:`typing.get_type_hints` before calling this.
+
+    ``resolved`` is True when ``json_type`` is a deliberate mapping of the
+    annotation — including ``Optional[str]`` → ``"string"`` — and False only
+    when ``"string"`` is a fallback for a type with no JSON-schema equivalent
+    (an unknown/unimportable type, a callback, or a genuinely ambiguous
+    multi-type union). Callers warn only on the fallback case.
     """
 
     if annotation is inspect.Parameter.empty:
-        return "string", None, False
+        return "string", None, False, False
 
     origin = get_origin(annotation)
 
@@ -135,10 +153,10 @@ def _resolve_json_type(annotation: Any) -> tuple[str, Optional[Dict[str, Any]], 
         nullable = type(None) in args
         concrete = [a for a in args if a is not type(None)]
         if len(concrete) == 1:
-            inner_type, items, _ = _resolve_json_type(concrete[0])
-            return inner_type, items, nullable
+            inner_type, items, _, resolved = _resolve_json_type(concrete[0])
+            return inner_type, items, nullable, resolved
         # Genuinely ambiguous multi-type union: fall back to string.
-        return "string", None, nullable
+        return "string", None, nullable, False
 
     if origin is not None:
         json_type = _JSON_TYPE_MAP.get(origin, "string")
@@ -149,9 +167,10 @@ def _resolve_json_type(annotation: Any) -> tuple[str, Optional[Dict[str, Any]], 
                 inner_type = _JSON_TYPE_MAP.get(type_args[0])
                 if inner_type:
                     items_schema = {"type": inner_type}
-        return json_type, items_schema, False
+        return json_type, items_schema, False, origin in _JSON_TYPE_MAP
 
-    return _JSON_TYPE_MAP.get(annotation, "string"), None, False
+    resolved = annotation in _JSON_TYPE_MAP
+    return _JSON_TYPE_MAP.get(annotation, "string"), None, False, resolved
 
 
 class Feature(ABC):
@@ -456,12 +475,12 @@ def tool(name: str, description: str, category: ToolCategory = ToolCategory.SYST
                 continue
 
             annotation = resolved_hints.get(param_name, param.annotation)
-            param_type, items_schema, _nullable = _resolve_json_type(annotation)
-            if (
-                param_type == "string"
-                and annotation is not inspect.Parameter.empty
-                and annotation not in (str, "str")
-            ):
+            param_type, items_schema, _nullable, resolved = _resolve_json_type(annotation)
+            # Warn only when "string" is a genuine fallback (no JSON-schema
+            # equivalent), not when the annotation deliberately maps to string
+            # (``str`` / ``Optional[str]``). A missing annotation is normal for
+            # untyped params and is not worth a warning.
+            if not resolved and annotation is not inspect.Parameter.empty:
                 logger.warning(
                     "Tool %r param %r annotation %r did not map to a JSON schema "
                     "type; advertising it as 'string' to the LLM",
