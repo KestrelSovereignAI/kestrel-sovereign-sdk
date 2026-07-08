@@ -2,6 +2,10 @@
 
 See [README.md](README.md) for package overview.
 
+## Code Index
+
+- [REPO_MAP.md](REPO_MAP.md) — generated per-file index (one-line purpose + public Python symbols; regenerated nightly by `.github/workflows/repo-map.yml`).
+
 ## Package Structure
 
 ```
