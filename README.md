@@ -31,6 +31,68 @@ class MyFeature(Feature):
         return [Tool(name="my-tool", description="Does something", handler=self.handle)]
 ```
 
+## Host features (host/fleet scope)
+
+`Feature` **is a subagent** — each instance is bound to one agent (`self.agent`),
+mounts its router under that agent's prefix, and can be called as a tool with its
+own LLM context. `HostFeature` is the **host/fleet-scoped** sibling: it runs once
+per host, has **no agent binding**, mounts its router at the host root, and lives
+across host start/stop rather than agent enable/disable. It is what
+`kestrel-sovereign` discovers and mounts, and what fleet-observability host
+features implement.
+
+```python
+from kestrel_sdk import HostFeature, HostContext, UIContributions
+
+class FleetObservability(HostFeature):
+    name = "fleet-observability"       # stable slug for discovery / mounting
+    capability = "fleet.observe"       # optional capability gate
+
+    def get_router(self):
+        # Mounted at the HOST ROOT — no agent prefix, no get_agent dependency.
+        from fastapi import APIRouter
+        router = APIRouter()
+        # ... host-scoped routes ...
+        return router
+
+    async def on_host_start(self, ctx: HostContext):
+        # Host-scoped store handle built on the SDK's OWN storage layer.
+        # The feature layer (entities + a fleet TenantContext) is layered on
+        # top of this handle — the SDK stays dependency-free.
+        target = self.resolve_host_engine_target(ctx.config["host_db_url"])
+        self.db = ctx.db
+        await ctx.backplane.subscribe("fleet.events", self._on_event)
+
+    async def _on_event(self, event):
+        # Handle a live fleet event (persist, fan out to console, etc.).
+        ...
+
+    async def on_host_stop(self, ctx: HostContext):
+        await ctx.backplane.close()
+
+    def get_ui_contributions(self):
+        return UIContributions(
+            static_dir="/pkg/fleet/static",
+            modules=["fleet-panel.js"],
+            capability=self.capability,
+        )
+```
+
+| aspect        | `Feature`             | `HostFeature`                        |
+| ------------- | --------------------- | ------------------------------------ |
+| scope         | one subagent          | host / fleet                         |
+| binding       | `self.agent`          | none (`HostContext` at runtime)      |
+| router mount  | under agent prefix    | host root (no prefix, no `get_agent`)|
+| lifecycle     | enable / disable      | `on_host_start` / `on_host_stop`     |
+| store         | agent store           | host backend under fleet tenancy     |
+| called as tool| yes (A2A)             | no                                   |
+
+`HostContext` is a minimal, `runtime_checkable` Protocol exposing the host `db`
+backend, a pub/sub `backplane` handle, and host `config`. `UIContributions` is a
+pure-data dataclass (`static_dir` / `modules` / `capability`) so host features can
+ship console panels at host scope; `Feature` can adopt it later without a
+breaking change.
+
 ## Database surface (entity feature packages)
 
 Feature packages that need raw SQL or ORM access (e.g. `kestrel-feature-entities`)

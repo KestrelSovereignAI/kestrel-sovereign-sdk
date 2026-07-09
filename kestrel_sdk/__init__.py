@@ -30,6 +30,12 @@ from kestrel_sdk.timeline import (
     VectorSearchBackend,
 )
 
+# Host-scoped feature contract (issue #46) — sibling of the subagent-scoped
+# Feature. See kestrel_sdk.features.host_base for the contract and its
+# difference from Feature.
+from kestrel_sdk.features.host_base import HostContext, HostFeature
+from kestrel_sdk.features.ui import UIContributions
+
 __all__ = [
     "__version__",
     "TimelineProtocol",
@@ -38,4 +44,7 @@ __all__ = [
     "TimelineSharingProtocol",
     "JSONTimelineSerializer",
     "VectorSearchBackend",
+    "HostFeature",
+    "HostContext",
+    "UIContributions",
 ]
