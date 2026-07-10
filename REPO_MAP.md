@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 94 tracked files (84 `.py`, 4 `.md`, 6 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 97 tracked files (87 `.py`, 4 `.md`, 6 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -63,6 +63,10 @@ Repo entry points and standard project files.
 - **kestrel_sdk/features/__init__.py** — Kestrel SDK — Feature interfaces.
 - **kestrel_sdk/features/base.py** — Base class for Kestrel Features — SDK interface.
   - `class TaskHandler`; `def parse_docstring_params(docstring)`; `class Feature`; `def tool(name, description, category, command_prefix)`
+- **kestrel_sdk/features/host_base.py** — Host-scoped feature contract — SDK interface.
+  - `class HostContext`; `class HostFeature`
+- **kestrel_sdk/features/ui.py** — SDK-owned UI contribution shape.
+  - `class UIContributions`
 - **kestrel_sdk/hooks/__init__.py** — Kestrel SDK — Hook interfaces.
 - **kestrel_sdk/hooks/base.py** — Kestrel Hooks - Core Types (Claude Code Aligned).
   - `class HookEvent`; `class PermissionDecision`; `class HookInput`; `class HookOutput`; `class Hook`
@@ -162,6 +166,8 @@ Repo entry points and standard project files.
   - `def feature()`; `class TestToolResultPassThrough`; `class TestLegacyShapeDuringMigration`
 - **tests/test_hook_input.py** — SDK 0.9 — HookInput narration-check fields (kestrel-sovereign #1048 Wave 5D).
   - `def test_post_response_narration_fields_present_and_default_to_none()`; `def test_post_response_narration_fields_round_trip_through_to_dict()`; `def test_to_dict_exact_shape_for_post_response_event()`; `def test_positional_args_through_agent_spawn_keep_pre_0_9_meaning()`; `def test_pre_0_9_callers_still_construct_without_narration_fields()`
+- **tests/test_host_feature_contract.py** — Tests for the host-scoped feature contract (issue #46).
+  - `class ExampleHostFeature`; `def test_hostfeature_importable_from_sdk_top_level()`; `def test_hostfeature_is_abc_and_distinct_from_feature()`; `def test_hostfeature_has_no_agent_binding()`; `def test_declares_required_contract_methods()`; `def test_name_and_capability_slugs()`; `def test_base_defaults_are_thin()`; `def test_get_router_mounts_at_host_root()`; `…`
 - **tests/test_isolated_feature.py** — Tests for the isolated feature JSON-RPC stdio contract.
   - `class MemoryReader`; `class MemoryWriter`; `def memory_stdio_pair()`; `async def test_service_client_lifecycle_tools_and_events()`; `async def test_unknown_tool_returns_json_rpc_error()`; `def test_protocol_rejects_non_object_tool_schema()`; `async def test_tools_are_gated_until_health_reports_ready()`; `def test_feature_event_notification_round_trip()`; `…`
 - **tests/test_isolated_feature_concurrency.py** — A slow tool handler must not wedge the whole isolated-feature service.
