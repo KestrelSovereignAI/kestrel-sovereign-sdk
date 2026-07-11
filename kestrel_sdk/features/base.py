@@ -32,6 +32,7 @@ from typing import (
 from kestrel_sdk.tools.base import ToolSchema, ToolParameter, ToolCategory, AgentTool
 from kestrel_sdk.a2a.agent_card import AgentCard, AgentSkill, AgentCapabilities
 from kestrel_sdk.a2a.types import Task, TaskState, TaskStatus, Artifact, DataPart, Message, TextPart
+from kestrel_sdk.features.ui import UIContributions
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,16 @@ class Feature(ABC):
 
     def get_router(self):
         """Return a FastAPI APIRouter to mount, or None."""
+        return None
+
+    def get_ui_contributions(self) -> Optional[UIContributions]:
+        """Return static UI assets this feature contributes, or ``None``.
+
+        The SDK owns the descriptor so out-of-tree features do not need to
+        import the host framework or maintain a structurally-identical local
+        fallback. Sovereign mounts ``static_dir`` and publishes ``modules`` /
+        ``css`` through its enabled-feature UI manifest.
+        """
         return None
 
     async def post_all_features_loaded(self, agent):

@@ -210,9 +210,9 @@ class HostFeature(ABC):
         """Return console panels this host feature contributes, or ``None``.
 
         Reuses the SDK-owned :class:`~kestrel_sdk.features.ui.UIContributions`
-        shape (``static_dir`` + ``modules`` + ``capability``) so host features
-        can ship console panels at host scope. Returning ``None`` means the
-        feature contributes no UI.
+        shape (``static_dir`` + ``modules`` + ``capability`` + ``css``) so host
+        features can ship console panels at host scope. Returning ``None``
+        means the feature contributes no UI.
         """
         return None
 

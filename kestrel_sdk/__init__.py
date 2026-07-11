@@ -35,6 +35,7 @@ from kestrel_sdk.timeline import (
 # difference from Feature.
 from kestrel_sdk.features.host_base import HostContext, HostFeature
 from kestrel_sdk.features.ui import UIContributions
+from kestrel_sdk.extensions import AppExtension
 
 __all__ = [
     "__version__",
@@ -47,4 +48,5 @@ __all__ = [
     "HostFeature",
     "HostContext",
     "UIContributions",
+    "AppExtension",
 ]

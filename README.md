@@ -89,9 +89,25 @@ class FleetObservability(HostFeature):
 
 `HostContext` is a minimal, `runtime_checkable` Protocol exposing the host `db`
 backend, a pub/sub `backplane` handle, and host `config`. `UIContributions` is a
-pure-data dataclass (`static_dir` / `modules` / `capability`) so host features can
-ship console panels at host scope; `Feature` can adopt it later without a
-breaking change.
+pure-data dataclass (`static_dir` / `modules` / `css` / `capability`) shared by
+agent and host features, so feature packages never need to import Sovereign or
+carry a fallback copy just to describe their console assets.
+
+## Application extensions
+
+Application packages can customize agent prompt context through the SDK-owned
+`AppExtension` contract without importing the Sovereign runtime:
+
+```python
+from kestrel_sdk import AppExtension
+
+class CompanionExtension(AppExtension):
+    def get_system_prompt_prefix(self) -> str:
+        return "You are this application's companion persona."
+```
+
+Sovereign consumes this contract and keeps a compatibility re-export at its
+historic import path.
 
 ## Database surface (entity feature packages)
 
