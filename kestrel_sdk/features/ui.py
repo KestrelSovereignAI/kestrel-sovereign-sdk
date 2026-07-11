@@ -7,8 +7,8 @@ points sovereign should register, optionally gated behind a capability.
 
 This is *pure data* — it imports nothing from feature packages or the
 framework, so it is safe to own in the dependency-free SDK. It replaces the
-local fallback copies feature packages currently hand-roll. ``Feature`` can
-adopt it later without a breaking change.
+local fallback copies feature packages previously had to hand-roll. Both
+``Feature`` and ``HostFeature`` expose this descriptor.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ class UIContributions:
         modules: ES module entry points (URLs or mount-relative paths) the
             console should load to register the feature's panels. Empty when
             the feature contributes no client modules.
+        css: Stylesheet entry points loaded alongside ``modules``.
         capability: Optional capability slug gating whether this UI is shown.
             ``None`` means the UI is always available; a value means the host
             should only surface it to principals holding that capability.
@@ -36,6 +37,8 @@ class UIContributions:
     static_dir: Optional[str] = None
     modules: List[str] = field(default_factory=list)
     capability: Optional[str] = None
+    # Appended after the 0.29.2 positional fields for backward compatibility.
+    css: List[str] = field(default_factory=list)
 
 
 __all__ = ["UIContributions"]
