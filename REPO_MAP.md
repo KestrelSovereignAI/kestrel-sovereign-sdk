@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 97 tracked files (87 `.py`, 4 `.md`, 6 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 101 tracked files (90 `.py`, 4 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -60,6 +60,9 @@ Repo entry points and standard project files.
   - `class DeployProvider`
 - **kestrel_sdk/deploy/models.py** — Deploy Data Models and Exceptions.
   - `class DeployStatus`; `class DeployProviderType`; `class DeploymentProfile`; `class DeploymentSession`; `class DeployManagerError`
+- **kestrel_sdk/extensions/__init__.py** — Application-level extension contracts.
+- **kestrel_sdk/extensions/app_extension.py** — Application-specific agent extension contract.
+  - `class AppExtension`
 - **kestrel_sdk/features/__init__.py** — Kestrel SDK — Feature interfaces.
 - **kestrel_sdk/features/base.py** — Base class for Kestrel Features — SDK interface.
   - `class TaskHandler`; `def parse_docstring_params(docstring)`; `class Feature`; `def tool(name, description, category, command_prefix)`
@@ -97,6 +100,7 @@ Repo entry points and standard project files.
   - `class OutputKind`; `class OutputDestination`; `class OutputEvent`
 - **kestrel_sdk/payer_policy.py** — PayerPolicy — declarative model of who pays for which metered resource.
   - `class ResourceClass`; `class PayerKind`; `class SupportStatus`; `def status_for(resource_class, vendor, kind)`; `def is_offerable(resource_class, vendor, kind)`; `def supported_kinds_for(resource_class, vendor)`; `class KeyResolverProtocol`; `class ResolvedResource`; `…`
+- **kestrel_sdk/py.typed** — —
 - **kestrel_sdk/security/__init__.py** — Kestrel SDK — Security interfaces and encryption helpers.
 - **kestrel_sdk/security/aead.py** — AEAD container — versioned AES-256-GCM with Fernet-compatible read path.
   - `class AEADCipher`
@@ -164,6 +168,8 @@ Repo entry points and standard project files.
   - `def test_wrapped_description_not_truncated_at_word_continuation()`; `def test_single_line_params_unchanged()`; `def test_param_with_type_annotation()`
 - **tests/test_dynamic_tool_result.py** — Tests for ``DynamicTool.execute``'s ToolResult-aware pass-through.
   - `def feature()`; `class TestToolResultPassThrough`; `class TestLegacyShapeDuringMigration`
+- **tests/test_extension_contracts.py** — Contract tests shared by agent UI and application extensions.
+  - `def test_agent_feature_ui_contract_is_sdk_owned()`; `def test_ui_contributions_preserves_0292_positional_order()`; `def test_app_extension_defaults_are_safe_noops()`
 - **tests/test_hook_input.py** — SDK 0.9 — HookInput narration-check fields (kestrel-sovereign #1048 Wave 5D).
   - `def test_post_response_narration_fields_present_and_default_to_none()`; `def test_post_response_narration_fields_round_trip_through_to_dict()`; `def test_to_dict_exact_shape_for_post_response_event()`; `def test_positional_args_through_agent_spawn_keep_pre_0_9_meaning()`; `def test_pre_0_9_callers_still_construct_without_narration_fields()`
 - **tests/test_host_feature_contract.py** — Tests for the host-scoped feature contract (issue #46).
