@@ -2,6 +2,15 @@
 
 Lightweight SDK providing base interfaces, protocols, and utilities for Kestrel Sovereign feature package development. Feature packages depend on this SDK instead of the full framework, keeping dependencies minimal and development fast.
 
+## Voice provider contracts
+
+`kestrel_sdk.voice` defines independent TTS, STT, and realtime conversation
+provider contracts. Realtime providers declare capability metadata and mint a
+provider-neutral browser bootstrap (WebRTC or WebSocket); voice IDs are scoped
+to their provider. Tool-call batches pair every governed function result with
+one continuation, while legacy single-result methods remain available for
+older adapters.
+
 ## Installation
 
 ```bash
