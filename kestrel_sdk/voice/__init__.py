@@ -3,10 +3,14 @@
 from .base import TTSProvider, STTProvider, VoiceInfo, VoiceConfig, match_voice, split_sentences
 from .conversation_base import (
     AudioFormat,
+    ConversationCapabilities,
     ConversationEvent,
     ConversationProvider,
     ConversationSession,
+    EphemeralClientSecret,
     ErrorEvent,
+    RealtimeClientSession,
+    RealtimeTransport,
     ResponseAudioDeltaEvent,
     ResponseDoneEvent,
     ResponseTextDeltaEvent,
@@ -14,11 +18,14 @@ from .conversation_base import (
     SessionUpdatedEvent,
     SpeechStartedEvent,
     SpeechStoppedEvent,
+    ToolCallBatchRequestedEvent,
     ToolCallRequestedEvent,
     ToolDef,
     TranscriptDeltaEvent,
     TranscriptFinalEvent,
     TurnDetectionConfig,
+    VoiceToolCall,
+    VoiceToolResult,
 )
 
 __all__ = [
@@ -33,6 +40,10 @@ __all__ = [
     "ConversationSession",
     "ConversationEvent",
     "AudioFormat",
+    "ConversationCapabilities",
+    "RealtimeTransport",
+    "EphemeralClientSecret",
+    "RealtimeClientSession",
     "TurnDetectionConfig",
     "ToolDef",
     # Event types.
@@ -46,5 +57,8 @@ __all__ = [
     "ResponseTextDeltaEvent",
     "ResponseDoneEvent",
     "ToolCallRequestedEvent",
+    "ToolCallBatchRequestedEvent",
+    "VoiceToolCall",
+    "VoiceToolResult",
     "ErrorEvent",
 ]

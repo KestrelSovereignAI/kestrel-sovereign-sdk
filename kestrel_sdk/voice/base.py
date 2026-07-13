@@ -21,6 +21,11 @@ class VoiceInfo:
     age: str = "middle"     # "young", "middle", "mature"
     energy: str = "neutral" # "calm", "warm", "energetic", "authoritative"
     accent: str = "neutral" # "american", "british", etc.
+    description: str = ""   # Provider-supplied description, when available
+    use_case: str = ""      # narration, conversational, characters, etc.
+    tone: str = ""          # Provider-native tone/style label
+    is_custom: bool = False  # True for user/team-created voices
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -48,6 +53,54 @@ class VoiceConfig:
     # every other voice field above.
     # See KestrelSovereignAI/kestrel-sovereign#1352.
     voice_directive: str = ""
+    # Voice IDs are scoped to a provider. ``eve`` at xAI and ``eve`` at a
+    # future provider are not interchangeable, and changing providers should
+    # not erase the agent's prior selection. This map is authoritative for new
+    # callers; ``tts_voice_id`` remains the backward-compatible default.
+    provider_voice_ids: dict[str, str] = field(default_factory=dict)
+    # Optional explicit speech-to-speech provider. Empty means the resolver
+    # follows the active LLM vendor and installed-provider capabilities.
+    conversation_provider: str = ""
+
+    def __post_init__(self) -> None:
+        """Normalize provider-scoped fields for every construction path."""
+        raw_voice_ids = (
+            self.provider_voice_ids if isinstance(self.provider_voice_ids, dict) else {}
+        )
+        self.provider_voice_ids = {
+            str(provider).strip().casefold(): str(voice_id).strip()
+            for provider, voice_id in raw_voice_ids.items()
+            if provider and voice_id
+        }
+        self.conversation_provider = (
+            str(self.conversation_provider or "").strip().casefold()
+        )
+
+    def voice_for(self, provider: str) -> str:
+        """Return this agent's selected voice for ``provider``."""
+        provider = (provider or "").strip().casefold()
+        selected = self.provider_voice_ids.get(provider, "")
+        if selected:
+            return selected
+        tts_provider = (self.tts_provider or "").strip().casefold()
+        # Realtime adapters conventionally append ``_realtime`` to the same
+        # vendor name used by their TTS adapter. Preserve the pre-0.30 voice
+        # selection until the user explicitly chooses a realtime-scoped voice.
+        legacy_provider = provider.removesuffix("_realtime")
+        if provider and (provider == tts_provider or legacy_provider == tts_provider):
+            return self.tts_voice_id
+        return ""
+
+    def set_voice_for(self, provider: str, voice_id: str) -> None:
+        """Persist or clear one provider-scoped voice selection."""
+        provider = (provider or "").strip().casefold()
+        if not provider:
+            raise ValueError("provider must be non-empty")
+        voice_id = (voice_id or "").strip()
+        if voice_id:
+            self.provider_voice_ids[provider] = voice_id
+        else:
+            self.provider_voice_ids.pop(provider, None)
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -58,6 +111,20 @@ class VoiceConfig:
         """Deserialize from dictionary, ignoring unknown keys."""
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data.items() if k in known_fields}
+        provider_voice_ids = filtered.get("provider_voice_ids")
+        if not isinstance(provider_voice_ids, dict):
+            filtered["provider_voice_ids"] = {}
+        else:
+            filtered["provider_voice_ids"] = {
+                str(provider).strip().casefold(): str(voice_id).strip()
+                for provider, voice_id in provider_voice_ids.items()
+                if provider and voice_id
+            }
+        conversation_provider = filtered.get("conversation_provider")
+        if conversation_provider is not None:
+            filtered["conversation_provider"] = (
+                str(conversation_provider).strip().casefold()
+            )
         return cls(**filtered)
 
 
@@ -137,6 +204,21 @@ class TTSProvider(ABC):
 
     name: str
     is_local: bool  # True = privacy-safe, no cloud calls
+
+    def supported_output_formats(self) -> tuple[str, ...]:
+        """Return audio encodings accepted by this provider.
+
+        The historical contract assumed every provider accepted the same
+        four encodings. Keeping that set as the default preserves old
+        providers while allowing newer adapters to describe their upstream
+        API accurately.
+        """
+        return ("opus", "mp3", "pcm", "wav")
+
+    def default_output_format(self) -> str:
+        """Return the provider's preferred output encoding."""
+        supported = self.supported_output_formats()
+        return supported[0] if supported else "opus"
 
     @abstractmethod
     async def synthesize(self, text: str, voice_id: str, model: str = "",
