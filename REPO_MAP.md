@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 101 tracked files (90 `.py`, 4 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 102 tracked files (91 `.py`, 4 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -146,7 +146,7 @@ Repo entry points and standard project files.
 - **kestrel_sdk/voice/base.py** — Base classes for voice providers (TTS and STT).
   - `class VoiceInfo`; `class VoiceConfig`; `class PersonalityFingerprint`; `def match_voice(personality, available_voices)`; `def split_sentences(text)`; `class TTSProvider`; `class STTProvider`
 - **kestrel_sdk/voice/conversation_base.py** — ConversationProvider — speech-to-speech provider contract.
-  - `class AudioFormat`; `class TurnDetectionConfig`; `class ToolDef`; `class SessionCreatedEvent`; `class SessionUpdatedEvent`; `class SpeechStartedEvent`; `class SpeechStoppedEvent`; `class TranscriptDeltaEvent`; `…`
+  - `class AudioFormat`; `class TurnDetectionConfig`; `class ToolDef`; `class RealtimeTransport`; `class ConversationCapabilities`; `class EphemeralClientSecret`; `class RealtimeClientSession`; `class VoiceToolCall`; `…`
 
 ## `scripts/`
 
@@ -196,5 +196,7 @@ Repo entry points and standard project files.
   - `def test_resolve_optional_and_union_and_generics()`; `def test_resolved_flag_distinguishes_mapping_from_fallback()`; `def test_no_warning_for_optional_str_but_warning_for_true_fallback(caplog)`; `def test_tool_schema_under_pep563_string_annotations()`; `def test_unresolvable_annotation_falls_back_to_string_without_crashing()`; `def test_raw_str_annotation_after_hint_failure_resolves_without_warning(caplog)`
 - **tests/test_vector_search_protocol.py** — Tests for vector search backend protocol.
   - `class StubVectorSearchBackend`; `async def test_vector_search_backend_conformance()`; `async def test_vector_search_backend_callable()`; `async def test_vector_search_backend_without_filter()`; `async def test_vector_search_backend_supports_filters_property()`; `async def test_vector_search_backend_returns_tuples()`
+- **tests/test_voice_provider_contract.py** — —
+  - `async def test_single_tool_providers_remain_batch_compatible()`; `async def test_parallel_provider_can_commit_one_batch()`; `def test_conversation_capabilities_serialize_specialized_tools()`; `def test_legacy_provider_gets_conservative_capabilities()`; `def test_provider_scoped_voices_do_not_leak_between_catalogs()`; `def test_provider_scoped_voice_keys_are_normalized()`; `def test_transcript_updates_can_declare_cumulative_corrections()`; `def test_legacy_tts_provider_gets_format_capabilities()`; `…`
 - **tests/test_waitable.py** — Tests for the Waitable provider contract.
   - `class TestOutcome`; `class TestWaitStatus`; `class TestWaitableProtocol`; `class TestMonitorableWaitable`
