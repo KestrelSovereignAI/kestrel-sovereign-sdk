@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 102 tracked files (91 `.py`, 4 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 104 tracked files (93 `.py`, 4 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -137,6 +137,8 @@ Repo entry points and standard project files.
   - `class ToolResultStatus`; `class ToolResult`
 - **kestrel_sdk/tools/waitable.py** — Waitable provider contract.
   - `class Outcome`; `class WaitStatus`; `class Waitable`; `class MonitorableWaitable`
+- **kestrel_sdk/tracing.py** — Kestrel OTel instrumentation helper — OpenInference span builders + OTLP export.
+  - `class KestrelTracer`; `def configure()`
 - **kestrel_sdk/training/__init__.py** — Training provider interfaces for Kestrel SDK.
 - **kestrel_sdk/training/protocol.py** — TrainingProvider Protocol for unified LoRA training across providers.
   - `class TrainingProvider`; `class TrainingProviderError`; `class ProviderNotAvailableError`; `class TrainingSubmissionError`; `class TrainingStatusError`; `class DownloadError`; `class GenerationError`
@@ -194,6 +196,8 @@ Repo entry points and standard project files.
   - `class TestToolResultStatus`; `class TestToolResultOk`; `class TestToolResultFailed`; `class TestToolResultPartial`; `class TestToolResultTypeGuards`; `class TestToolResultFrozen`; `class TestToolResultSerialization`; `class TestHonestyLayerInvariants`
 - **tests/test_tool_schema_annotations.py** — @tool parameter-schema generation from real and PEP 563 annotations.
   - `def test_resolve_optional_and_union_and_generics()`; `def test_resolved_flag_distinguishes_mapping_from_fallback()`; `def test_no_warning_for_optional_str_but_warning_for_true_fallback(caplog)`; `def test_tool_schema_under_pep563_string_annotations()`; `def test_unresolvable_annotation_falls_back_to_string_without_crashing()`; `def test_raw_str_annotation_after_hint_failure_resolves_without_warning(caplog)`
+- **tests/test_tracing.py** — Tests for the OTel instrumentation helper (``kestrel_sdk.tracing``).
+  - `class TestWorksWithoutExtra`; `class TestNoOpWhenUnconfigured`; `class TestConfigureEnabled`; `class TestSpanTree`; `class TestAttributeResolution`; `class TestLLMSpan`; `class TestConventionDrift`
 - **tests/test_vector_search_protocol.py** — Tests for vector search backend protocol.
   - `class StubVectorSearchBackend`; `async def test_vector_search_backend_conformance()`; `async def test_vector_search_backend_callable()`; `async def test_vector_search_backend_without_filter()`; `async def test_vector_search_backend_supports_filters_property()`; `async def test_vector_search_backend_returns_tuples()`
 - **tests/test_voice_provider_contract.py** — —
