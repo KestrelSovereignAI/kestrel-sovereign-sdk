@@ -95,10 +95,19 @@ KESTREL_RUN_ID = "kestrel.run_id"
 KESTREL_STAGE = "kestrel.stage"
 KESTREL_AGENT_NAME = "kestrel.agent_name"
 
+# --- OpenInference project RESOURCE attribute. Phoenix groups traces into
+# --- projects via this key (decision: projects == repos — talon stamps
+# --- ``owner/repo``; host/agent traces use a fleet default). Kept a literal
+# --- string so no dependency on the ``openinference`` package is needed. ------
+OPENINFERENCE_PROJECT_NAME = "openinference.project.name"
+
 # --- Env vars carrying process-global identity (Resource defaults). ---------
 _REPO_ENV = "KESTREL_REPO"
 _RUN_ID_ENV = "KESTREL_RUN_ID"
 _ORCHESTRATOR_ENV = "KESTREL_ORCHESTRATOR"
+
+# --- Env var carrying the OpenInference project name (Resource attr). --------
+_OTEL_PROJECT_ENV = "KESTREL_OTEL_PROJECT"
 
 # --- Standard OTLP endpoint env vars (drive the no-op-when-unset behavior). --
 _TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
@@ -124,6 +133,17 @@ def _resolve_endpoint(endpoint: Optional[str]) -> Optional[str]:
         or os.environ.get(_ENDPOINT_ENV)
         or None
     )
+
+
+def _resolve_project_name(project_name: Optional[str]) -> Optional[str]:
+    """Explicit ``project_name`` wins; else ``KESTREL_OTEL_PROJECT``; else ``None``.
+
+    ``None`` means omit the ``openinference.project.name`` resource attribute so
+    the backend applies its own default (Phoenix's ``default`` project).
+    """
+    if project_name:
+        return project_name
+    return os.environ.get(_OTEL_PROJECT_ENV) or None
 
 
 def _env_defaults() -> Dict[str, str]:
@@ -396,6 +416,7 @@ def configure(
     headers: Optional[Mapping[str, str]] = None,
     resource_attributes: Optional[Mapping[str, str]] = None,
     service_name: str = "kestrel",
+    project_name: Optional[str] = None,
     set_global: bool = False,
 ) -> KestrelTracer:
     """Build a :class:`KestrelTracer`, wiring an OTLP/HTTP exporter when configured.
@@ -410,6 +431,11 @@ def configure(
     ``KESTREL_ORCHESTRATOR``) becomes Resource + default span attributes;
     ``resource_attributes`` overrides those. Auth headers come from
     ``OTEL_EXPORTER_OTLP_HEADERS`` (read by the exporter) or the ``headers`` arg.
+
+    ``project_name`` stamps the ``openinference.project.name`` RESOURCE attribute
+    (Phoenix groups traces into projects by it; decision: projects == repos).
+    When unset it falls back to the ``KESTREL_OTEL_PROJECT`` env var; when both
+    are unset the attribute is omitted so the backend applies its own default.
     """
     defaults = _env_defaults()
     if resource_attributes:
@@ -436,7 +462,9 @@ def configure(
         return KestrelTracer(tracer=None, defaults=defaults)
 
     try:
-        resource = Resource.create(_resource_attrs(defaults, service_name, resource_attributes))
+        resource = Resource.create(
+            _resource_attrs(defaults, service_name, resource_attributes, project_name)
+        )
         provider = TracerProvider(resource=resource)
         exporter_kwargs: Dict[str, Any] = {}
         if endpoint:
@@ -458,6 +486,7 @@ def _resource_attrs(
     defaults: Mapping[str, str],
     service_name: str,
     resource_attributes: Optional[Mapping[str, str]],
+    project_name: Optional[str] = None,
 ) -> Dict[str, str]:
     """Assemble Resource attributes: service name + process-global Kestrel identity."""
     attrs: Dict[str, str] = {"service.name": service_name}
@@ -478,6 +507,11 @@ def _resource_attrs(
         for key, value in resource_attributes.items():
             if key not in _identity_keys and value is not None:
                 attrs[key] = value
+    # OpenInference project (Phoenix trace grouping). Explicit arg / env wins over
+    # any pass-through value; omitted entirely when both are unset (backend default).
+    project = _resolve_project_name(project_name)
+    if project:
+        attrs[OPENINFERENCE_PROJECT_NAME] = project
     return attrs
 
 
@@ -489,4 +523,5 @@ __all__ = [
     "KESTREL_RUN_ID",
     "KESTREL_STAGE",
     "KESTREL_AGENT_NAME",
+    "OPENINFERENCE_PROJECT_NAME",
 ]

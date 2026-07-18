@@ -13,6 +13,8 @@ ONE implementation of the span conventions. Covers:
 5. Env-sourced Resource defaults, overridable per call; repo mirrored from run_id.
 6. LLM span carries input.value / output.value / llm.model_name.
 7. Drift check: attribute keys + span kinds byte-identical to the obs helper.
+8. openinference.project.name RESOURCE attr stamped from project_name /
+   KESTREL_OTEL_PROJECT; omitted when both are unset.
 
 The real-export tests need the OTel SDK (the ``[tracing]`` extra). They are
 skipped when it is absent so the base suite still passes; the no-op and
@@ -29,6 +31,7 @@ from kestrel_sdk.tracing import (
     KESTREL_REPO,
     KESTREL_RUN_ID,
     KESTREL_STAGE,
+    OPENINFERENCE_PROJECT_NAME,
     KestrelTracer,
     configure,
 )
@@ -321,6 +324,63 @@ class TestLLMSpan:
 
 
 # ---------------------------------------------------------------------------
+# 8. openinference.project.name RESOURCE attribute (Phoenix project grouping)
+# ---------------------------------------------------------------------------
+
+@requires_otel
+class TestProjectNameResourceAttr:
+    """``configure(project_name=...)`` / ``KESTREL_OTEL_PROJECT`` stamp the
+    ``openinference.project.name`` RESOURCE attribute; both unset → omitted."""
+
+    @staticmethod
+    def _resource_attrs(tracer):
+        # The configured tracer holds the SDK provider's Resource.
+        return dict(tracer._tracer.resource.attributes)
+
+    def test_project_name_arg_stamps_resource_attr(self):
+        with patch.dict(
+            "os.environ",
+            {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:6006"},
+            clear=True,
+        ):
+            t = configure(project_name="owner/repo")
+        assert self._resource_attrs(t)[OPENINFERENCE_PROJECT_NAME] == "owner/repo"
+
+    def test_env_var_stamps_resource_attr_when_arg_unset(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:6006",
+                "KESTREL_OTEL_PROJECT": "fleet/default",
+            },
+            clear=True,
+        ):
+            t = configure()
+        assert self._resource_attrs(t)[OPENINFERENCE_PROJECT_NAME] == "fleet/default"
+
+    def test_resource_attr_absent_when_both_unset(self):
+        with patch.dict(
+            "os.environ",
+            {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:6006"},
+            clear=True,
+        ):
+            t = configure()
+        assert OPENINFERENCE_PROJECT_NAME not in self._resource_attrs(t)
+
+    def test_arg_takes_precedence_over_env(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:6006",
+                "KESTREL_OTEL_PROJECT": "env/project",
+            },
+            clear=True,
+        ):
+            t = configure(project_name="arg/project")
+        assert self._resource_attrs(t)[OPENINFERENCE_PROJECT_NAME] == "arg/project"
+
+
+# ---------------------------------------------------------------------------
 # 7. Drift check — attribute keys + span kinds byte-identical to the obs helper
 # ---------------------------------------------------------------------------
 
@@ -338,6 +398,10 @@ class TestConventionDrift:
         assert KESTREL_RUN_ID == "kestrel.run_id"
         assert KESTREL_STAGE == "kestrel.stage"
         assert KESTREL_AGENT_NAME == "kestrel.agent_name"
+
+    def test_openinference_project_name_key_is_stable(self):
+        # Phoenix reads this exact RESOURCE key to group traces into projects.
+        assert OPENINFERENCE_PROJECT_NAME == "openinference.project.name"
 
     def test_openinference_keys_and_kinds_are_stable(self):
         import kestrel_sdk.tracing as tracing
