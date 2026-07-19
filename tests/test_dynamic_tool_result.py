@@ -167,3 +167,114 @@ class TestLegacyShapeDuringMigration:
         assert out["success"] is False
         assert out["error"] == "simulated failure"
         assert out["tool"] == "raises"
+
+
+class _PartsFeature(Feature):
+    """Feature whose tools exercise the envelope-parts contract (#2641)."""
+
+    @property
+    def tool_description(self) -> str:  # noqa: D401  (single-line)
+        return "fixture feature for envelope-parts tests"
+
+    async def initialize(self) -> None:
+        """No-op; the fixture doesn't need real lifecycle setup."""
+        return None
+
+    @tool(
+        name="explicit_parts",
+        description="Returns ToolResult carrying explicit parts",
+        category=ToolCategory.UTILITY,
+    )
+    async def explicit_parts(self) -> ToolResult:
+        return ToolResult.ok(
+            "Selfie rendered",
+            data={"url": "https://img/x.png"},
+            parts=[{"type": "selfie_finished", "data": {"url": "https://img/x.png"}}],
+        )
+
+    @tool(
+        name="buffered_parts",
+        description="Emits into the pending buffer mid-execution",
+        category=ToolCategory.UTILITY,
+    )
+    async def buffered_parts(self) -> ToolResult:
+        # What the framework's ``emit_part`` does on its no-collector
+        # fallback path: append to the bound pending buffer.
+        from kestrel_sdk.tools.parts import current_tool_result_parts
+        buf = current_tool_result_parts()
+        assert buf is not None, "wrapper must bind the buffer around the call"
+        buf.append({"type": "selfie_pending", "data": {"scene": "window"}})
+        return ToolResult.ok(
+            "Selfie rendered",
+            parts=[{"type": "selfie_finished", "data": {"url": "u"}}],
+        )
+
+    @tool(
+        name="legacy_with_buffered_parts",
+        description="Legacy dict return with a buffered part",
+        category=ToolCategory.UTILITY,
+    )
+    async def legacy_with_buffered_parts(self) -> dict:
+        from kestrel_sdk.tools.parts import current_tool_result_parts
+        current_tool_result_parts().append({"type": "todo", "data": {"t": 1}})
+        return {"saved": True}
+
+    @tool(
+        name="raises_after_part",
+        description="Buffers a pending card then raises",
+        category=ToolCategory.UTILITY,
+    )
+    async def raises_after_part(self) -> ToolResult:
+        from kestrel_sdk.tools.parts import current_tool_result_parts
+        current_tool_result_parts().append({"type": "selfie_pending", "data": {}})
+        raise RuntimeError("render backend down")
+
+
+@pytest.fixture
+def parts_feature():
+    return _PartsFeature(agent=None)
+
+
+class TestEnvelopeParts:
+    """Envelope-carried typed parts survive the wrapper (#2641)."""
+
+    def test_explicit_toolresult_parts_reach_the_envelope(self, parts_feature):
+        out = _run(_get_dyn_tool(parts_feature, "explicit_parts").execute())
+        assert out["status"] == "ok"
+        assert out["parts"] == [
+            {"type": "selfie_finished", "data": {"url": "https://img/x.png"}},
+        ]
+        json.dumps(out)  # still JSON-native
+
+    def test_buffered_parts_merge_before_explicit(self, parts_feature):
+        """Buffered entries were emitted mid-execution, explicit ones are
+        attached at return time — chronological order on the envelope."""
+        out = _run(_get_dyn_tool(parts_feature, "buffered_parts").execute())
+        assert [p["type"] for p in out["parts"]] == [
+            "selfie_pending", "selfie_finished",
+        ]
+
+    def test_legacy_dict_envelope_carries_buffered_parts(self, parts_feature):
+        out = _run(_get_dyn_tool(parts_feature, "legacy_with_buffered_parts").execute())
+        assert out["success"] is True
+        assert out["result"] == {"saved": True}
+        assert out["parts"] == [{"type": "todo", "data": {"t": 1}}]
+
+    def test_error_path_still_carries_buffered_parts(self, parts_feature):
+        """A ``*_pending`` card emitted before the failure still travels."""
+        out = _run(_get_dyn_tool(parts_feature, "raises_after_part").execute())
+        assert out["success"] is False
+        assert "render backend down" in out["error"]
+        assert out["parts"] == [{"type": "selfie_pending", "data": {}}]
+
+    def test_partless_envelopes_are_byte_identical(self, feature):
+        """Tools that never touch parts keep the exact pre-#2641 shape."""
+        assert "parts" not in _run(_get_dyn_tool(feature, "returns_ok").execute())
+        assert "parts" not in _run(_get_dyn_tool(feature, "returns_legacy_dict").execute())
+        assert "parts" not in _run(_get_dyn_tool(feature, "raises").execute())
+
+    def test_buffer_is_scoped_to_the_execution(self, parts_feature):
+        from kestrel_sdk.tools.parts import current_tool_result_parts
+        assert current_tool_result_parts() is None
+        _run(_get_dyn_tool(parts_feature, "buffered_parts").execute())
+        assert current_tool_result_parts() is None
