@@ -197,7 +197,7 @@ Repo entry points and standard project files.
 - **tests/test_tool_schema_annotations.py** — @tool parameter-schema generation from real and PEP 563 annotations.
   - `def test_resolve_optional_and_union_and_generics()`; `def test_resolved_flag_distinguishes_mapping_from_fallback()`; `def test_no_warning_for_optional_str_but_warning_for_true_fallback(caplog)`; `def test_tool_schema_under_pep563_string_annotations()`; `def test_unresolvable_annotation_falls_back_to_string_without_crashing()`; `def test_raw_str_annotation_after_hint_failure_resolves_without_warning(caplog)`
 - **tests/test_tracing.py** — Tests for the OTel instrumentation helper (``kestrel_sdk.tracing``).
-  - `class TestWorksWithoutExtra`; `class TestNoOpWhenUnconfigured`; `class TestConfigureEnabled`; `class TestSpanTree`; `class TestAttributeResolution`; `class TestLLMSpan`; `class TestConventionDrift`
+  - `class TestWorksWithoutExtra`; `class TestNoOpWhenUnconfigured`; `class TestConfigureEnabled`; `class TestSpanTree`; `class TestAttributeResolution`; `class TestLLMSpan`; `class TestProjectNameResourceAttr`; `class TestConventionDrift`
 - **tests/test_vector_search_protocol.py** — Tests for vector search backend protocol.
   - `class StubVectorSearchBackend`; `async def test_vector_search_backend_conformance()`; `async def test_vector_search_backend_callable()`; `async def test_vector_search_backend_without_filter()`; `async def test_vector_search_backend_supports_filters_property()`; `async def test_vector_search_backend_returns_tuples()`
 - **tests/test_voice_provider_contract.py** — —
