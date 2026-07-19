@@ -391,43 +391,70 @@ class Feature(ABC):
                         )
 
                     async def execute(self, **kwargs) -> Dict[str, Any]:
-                        try:
-                            result = await self.func(**kwargs)
-                            # ToolResult-aware pass-through: when a tool
-                            # returns the canonical envelope, expose
-                            # `status`/`confirmation`/`error` at the top
-                            # level so the constitutional honesty layer
-                            # (#1042) can read them directly. Without
-                            # this, the wrapper hides the envelope under
-                            # `result["result"]` and ToolResult itself
-                            # would also fail json.dumps because it's
-                            # not JSON-native. The `tool` key is kept
-                            # alongside as dispatch-layer metadata so
-                            # audit logs can still identify which tool
-                            # produced this row.
-                            from kestrel_sdk.tools.result import ToolResult
-                            if isinstance(result, ToolResult):
-                                payload = result.to_dict()
-                                payload["tool"] = self.name
-                                return payload
-                            # Legacy path for tools that still return
-                            # arbitrary dicts/strings. Removed once
-                            # every feature has migrated and the
-                            # framework's registry validator (#1042
-                            # layer 4b) starts rejecting non-ToolResult
-                            # methods at startup.
-                            return {
-                                "success": True,
-                                "result": result,
-                                "tool": self.name
-                            }
-                        except Exception as e:
-                            logger.error(f"Error executing tool {self.name}: {e}")
-                            return {
-                                "success": False,
-                                "error": str(e),
-                                "tool": self.name
-                            }
+                        # Bind the pending typed-parts buffer around the
+                        # wrapped call (kestrel-sovereign #2641): the
+                        # framework's ``emit_part``, finding no per-turn
+                        # collector in the current context, deposits parts
+                        # here so they can ride the result envelope instead
+                        # of being silently dropped. Entries are attached
+                        # raw — wire sanitization stays framework-side at
+                        # the dispatch boundary.
+                        from kestrel_sdk.tools.parts import tool_result_parts_buffer
+                        with tool_result_parts_buffer() as pending_parts:
+                            try:
+                                result = await self.func(**kwargs)
+                            except Exception as e:
+                                logger.error(f"Error executing tool {self.name}: {e}")
+                                response = {
+                                    "success": False,
+                                    "error": str(e),
+                                    "tool": self.name
+                                }
+                                # Parts emitted before the failure (e.g. a
+                                # ``*_pending`` card) still travel, matching
+                                # the collector path where emit_part
+                                # delivers immediately.
+                                if pending_parts:
+                                    response["parts"] = list(pending_parts)
+                                return response
+                        # ToolResult-aware pass-through: when a tool
+                        # returns the canonical envelope, expose
+                        # `status`/`confirmation`/`error` at the top
+                        # level so the constitutional honesty layer
+                        # (#1042) can read them directly. Without
+                        # this, the wrapper hides the envelope under
+                        # `result["result"]` and ToolResult itself
+                        # would also fail json.dumps because it's
+                        # not JSON-native. The `tool` key is kept
+                        # alongside as dispatch-layer metadata so
+                        # audit logs can still identify which tool
+                        # produced this row.
+                        from kestrel_sdk.tools.result import ToolResult
+                        if isinstance(result, ToolResult):
+                            payload = result.to_dict()
+                            payload["tool"] = self.name
+                            # Merge buffered (mid-execution, chronologically
+                            # first) with explicit ``ToolResult.parts``
+                            # (attached at return time).
+                            if pending_parts:
+                                payload["parts"] = [
+                                    *pending_parts, *(result.parts or []),
+                                ]
+                            return payload
+                        # Legacy path for tools that still return
+                        # arbitrary dicts/strings. Removed once
+                        # every feature has migrated and the
+                        # framework's registry validator (#1042
+                        # layer 4b) starts rejecting non-ToolResult
+                        # methods at startup.
+                        response = {
+                            "success": True,
+                            "result": result,
+                            "tool": self.name
+                        }
+                        if pending_parts:
+                            response["parts"] = list(pending_parts)
+                        return response
 
                 tools.append(DynamicTool(method, schema_data, agent_skill))
         return tools

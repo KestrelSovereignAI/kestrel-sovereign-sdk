@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 class ToolResultStatus(StrEnum):
@@ -89,6 +89,15 @@ class ToolResult:
             paths, etc). Free-form because individual features need
             different shapes; the constitutional layer reads
             ``status`` / ``confirmation`` / ``error`` only.
+        parts: Optional list of first-class typed render parts
+            (kestrel-sovereign #2641). Each entry is a dict of the
+            ``{type, data, id?}`` shape the framework's ``emit_part``
+            produces; the tool wrapper serializes them onto the result
+            envelope's ``parts`` field so they survive subagent
+            dispatch by contract instead of ContextVar happenstance.
+            Validation here is structural only (a list of dicts, each
+            with a non-empty string ``type``); the framework applies
+            its size/type wire sanitization at the dispatch boundary.
 
     Construction: prefer the classmethod factories
     (:meth:`ok`, :meth:`error`, :meth:`partial`) — they wrap the
@@ -103,6 +112,7 @@ class ToolResult:
     confirmation: Optional[str] = None
     error: Optional[str] = None
     data: Optional[Dict[str, Any]] = None
+    parts: Optional[List[Dict[str, Any]]] = None
 
     def __post_init__(self) -> None:
         # Type guard: status MUST be the enum, not a bare string.
@@ -145,6 +155,31 @@ class ToolResult:
                 "ToolResult.data must be a dict or None, got "
                 f"{type(self.data).__name__}"
             )
+        # parts: structural validation only. Each entry must at least be
+        # the ``{type: str, ...}`` shape the framework's part renderer
+        # keys on — catching a wrong-shaped return at construction time,
+        # where the feature author sees the traceback, instead of at the
+        # dispatch boundary where it would be silently dropped. Deep wire
+        # sanitization (size caps, control characters) deliberately stays
+        # in the framework so there is one source of truth for the rules.
+        if self.parts is not None:
+            if not isinstance(self.parts, list):
+                raise TypeError(
+                    "ToolResult.parts must be a list of dicts or None, got "
+                    f"{type(self.parts).__name__}"
+                )
+            for entry in self.parts:
+                if not isinstance(entry, dict):
+                    raise TypeError(
+                        "ToolResult.parts entries must be dicts, got "
+                        f"{type(entry).__name__}"
+                    )
+                part_type = entry.get("type")
+                if not isinstance(part_type, str) or not part_type:
+                    raise ValueError(
+                        "ToolResult.parts entries require a non-empty string "
+                        f"'type', got {part_type!r}"
+                    )
 
         # Status-specific invariants.
         # - OK: must have confirmation, must NOT have error.
@@ -194,6 +229,7 @@ class ToolResult:
         confirmation: str,
         *,
         data: Optional[Dict[str, Any]] = None,
+        parts: Optional[List[Dict[str, Any]]] = None,
     ) -> "ToolResult":
         """Construct an OK result.
 
@@ -201,11 +237,15 @@ class ToolResult:
             confirmation: Human-readable success line. Surfaces in
                 the LLM's reply as ground truth.
             data: Optional machine-readable payload.
+            parts: Optional first-class typed render parts
+                (``{type, data, id?}`` dicts) carried on the result
+                envelope.
         """
         return cls(
             status=ToolResultStatus.OK,
             confirmation=confirmation,
             data=data,
+            parts=parts,
         )
 
     @classmethod
@@ -214,6 +254,7 @@ class ToolResult:
         error: str,
         *,
         data: Optional[Dict[str, Any]] = None,
+        parts: Optional[List[Dict[str, Any]]] = None,
     ) -> "ToolResult":
         """Construct an ERROR result.
 
@@ -229,11 +270,15 @@ class ToolResult:
             error: Human-readable failure description.
             data: Optional machine-readable payload (e.g. partial
                 state captured before the error).
+            parts: Optional first-class typed render parts — a
+                failure can still carry e.g. the ``*_pending`` card
+                it emitted before things went wrong.
         """
         return cls(
             status=ToolResultStatus.ERROR,
             error=error,
             data=data,
+            parts=parts,
         )
 
     @classmethod
@@ -243,6 +288,7 @@ class ToolResult:
         error: str,
         *,
         data: Optional[Dict[str, Any]] = None,
+        parts: Optional[List[Dict[str, Any]]] = None,
     ) -> "ToolResult":
         """Construct a PARTIAL result.
 
@@ -253,12 +299,16 @@ class ToolResult:
             confirmation: Success line for the part that succeeded.
             error: Description of the caveat / partial failure.
             data: Optional machine-readable payload.
+            parts: Optional first-class typed render parts
+                (``{type, data, id?}`` dicts) carried on the result
+                envelope.
         """
         return cls(
             status=ToolResultStatus.PARTIAL,
             confirmation=confirmation,
             error=error,
             data=data,
+            parts=parts,
         )
 
     # ------------------------------------------------------------------
@@ -279,4 +329,8 @@ class ToolResult:
             out["error"] = self.error
         if self.data is not None:
             out["data"] = self.data
+        # Empty list is omitted like None: "no parts" serializes to the
+        # exact pre-parts envelope shape, byte for byte.
+        if self.parts:
+            out["parts"] = self.parts
         return out

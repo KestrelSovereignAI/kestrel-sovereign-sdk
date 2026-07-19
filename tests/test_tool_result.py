@@ -283,3 +283,49 @@ class TestHonestyLayerInvariants:
         r = ToolResult.partial("Saved", "indexing degraded")
         assert r.confirmation
         assert r.error
+
+
+class TestToolResultParts:
+    """First-class typed render parts on the envelope (sovereign #2641)."""
+
+    def test_parts_default_is_none(self):
+        assert ToolResult.ok("Saved").parts is None
+
+    def test_factories_accept_parts(self):
+        entry = {"type": "selfie_finished", "data": {"url": "u"}, "id": "s1"}
+        assert ToolResult.ok("Saved", parts=[entry]).parts == [entry]
+        assert ToolResult.failed("boom", parts=[entry]).parts == [entry]
+        assert ToolResult.partial("Saved", "degraded", parts=[entry]).parts == [entry]
+
+    def test_to_dict_carries_parts(self):
+        entry = {"type": "selfie_finished", "data": {"url": "u"}}
+        assert ToolResult.ok("Saved", parts=[entry]).to_dict()["parts"] == [entry]
+
+    def test_to_dict_omits_absent_or_empty_parts(self):
+        """No parts serializes to the exact pre-parts envelope shape."""
+        assert "parts" not in ToolResult.ok("Saved").to_dict()
+        assert "parts" not in ToolResult.ok("Saved", parts=[]).to_dict()
+
+    def test_parts_must_be_a_list(self):
+        with pytest.raises(TypeError):
+            ToolResult.ok("Saved", parts={"type": "t"})
+
+    def test_parts_entries_must_be_dicts(self):
+        with pytest.raises(TypeError):
+            ToolResult.ok("Saved", parts=["not-a-dict"])
+
+    def test_parts_entries_require_nonempty_string_type(self):
+        with pytest.raises(ValueError):
+            ToolResult.ok("Saved", parts=[{"data": 1}])
+        with pytest.raises(ValueError):
+            ToolResult.ok("Saved", parts=[{"type": "", "data": 1}])
+        with pytest.raises(ValueError):
+            ToolResult.ok("Saved", parts=[{"type": 7, "data": 1}])
+
+    def test_deep_sanitization_is_not_the_sdk_job(self):
+        """Size caps / control-character rules live in the framework at
+        the dispatch boundary — a structurally-valid but wire-invalid
+        entry constructs fine here and is dropped there. Pin the split
+        so the rules never get duplicated."""
+        r = ToolResult.ok("Saved", parts=[{"type": "bad\x1etype", "data": 1}])
+        assert r.parts[0]["type"] == "bad\x1etype"
