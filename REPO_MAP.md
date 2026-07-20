@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 104 tracked files (93 `.py`, 4 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 105 tracked files (94 `.py`, 4 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -133,6 +133,8 @@ Repo entry points and standard project files.
 - **kestrel_sdk/tools/__init__.py** — Kestrel SDK — Tool interfaces.
 - **kestrel_sdk/tools/base.py** — Base classes and interfaces for Kestrel agent tools.
   - `class ToolCategory`; `class ToolParameter`; `class ToolSchema`; `class AgentTool`; `class ToolExecutionError`
+- **kestrel_sdk/tools/parts.py** — Pending typed-parts buffer for the tool call currently executing.
+  - `def tool_result_parts_buffer()`; `def current_tool_result_parts()`
 - **kestrel_sdk/tools/result.py** — Tool result envelope contract.
   - `class ToolResultStatus`; `class ToolResult`
 - **kestrel_sdk/tools/waitable.py** — Waitable provider contract.
@@ -169,7 +171,7 @@ Repo entry points and standard project files.
 - **tests/test_docstring_parser.py** — Regression tests for parse_docstring_params wrapped-description truncation.
   - `def test_wrapped_description_not_truncated_at_word_continuation()`; `def test_single_line_params_unchanged()`; `def test_param_with_type_annotation()`
 - **tests/test_dynamic_tool_result.py** — Tests for ``DynamicTool.execute``'s ToolResult-aware pass-through.
-  - `def feature()`; `class TestToolResultPassThrough`; `class TestLegacyShapeDuringMigration`
+  - `def feature()`; `class TestToolResultPassThrough`; `class TestLegacyShapeDuringMigration`; `def parts_feature()`; `class TestEnvelopeParts`
 - **tests/test_extension_contracts.py** — Contract tests shared by agent UI and application extensions.
   - `def test_agent_feature_ui_contract_is_sdk_owned()`; `def test_ui_contributions_preserves_0292_positional_order()`; `def test_app_extension_defaults_are_safe_noops()`
 - **tests/test_hook_input.py** — SDK 0.9 — HookInput narration-check fields (kestrel-sovereign #1048 Wave 5D).
@@ -193,7 +195,7 @@ Repo entry points and standard project files.
 - **tests/test_timeline_sharing.py** — Tests for timeline sharing protocols.
   - `class StubTimeline`; `class StubEvent`; `class StubPerson`; `def test_json_serializer_is_protocol()`; `def test_json_serializer_content_type()`; `def test_json_serializer_produces_valid_json()`; `def test_json_serializer_round_trip()`; `def test_json_serializer_handles_null_fields()`; `…`
 - **tests/test_tool_result.py** — Tests for ToolResult — the cross-feature tool envelope contract.
-  - `class TestToolResultStatus`; `class TestToolResultOk`; `class TestToolResultFailed`; `class TestToolResultPartial`; `class TestToolResultTypeGuards`; `class TestToolResultFrozen`; `class TestToolResultSerialization`; `class TestHonestyLayerInvariants`
+  - `class TestToolResultStatus`; `class TestToolResultOk`; `class TestToolResultFailed`; `class TestToolResultPartial`; `class TestToolResultTypeGuards`; `class TestToolResultFrozen`; `class TestToolResultSerialization`; `class TestHonestyLayerInvariants`; `…`
 - **tests/test_tool_schema_annotations.py** — @tool parameter-schema generation from real and PEP 563 annotations.
   - `def test_resolve_optional_and_union_and_generics()`; `def test_resolved_flag_distinguishes_mapping_from_fallback()`; `def test_no_warning_for_optional_str_but_warning_for_true_fallback(caplog)`; `def test_tool_schema_under_pep563_string_annotations()`; `def test_unresolvable_annotation_falls_back_to_string_without_crashing()`; `def test_raw_str_annotation_after_hint_failure_resolves_without_warning(caplog)`
 - **tests/test_tracing.py** — Tests for the OTel instrumentation helper (``kestrel_sdk.tracing``).
