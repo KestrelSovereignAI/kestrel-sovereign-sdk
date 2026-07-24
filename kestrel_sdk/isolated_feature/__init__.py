@@ -2,6 +2,10 @@
 
 from .client import IsolatedFeatureClient, SubprocessIsolatedFeatureClient
 from .protocol import (
+    CONFIG_TRANSITION,
+    CONFIG_TRANSITION_APPLIED,
+    CONFIG_TRANSITION_CAPABILITY,
+    CONFIG_TRANSITION_RESTART,
     FEATURE_EVENT,
     HEALTH,
     INITIALIZE,
@@ -10,6 +14,10 @@ from .protocol import (
     SHUTDOWN,
     TOOLS_CALL,
     TOOLS_LIST,
+    ConfigTransitionCapabilities,
+    ConfigTransitionError,
+    ConfigTransitionResult,
+    ConfigTransitionUnsupportedError,
     JsonRpcError,
     JsonRpcNotification,
     JsonRpcRequest,
@@ -22,6 +30,10 @@ from .protocol import (
 from .service import IsolatedFeatureService
 
 __all__ = [
+    "CONFIG_TRANSITION",
+    "CONFIG_TRANSITION_APPLIED",
+    "CONFIG_TRANSITION_CAPABILITY",
+    "CONFIG_TRANSITION_RESTART",
     "FEATURE_EVENT",
     "HEALTH",
     "INITIALIZE",
@@ -32,6 +44,10 @@ __all__ = [
     "TOOLS_LIST",
     "IsolatedFeatureClient",
     "IsolatedFeatureService",
+    "ConfigTransitionCapabilities",
+    "ConfigTransitionError",
+    "ConfigTransitionResult",
+    "ConfigTransitionUnsupportedError",
     "JsonRpcError",
     "JsonRpcNotification",
     "JsonRpcRequest",
@@ -42,4 +58,3 @@ __all__ = [
     "decode_message",
     "encode_message",
 ]
-

@@ -21,12 +21,102 @@ TOOLS_LIST = "tools/list"
 TOOLS_CALL = "tools/call"
 SHUTDOWN = "shutdown"
 FEATURE_EVENT = "feature/event"
+# Host-only lifecycle operation. This is deliberately outside ``tools/*`` so
+# an isolated feature never exposes configuration or lifecycle control to an
+# agent-callable tool surface.
+CONFIG_TRANSITION = "lifecycle/config-transition"
+CONFIG_TRANSITION_CAPABILITY = "config_transition"
+
+CONFIG_TRANSITION_RESTART = "restart"
+CONFIG_TRANSITION_APPLIED = "applied"
 
 JsonRpcId = str | int | None
 
 
 class ProtocolError(ValueError):
     """Raised when a JSON-RPC frame is malformed or unsupported."""
+
+
+class ConfigTransitionError(ProtocolError):
+    """A service rejected or failed a host config-transition request.
+
+    The public error intentionally carries no service exception text or config
+    payload. Configuration commonly contains credentials, so neither belongs
+    in a host status envelope.
+    """
+
+
+class ConfigTransitionUnsupportedError(ConfigTransitionError):
+    """Raised when a legacy service did not advertise config-transition support."""
+
+
+@dataclass(frozen=True)
+class ConfigTransitionCapabilities:
+    """Capability metadata negotiated during ``initialize``.
+
+    Every advertising service supports preparing a transition before a
+    replacement. ``supports_live_apply`` additionally permits it to return an
+    ``applied`` result and remain running with the next configuration.
+    """
+
+    supports_live_apply: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "prepare": True,
+            "supports_live_apply": self.supports_live_apply,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ConfigTransitionCapabilities":
+        if data.get("prepare") is not True:
+            raise ProtocolError("config_transition capability requires prepare=true")
+        supports_live_apply = data.get("supports_live_apply", False)
+        if not isinstance(supports_live_apply, bool):
+            raise ProtocolError(
+                "config_transition capability supports_live_apply must be a boolean"
+            )
+        return cls(supports_live_apply=supports_live_apply)
+
+
+@dataclass(frozen=True)
+class ConfigTransitionResult:
+    """The next action the host must take after a successful transition hook.
+
+    ``restart`` means the service finished its ordered pre-restart cleanup and
+    the host must stop and launch a replacement with the next config.
+    ``applied`` means the service has live-applied the next config and the host
+    may keep the process running. A service may only return ``applied`` after
+    advertising ``supports_live_apply``.
+    """
+
+    action: Literal["restart", "applied"]
+
+    def __post_init__(self) -> None:
+        if self.action not in {CONFIG_TRANSITION_RESTART, CONFIG_TRANSITION_APPLIED}:
+            raise ProtocolError("config transition result requires a supported action")
+
+    @classmethod
+    def restart_required(cls) -> "ConfigTransitionResult":
+        """Return the normal prepare-then-restart outcome."""
+
+        return cls(action=CONFIG_TRANSITION_RESTART)
+
+    @classmethod
+    def applied(cls) -> "ConfigTransitionResult":
+        """Return the live-apply outcome for an opted-in service."""
+
+        return cls(action=CONFIG_TRANSITION_APPLIED)
+
+    def to_dict(self) -> dict[str, str]:
+        return {"action": self.action}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ConfigTransitionResult":
+        action = data.get("action")
+        if action not in {CONFIG_TRANSITION_RESTART, CONFIG_TRANSITION_APPLIED}:
+            raise ProtocolError("config transition result requires a supported action")
+        return cls(action=action)
 
 
 @dataclass(frozen=True)
