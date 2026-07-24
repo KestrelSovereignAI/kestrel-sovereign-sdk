@@ -170,6 +170,17 @@ class IsolatedFeatureClient:
 
         return self.config_transition_capabilities is not None
 
+    @property
+    def replacement_required(self) -> bool:
+        """Whether this client has been fenced pending process replacement.
+
+        This is true after a prepare-only transition and after an interrupted
+        transition whose remote outcome cannot be known.  Supervisors can use
+        it to decide whether a replacement must use the requested next config.
+        """
+
+        return self._restart_required
+
     async def prepare_config_transition(
         self, next_config: dict[str, Any]
     ) -> ConfigTransitionResult:
@@ -213,6 +224,14 @@ class IsolatedFeatureClient:
             except ProtocolError as exc:
                 # The service intentionally gives config lifecycle failures a
                 # generic JSON-RPC error; retain that boundary at this typed API.
+                # A ProtocolError can also be the terminal error latched by the
+                # reader (for example, a malformed frame from the child).  That
+                # is not a normal hook rejection: the transport is unusable and
+                # its remote outcome is unknown, so fence it just like EOF or a
+                # broken pipe.  Remote JSON-RPC error responses do not close the
+                # reader and therefore leave ``_closed_exc`` unset.
+                if self._closed_exc is not None:
+                    self._mark_restart_required()
                 raise ConfigTransitionError("config transition failed") from exc
             except Exception as exc:
                 # A child exit or broken stdio stream is a typed lifecycle
@@ -250,6 +269,13 @@ class IsolatedFeatureClient:
         result = await self.request(HEALTH)
         if not isinstance(result, dict):
             raise ProtocolError("health result must be an object")
+        # HEALTH is intentionally allowed to run beside normal requests.  If
+        # one began before a transition but its reply arrived after the
+        # transition fenced this client, its old ``ready`` reply must not revive
+        # the local readiness state or hide the replacement requirement.
+        if self._restart_required:
+            self.ready = False
+            return {"status": "restart-required", "ready": False}
         self.ready = result.get("ready") is True or result.get("status") in {"ready", "ok"}
         return result
 
@@ -393,6 +419,14 @@ class IsolatedFeatureClient:
             await self._dispatch_event(notification.params)
 
 
+@dataclass(frozen=True)
+class _PendingConfigTransition:
+    """Wrapper-owned config handoff while a transition RPC is in flight."""
+
+    previous_config: dict[str, Any] | None
+    next_config: dict[str, Any]
+
+
 @dataclass
 class SubprocessIsolatedFeatureClient:
     """Convenience wrapper that owns a feature child process lifecycle."""
@@ -413,11 +447,70 @@ class SubprocessIsolatedFeatureClient:
     # on every start), so a supervised restart re-attaches them to the fresh
     # client instead of silently dropping every subsequent feature event.
     _handlers: list[EventHandler] = field(default_factory=list)
+    # Serializes wrapper lifecycle/probe RPCs so a health reply cannot span a
+    # config transition. ``stop()`` deliberately bypasses this lock and uses
+    # ``_state_lock`` plus cancellation instead (see stop()).
+    _lifecycle_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock,
+        init=False,
+        repr=False,
+    )
+    # Guards only the wrapper's small in-memory state transitions.  In
+    # particular, it is never held while waiting for a child RPC: ``stop()``
+    # must be able to detach and terminate a child whose initialize or health
+    # request has wedged.
+    _state_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock,
+        init=False,
+        repr=False,
+    )
+    # Stop calls themselves remain serialized. This avoids a second concurrent
+    # stop clearing ``_stopping`` while the first is still terminating its
+    # detached child, without making stop wait on a wedged child RPC.
+    _stop_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock,
+        init=False,
+        repr=False,
+    )
+    # Track every wrapper lifecycle/probe operation, including operations
+    # queued behind ``_lifecycle_lock``.  ``stop()`` cancels these tasks after
+    # atomically detaching the current child, which prevents queued work from
+    # reviving or reconfiguring a child the supervisor has retired.
+    _active_operations: set[asyncio.Task[Any]] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
+    # One actual lifecycle/config-transition RPC may be in flight because
+    # ``_lifecycle_lock`` serializes it with health/start.  Its explicit
+    # ownership makes cancellation/stop semantics deterministic: a stop that
+    # interrupts it retains its next config before replacement, while a normal
+    # hook rejection rolls back to the previous config.
+    _pending_transition: _PendingConfigTransition | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _generation: int = field(default=0, init=False, repr=False)
+    _stopping: bool = field(default=False, init=False, repr=False)
 
     async def start(self) -> None:
-        if self.process is not None:
-            return
-        self.process = await asyncio.create_subprocess_exec(
+        operation = await self._register_operation()
+        try:
+            async with self._lifecycle_lock:
+                await self._start()
+        finally:
+            await self._unregister_operation(operation)
+
+    async def _start(self) -> None:
+        async with self._state_lock:
+            if self.process is not None:
+                return
+            if self._stopping:
+                raise RuntimeError("isolated feature stop is in progress")
+            generation = self._generation
+
+        process = await asyncio.create_subprocess_exec(
             *self.command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -429,11 +522,11 @@ class SubprocessIsolatedFeatureClient:
             env=self.env,
             cwd=self.cwd,
         )
-        if self.process.stdout is None or self.process.stdin is None:
+        if process.stdout is None or process.stdin is None:
             raise RuntimeError("subprocess stdio pipes were not created")
-        self.client = IsolatedFeatureClient(
-            self.process.stdout,
-            self.process.stdin,
+        client = IsolatedFeatureClient(
+            process.stdout,
+            process.stdin,
             protocol_version=self.protocol_version,
         )
         # Re-attach persisted handlers BEFORE initialize so the inner client's
@@ -441,10 +534,33 @@ class SubprocessIsolatedFeatureClient:
         # channel.inbound during the handshake). On a first start this list is
         # empty and this is a no-op; on a restart it restores delivery.
         for handler in self._handlers:
-            self.client.on_event(handler)
-        await self.client.initialize(config=self.config)
-        await self._wait_until_ready()
-        await self.client.list_tools()
+            client.on_event(handler)
+
+        async with self._state_lock:
+            # ``stop()`` increments the generation before it cancels active
+            # work.  If it won this race while subprocess creation was pending,
+            # this freshly spawned child was never published and must be cleaned
+            # up locally instead of becoming a post-stop zombie.
+            stale = generation != self._generation or self._stopping
+            if not stale:
+                self.process = process
+                self.client = client
+        if stale:
+            await self._stop_child(client, process)
+            return
+
+        try:
+            await client.initialize(config=self.config)
+            await self._wait_until_ready(client)
+            await client.list_tools()
+        except BaseException:
+            # Do not leave a half-initialized child behind on startup failure or
+            # cancellation. If stop() already detached it, that call owns its
+            # cleanup and this is a no-op.
+            owns_child = await self._detach_child_if_current(client, process)
+            if owns_child:
+                await self._stop_child(client, process)
+            raise
 
     @property
     def capabilities(self) -> dict[str, Any]:
@@ -458,8 +574,24 @@ class SubprocessIsolatedFeatureClient:
 
         return self.client is not None and self.client.supports_config_transition
 
+    @property
+    def replacement_required(self) -> bool:
+        """Whether the running child must be replaced before more work."""
+
+        return self.client is not None and self.client.replacement_required
+
     async def health(self) -> dict[str, Any]:
-        return await self._require_client().health()
+        operation = await self._register_operation()
+        try:
+            async with self._lifecycle_lock:
+                client, generation = await self._current_client()
+                result = await client.health()
+                async with self._state_lock:
+                    if generation != self._generation or self.client is not client:
+                        raise RuntimeError("isolated feature was stopped during health check")
+                return result
+        finally:
+            await self._unregister_operation(operation)
 
     async def list_tools(self) -> list[ToolMetadata]:
         return await self._require_client().list_tools()
@@ -472,15 +604,60 @@ class SubprocessIsolatedFeatureClient:
     ) -> ConfigTransitionResult:
         """Prepare a replacement or live-apply ``next_config`` on the child.
 
-        The wrapper retains the successful next config so a required subsequent
-        ``stop()`` / ``start()`` replacement initializes the new child with the
-        same effective configuration. The dict is retained by reference; it is
-        never copied into an error or status envelope.
+        The wrapper owns the config used by its next ``start()``.  It retains
+        ``next_config`` on every successful outcome and on an interrupted
+        transition that fences the child for replacement; otherwise it restores
+        the prior config.  The lifecycle lock prevents a concurrent ``stop()``
+        / ``start()`` or health probe from observing an intermediate state. The
+        dict is retained by reference and never copied into an error or status
+        envelope.
         """
 
-        transition = await self._require_client().prepare_config_transition(next_config)
-        self.config = next_config
-        return transition
+        operation = await self._register_operation()
+        try:
+            async with self._lifecycle_lock:
+                client, generation = await self._current_client()
+                previous_config = self.config
+                # A second request against an already-fenced client is rejected
+                # before it can reach the child.  It must retain the config from
+                # the transition that actually caused the fence, not overwrite
+                # it with this unrelated later request.
+                was_replacement_required = client.replacement_required
+                pending: _PendingConfigTransition | None = None
+                if not was_replacement_required:
+                    pending = _PendingConfigTransition(
+                        previous_config=previous_config,
+                        next_config=next_config,
+                    )
+                    async with self._state_lock:
+                        if generation != self._generation or self.client is not client:
+                            raise RuntimeError("isolated feature was stopped before transition")
+                        self._pending_transition = pending
+                try:
+                    transition = await client.prepare_config_transition(next_config)
+                except asyncio.CancelledError:
+                    # A cancelled local wait cannot retract a request that may
+                    # already be on the wire. Only this call's *new* fence earns
+                    # ownership of next_config; an existing fence belongs to a
+                    # prior transition and leaves previous_config intact.
+                    if not was_replacement_required and client.replacement_required:
+                        await self._finish_transition(pending, retain_next=True)
+                    else:
+                        await self._finish_transition(pending, retain_next=False)
+                    raise
+                except Exception:
+                    # Hook rejection keeps the old child/config. Terminal
+                    # transport failures newly fence this client and therefore
+                    # require the next effective config for replacement.
+                    if not was_replacement_required and client.replacement_required:
+                        await self._finish_transition(pending, retain_next=True)
+                    else:
+                        await self._finish_transition(pending, retain_next=False)
+                    raise
+                await self._finish_transition(pending, retain_next=True)
+                return transition
+        finally:
+            await self._unregister_operation(operation)
 
     def on_event(self, handler: EventHandler) -> None:
         # Record on the wrapper so restarts re-attach it (see start()), and
@@ -490,8 +667,42 @@ class SubprocessIsolatedFeatureClient:
             self.client.on_event(handler)
 
     async def stop(self) -> None:
-        process = self.process
-        client = self.client
+        # Deliberately bypass ``_lifecycle_lock``. A child can indefinitely
+        # stall initialize/health/transition, and waiting for that lock would
+        # make the bounded terminate/kill path unreachable.
+        async with self._stop_lock:
+            current = asyncio.current_task()
+            async with self._state_lock:
+                self._stopping = True
+                self._generation += 1
+                # A transition that has started may already have written its RPC.
+                # Preserve the requested config synchronously, before cancelling
+                # the task, so a following start cannot observe the old config.
+                if self._pending_transition is not None:
+                    self.config = self._pending_transition.next_config
+                    self._pending_transition = None
+                operations = [
+                    task
+                    for task in self._active_operations
+                    if task is not current and not task.done()
+                ]
+                client = self.client
+                process = self.process
+                self.client = None
+                self.process = None
+            for operation in operations:
+                operation.cancel()
+            try:
+                await self._stop_child(client, process)
+            finally:
+                async with self._state_lock:
+                    self._stopping = False
+
+    async def _stop_child(
+        self,
+        client: IsolatedFeatureClient | None,
+        process: asyncio.subprocess.Process | None,
+    ) -> None:
         if client is not None:
             try:
                 # Bound the graceful-shutdown RPC: if the child is wedged or no
@@ -501,7 +712,10 @@ class SubprocessIsolatedFeatureClient:
             except Exception:
                 pass  # wedged/already-closed — fall through to terminate/kill
             finally:
-                await client.close()
+                try:
+                    await asyncio.wait_for(client.close(), timeout=3)
+                except Exception:
+                    pass
         if process is not None and process.returncode is None:
             try:
                 await asyncio.wait_for(process.wait(), timeout=3)
@@ -512,13 +726,11 @@ class SubprocessIsolatedFeatureClient:
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
-        self.client = None
-        self.process = None
 
-    async def _wait_until_ready(self) -> None:
+    async def _wait_until_ready(self, client: IsolatedFeatureClient) -> None:
         deadline = asyncio.get_running_loop().time() + self.ready_timeout
         while True:
-            health = await self._require_client().health()
+            health = await client.health()
             if health.get("ready") is True or health.get("status") in {"ready", "ok"}:
                 return
             if asyncio.get_running_loop().time() >= deadline:
@@ -529,6 +741,60 @@ class SubprocessIsolatedFeatureClient:
         if self.client is None:
             raise RuntimeError("isolated feature client is not started")
         return self.client
+
+    async def _current_client(self) -> tuple[IsolatedFeatureClient, int]:
+        """Snapshot the current child without holding state across its RPC."""
+
+        async with self._state_lock:
+            if self.client is None:
+                raise RuntimeError("isolated feature client is not started")
+            if self._stopping:
+                raise RuntimeError("isolated feature stop is in progress")
+            return self.client, self._generation
+
+    async def _register_operation(self) -> asyncio.Task[Any]:
+        """Make this lifecycle/probe task cancellable by ``stop()``."""
+
+        operation = asyncio.current_task()
+        if operation is None:  # pragma: no cover - asyncio always provides one
+            raise RuntimeError("isolated feature operation has no asyncio task")
+        async with self._state_lock:
+            self._active_operations.add(operation)
+        return operation
+
+    async def _unregister_operation(self, operation: asyncio.Task[Any]) -> None:
+        async with self._state_lock:
+            self._active_operations.discard(operation)
+
+    async def _finish_transition(
+        self,
+        pending: _PendingConfigTransition | None,
+        *,
+        retain_next: bool,
+    ) -> None:
+        """Finish only the transition that still owns wrapper config state."""
+
+        if pending is None:
+            return
+        async with self._state_lock:
+            if self._pending_transition is pending:
+                self.config = pending.next_config if retain_next else pending.previous_config
+                self._pending_transition = None
+
+    async def _detach_child_if_current(
+        self,
+        client: IsolatedFeatureClient,
+        process: asyncio.subprocess.Process,
+    ) -> bool:
+        """Detach a failed startup only if a concurrent stop did not first."""
+
+        async with self._state_lock:
+            if self.client is not client or self.process is not process:
+                return False
+            self.client = None
+            self.process = None
+            self._generation += 1
+            return True
 
 
 def _dict_field(data: dict[str, Any], key: str) -> dict[str, Any]:

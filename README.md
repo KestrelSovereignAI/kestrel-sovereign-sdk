@@ -193,6 +193,14 @@ does not attempt to cancel the child hook: the request may already be on the
 wire. It re-raises the cancellation locally and fences the client for process
 replacement, so the host must stop and start the child with its known next
 config rather than issue more tools or transitions against an unknown outcome.
+`SubprocessIsolatedFeatureClient` retains that next config before releasing the
+cancelled call, so its following `stop()` / `start()` replacement initializes
+the new child with the intended effective config. A normal hook failure leaves
+the old config retained because the existing child remains the known-safe
+instance. Its process lifecycle, transition, and health calls are serialized
+to keep a probe from spanning that state change. `stop()` is the exception:
+it cancels an in-flight startup, health probe, or transition before taking its
+bounded shutdown/terminate path, so a wedged child cannot block replacement.
 Likewise, child/transport failures are reported as the generic typed
 `ConfigTransitionError`; no transport or configuration detail is reflected in
 the public lifecycle message.
