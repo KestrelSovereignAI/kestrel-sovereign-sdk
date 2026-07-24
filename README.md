@@ -152,6 +152,59 @@ The SDK declares the `DatabaseBackend` ABC; sovereign provides the concrete
 should never instantiate their own backend — that creates a parallel
 connection pool and bypasses the agent's privacy enforcement.
 
+## Isolated-feature configuration transitions
+
+An isolated service can opt into a host-only configuration lifecycle request
+when it needs to clean up resources using its **old** effective config before a
+replacement (for example, retiring a Telegram webhook with the old token).
+This is capability-negotiated: older services advertise no
+`config_transition` capability, and hosts must use their existing replacement
+flow without sending a transition RPC.
+
+```python
+from kestrel_sdk.isolated_feature import (
+    ConfigTransitionResult,
+    IsolatedFeatureService,
+)
+
+class TelegramService(IsolatedFeatureService):
+    def __init__(self):
+        super().__init__(name="telegram", version="1.0.0")
+        self.advertise_config_transition()
+
+    async def on_config_transition(self, next_config):
+        # self.host_config is still the old effective config here.
+        await self.retire_webhook(token=self.host_config["token"])
+        # The host must now stop and replace this process with next_config.
+        return ConfigTransitionResult.restart_required()
+```
+
+The host checks `client.supports_config_transition` and calls
+`await client.prepare_config_transition(next_config)`. A `restart` result means
+the hook completed ordered cleanup and the host must replace the process. A
+service that can atomically switch its own resources may opt in with
+`advertise_config_transition(supports_live_apply=True)` and return
+`ConfigTransitionResult.applied()`; only then does the SDK update
+`service.host_config` to the next config and the host may retain the process.
+Failures raise `ConfigTransitionError` and leave the old config active.
+
+If a caller cancels or times out a transition after it has started, the SDK
+does not attempt to cancel the child hook: the request may already be on the
+wire. It re-raises the cancellation locally and fences the client for process
+replacement, so the host must stop and start the child with its known next
+config rather than issue more tools or transitions against an unknown outcome.
+Likewise, child/transport failures are reported as the generic typed
+`ConfigTransitionError`; no transport or configuration detail is reflected in
+the public lifecycle message.
+
+The JSON-RPC method is `lifecycle/config-transition`, not a `tools/*` method,
+so it is never agent-callable. The client serializes public transition and
+shutdown calls: a transition already under way completes or fails before a
+queued shutdown starts, while a transition begun after shutdown fails locally.
+The service also processes transition and shutdown requests in stream order;
+health requests queued behind a transition see its final state. Config values
+are not logged or reflected in lifecycle error envelopes.
+
 ## Channels, Delivery, And Output Contracts
 
 Channel and delivery packages use SDK contracts rather than importing from the

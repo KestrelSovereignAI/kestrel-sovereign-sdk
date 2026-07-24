@@ -9,6 +9,9 @@ from typing import Any
 import asyncio
 
 from .protocol import (
+    CONFIG_TRANSITION,
+    CONFIG_TRANSITION_APPLIED,
+    CONFIG_TRANSITION_CAPABILITY,
     FEATURE_EVENT,
     HEALTH,
     INITIALIZE,
@@ -16,6 +19,10 @@ from .protocol import (
     SHUTDOWN,
     TOOLS_CALL,
     TOOLS_LIST,
+    ConfigTransitionCapabilities,
+    ConfigTransitionError,
+    ConfigTransitionResult,
+    ConfigTransitionUnsupportedError,
     JsonRpcNotification,
     JsonRpcRequest,
     JsonRpcResponse,
@@ -68,6 +75,19 @@ class IsolatedFeatureClient:
         # Serializes event delivery so a buffered-event flush cannot interleave
         # with (or reorder relative to) live notifications from the read loop.
         self._event_lock = asyncio.Lock()
+        # Host lifecycle operations are deliberately serialized locally. If a
+        # config transition gets the lock first, shutdown waits for its explicit
+        # success/failure; if shutdown gets it first, a later transition fails
+        # locally instead of writing a request to a process being torn down.
+        self._lifecycle_lock = asyncio.Lock()
+        self._shutdown_started = False
+        # Latched after a prepare-only result, or when a transition is
+        # interrupted after it may have reached the child. In either case the
+        # caller must replace this process before sending further work. The
+        # latter is deliberately conservative: cancellation cannot retract an
+        # already-written JSON-RPC request, so the child may still retire its
+        # old resources after the caller has stopped waiting.
+        self._restart_required = False
 
     async def start(self) -> None:
         if self._read_task is None:
@@ -126,7 +146,107 @@ class IsolatedFeatureClient:
         self.capabilities = _dict_field(result, "capabilities")
         return result
 
+    @property
+    def config_transition_capabilities(self) -> ConfigTransitionCapabilities | None:
+        """Return negotiated transition support, or ``None`` for legacy services.
+
+        A malformed capability is treated as unsupported. This lets a host use
+        the conservative fallback (replace without a transition request) rather
+        than sending a lifecycle RPC to an unknown or incorrectly advertising
+        service.
+        """
+
+        capability = self.capabilities.get(CONFIG_TRANSITION_CAPABILITY)
+        if not isinstance(capability, dict):
+            return None
+        try:
+            return ConfigTransitionCapabilities.from_dict(capability)
+        except ProtocolError:
+            return None
+
+    @property
+    def supports_config_transition(self) -> bool:
+        """Whether the initialized service explicitly supports transitions."""
+
+        return self.config_transition_capabilities is not None
+
+    async def prepare_config_transition(
+        self, next_config: dict[str, Any]
+    ) -> ConfigTransitionResult:
+        """Run the host-only pre-restart/live-apply transition lifecycle hook.
+
+        The service receives ``next_config`` while its ``host_config`` still
+        names the old effective configuration. A ``restart`` result requires
+        the host to replace the process; ``applied`` permits the host to retain
+        it. Hook failures raise :class:`ConfigTransitionError` without exposing
+        configuration or service exception text. Cancelling an in-flight call
+        re-raises the cancellation but fences this client for replacement,
+        because the child may still finish the request already on the wire.
+        """
+
+        if not isinstance(next_config, dict):
+            raise ConfigTransitionError("next config must be an object")
+        if self.config_transition_capabilities is None:
+            raise ConfigTransitionUnsupportedError(
+                "service does not advertise config transition support"
+            )
+
+        async with self._lifecycle_lock:
+            if self._shutdown_started:
+                raise ConfigTransitionError("service shutdown is already in progress")
+            if self._restart_required:
+                raise ConfigTransitionError("service replacement is already required")
+            capabilities = self.config_transition_capabilities
+            if capabilities is None:
+                raise ConfigTransitionUnsupportedError(
+                    "service does not advertise config transition support"
+                )
+            try:
+                result = await self.request(CONFIG_TRANSITION, {"config": next_config})
+            except asyncio.CancelledError:
+                # A cancelled local wait does not cancel the request already on
+                # the wire. Retire this client instance so a supervisor cannot
+                # issue a conflicting transition or tool call while the remote
+                # outcome is unknown; it should stop and replace the child.
+                self._mark_restart_required()
+                raise
+            except ProtocolError as exc:
+                # The service intentionally gives config lifecycle failures a
+                # generic JSON-RPC error; retain that boundary at this typed API.
+                raise ConfigTransitionError("config transition failed") from exc
+            except Exception as exc:
+                # A child exit or broken stdio stream is a typed lifecycle
+                # failure for callers. The process cannot be trusted after a
+                # request transport failure, so require replacement as well.
+                self._mark_restart_required()
+                raise ConfigTransitionError("config transition failed") from exc
+
+            try:
+                if not isinstance(result, dict):
+                    raise ProtocolError("config transition result must be an object")
+                transition = ConfigTransitionResult.from_dict(result)
+            except ProtocolError as exc:
+                # A malformed success response leaves the child's effective
+                # state unknown, unlike a normal generic hook-failure envelope.
+                self._mark_restart_required()
+                raise ConfigTransitionError("config transition failed") from exc
+
+            if (
+                transition.action == CONFIG_TRANSITION_APPLIED
+                and not capabilities.supports_live_apply
+            ):
+                self._mark_restart_required()
+                raise ConfigTransitionError(
+                    "service returned an unadvertised config transition action"
+                )
+            if transition.action != CONFIG_TRANSITION_APPLIED:
+                self._mark_restart_required()
+            return transition
+
     async def health(self) -> dict[str, Any]:
+        if self._restart_required:
+            self.ready = False
+            return {"status": "restart-required", "ready": False}
         result = await self.request(HEALTH)
         if not isinstance(result, dict):
             raise ProtocolError("health result must be an object")
@@ -134,6 +254,8 @@ class IsolatedFeatureClient:
         return result
 
     async def list_tools(self) -> list[ToolMetadata]:
+        if self._restart_required:
+            raise ProtocolError("service replacement is required before tools are exposed")
         if not self.ready:
             raise ProtocolError("health must report ready before tools are exposed")
         result = await self.request(TOOLS_LIST)
@@ -143,6 +265,8 @@ class IsolatedFeatureClient:
         return self.tools
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
+        if self._restart_required:
+            raise ProtocolError("service replacement is required before tools can be called")
         if not self.ready:
             raise ProtocolError("health must report ready before tools can be called")
         return await self.request(
@@ -151,12 +275,19 @@ class IsolatedFeatureClient:
         )
 
     async def shutdown(self) -> dict[str, Any]:
-        result = await self.request(SHUTDOWN)
-        if not isinstance(result, dict):
-            raise ProtocolError("shutdown result must be an object")
-        return result
+        async with self._lifecycle_lock:
+            if self._shutdown_started:
+                raise ProtocolError("shutdown is already in progress")
+            self._shutdown_started = True
+            result = await self.request(SHUTDOWN)
+            if not isinstance(result, dict):
+                raise ProtocolError("shutdown result must be an object")
+            return result
 
     async def close(self) -> None:
+        # Prevent a later public transition call from starting while the stream
+        # is being closed by a supervisor.
+        self._shutdown_started = True
         if self._read_task is not None:
             self._read_task.cancel()
             try:
@@ -193,10 +324,15 @@ class IsolatedFeatureClient:
             drain = getattr(self.writer, "drain", None)
             if drain is not None:
                 await drain()
-        except Exception:
-            self._pending.pop(request_id, None)
-            raise
-        return await future
+            return await future
+        finally:
+            # Cancellation (including ``asyncio.wait_for`` timeouts) cancels
+            # this waiter but does not cancel the response arriving from the
+            # child. Remove it so the read loop can harmlessly discard that
+            # late response instead of trying ``set_result`` on a cancelled
+            # future and dying with InvalidStateError.
+            if self._pending.get(request_id) is future:
+                self._pending.pop(request_id, None)
 
     async def _read_loop(self) -> None:
         # Default terminal cause if the loop somehow exits without raising.
@@ -212,8 +348,9 @@ class IsolatedFeatureClient:
                     if pending is None:
                         continue
                     if message.error is not None:
-                        pending.set_exception(ProtocolError(message.error.message))
-                    else:
+                        if not pending.done():
+                            pending.set_exception(ProtocolError(message.error.message))
+                    elif not pending.done():
                         pending.set_result(message.result)
                 elif isinstance(message, JsonRpcNotification):
                     await self._handle_notification(message)
@@ -233,6 +370,12 @@ class IsolatedFeatureClient:
                 if not pending.done():
                     pending.set_exception(exc)
             self._pending.clear()
+
+    def _mark_restart_required(self) -> None:
+        """Fence local work after a child restart outcome becomes possible."""
+
+        self._restart_required = True
+        self.ready = False
 
     async def _handle_notification(self, notification: JsonRpcNotification) -> None:
         if notification.method != FEATURE_EVENT:
@@ -309,6 +452,12 @@ class SubprocessIsolatedFeatureClient:
 
         return self.client.capabilities if self.client is not None else {}
 
+    @property
+    def supports_config_transition(self) -> bool:
+        """Whether the running service negotiated transition support."""
+
+        return self.client is not None and self.client.supports_config_transition
+
     async def health(self) -> dict[str, Any]:
         return await self._require_client().health()
 
@@ -317,6 +466,21 @@ class SubprocessIsolatedFeatureClient:
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
         return await self._require_client().call_tool(name, arguments)
+
+    async def prepare_config_transition(
+        self, next_config: dict[str, Any]
+    ) -> ConfigTransitionResult:
+        """Prepare a replacement or live-apply ``next_config`` on the child.
+
+        The wrapper retains the successful next config so a required subsequent
+        ``stop()`` / ``start()`` replacement initializes the new child with the
+        same effective configuration. The dict is retained by reference; it is
+        never copied into an error or status envelope.
+        """
+
+        transition = await self._require_client().prepare_config_transition(next_config)
+        self.config = next_config
+        return transition
 
     def on_event(self, handler: EventHandler) -> None:
         # Record on the wrapper so restarts re-attach it (see start()), and

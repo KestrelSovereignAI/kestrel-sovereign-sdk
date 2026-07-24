@@ -10,6 +10,10 @@ import os
 import sys
 
 from .protocol import (
+    CONFIG_TRANSITION,
+    CONFIG_TRANSITION_APPLIED,
+    CONFIG_TRANSITION_CAPABILITY,
+    CONFIG_TRANSITION_RESTART,
     FEATURE_EVENT,
     HEALTH,
     INITIALIZE,
@@ -17,6 +21,8 @@ from .protocol import (
     SHUTDOWN,
     TOOLS_CALL,
     TOOLS_LIST,
+    ConfigTransitionCapabilities,
+    ConfigTransitionResult,
     JsonRpcError,
     JsonRpcNotification,
     JsonRpcRequest,
@@ -76,6 +82,12 @@ class IsolatedFeatureService:
         # point it is populated and ``configure()`` runs.
         self.host_config: dict[str, Any] = {}
         self._channel_capability: dict[str, Any] | None = None
+        # Unset by default. A service must explicitly opt in before the host may
+        # send the config lifecycle request.
+        self._config_transition_capabilities: ConfigTransitionCapabilities | None = None
+        # A successful prepare-only hook has retired old resources. Refuse new
+        # tool calls until the host performs the required replacement.
+        self._restart_required = False
 
     def advertise_channel(
         self,
@@ -102,6 +114,21 @@ class IsolatedFeatureService:
             capability["status_tool"] = status_tool
         self._channel_capability = capability
 
+    def advertise_config_transition(self, *, supports_live_apply: bool = False) -> None:
+        """Opt into host config-transition lifecycle requests.
+
+        Override :meth:`on_config_transition` to retire old resources before a
+        replacement, then return :meth:`ConfigTransitionResult.restart_required`.
+        A service that atomically switches resources in-process can set
+        ``supports_live_apply=True`` and return
+        :meth:`ConfigTransitionResult.applied`. The opt-in keeps legacy services
+        and hosts compatible with their existing restart behavior.
+        """
+
+        self._config_transition_capabilities = ConfigTransitionCapabilities(
+            supports_live_apply=supports_live_apply
+        )
+
     def register_tool(self, metadata: ToolMetadata, handler: ToolHandler) -> None:
         """Register one callable tool and its advertised metadata."""
 
@@ -117,6 +144,8 @@ class IsolatedFeatureService:
     async def health(self) -> dict[str, Any]:
         """Return service readiness. Override to include feature-specific checks."""
 
+        if self._restart_required:
+            return {"status": "restart-required", "ready": False}
         return {"status": "ready", "ready": True}
 
     async def on_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -132,6 +161,10 @@ class IsolatedFeatureService:
         capabilities: dict[str, Any] = {"tools": True, "events": True}
         if self._channel_capability is not None:
             capabilities["channel"] = dict(self._channel_capability)
+        if self._config_transition_capabilities is not None:
+            capabilities[CONFIG_TRANSITION_CAPABILITY] = (
+                self._config_transition_capabilities.to_dict()
+            )
         return {
             "protocolVersion": self.protocol_version,
             "serverInfo": {"name": self.name, "version": self.version},
@@ -146,6 +179,26 @@ class IsolatedFeatureService:
         only path for non-environment configuration). Default is a no-op.
         """
 
+    async def on_config_transition(
+        self, next_config: dict[str, Any]
+    ) -> ConfigTransitionResult:
+        """Prepare or live-apply a host config change.
+
+        This hook runs while :attr:`host_config` and all service resources still
+        describe the old effective configuration. It receives the next config
+        separately so an implementation can retire an old webhook with old
+        credentials before returning ``restart_required``. The default is a
+        successful prepare-only result; services must first call
+        :meth:`advertise_config_transition` for the host to invoke it.
+
+        To live apply, atomically switch resources to ``next_config`` and return
+        :meth:`ConfigTransitionResult.applied`. The SDK changes
+        :attr:`host_config` only after that successful result. Do not log config
+        values or include them in exceptions.
+        """
+
+        return ConfigTransitionResult.restart_required()
+
     async def on_shutdown(self) -> dict[str, Any]:
         self._stopping = True
         return {"ok": True}
@@ -153,6 +206,8 @@ class IsolatedFeatureService:
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         """Dispatch a tool call. Override for custom routing."""
 
+        if self._restart_required:
+            raise ProtocolError("service is awaiting restart")
         handler = self._handlers.get(name)
         if handler is None:
             raise ProtocolError(f"unknown tool: {name}")
@@ -202,11 +257,13 @@ class IsolatedFeatureService:
                     )
                     continue
                 if isinstance(message, JsonRpcRequest):
-                    if message.method in (INITIALIZE, SHUTDOWN):
+                    if message.method in (INITIALIZE, CONFIG_TRANSITION, SHUTDOWN):
                         # Handle inline (not concurrently):
                         #  * INITIALIZE must finish the handshake + apply host
                         #    config before any later request runs, or a pipelined
                         #    health/tools-call could hit an uninitialized service;
+                        #  * CONFIG_TRANSITION sees old config, finishes cleanup,
+                        #    and replies before a queued shutdown can begin;
                         #  * SHUTDOWN is terminal and sets ``_stopping`` — inline
                         #    so the loop observes the flag and exits promptly (a
                         #    task would set it only after we'd re-blocked on read).
@@ -268,25 +325,66 @@ class IsolatedFeatureService:
             await self._send(
                 JsonRpcResponse(
                     id=request.id,
-                    error=JsonRpcError(code=-32602, message=str(exc)),
+                    error=JsonRpcError(
+                        code=-32602,
+                        message=self._error_message(request, exc),
+                    ),
                 )
             )
         except Exception as exc:
             await self._send(
                 JsonRpcResponse(
                     id=request.id,
-                    error=JsonRpcError(code=-32603, message=str(exc)),
+                    error=JsonRpcError(
+                        code=-32603,
+                        message=self._error_message(request, exc),
+                    ),
                 )
             )
 
     async def _dispatch(self, request: JsonRpcRequest) -> Any:
         if request.method == INITIALIZE:
             return await self.on_initialize(request.params)
+        if request.method == CONFIG_TRANSITION:
+            if self._restart_required:
+                raise ProtocolError("service is awaiting restart")
+            if self._config_transition_capabilities is None:
+                raise ProtocolError("config transitions are not supported")
+            next_config = request.params.get("config")
+            if not isinstance(next_config, dict):
+                raise ProtocolError("config transition requires config")
+            result = await self.on_config_transition(next_config)
+            if not isinstance(result, ConfigTransitionResult):
+                raise ProtocolError("config transition hook returned an invalid result")
+            if (
+                result.action == CONFIG_TRANSITION_APPLIED
+                and not self._config_transition_capabilities.supports_live_apply
+            ):
+                raise ProtocolError("config transition hook returned an unadvertised action")
+            if result.action == CONFIG_TRANSITION_RESTART:
+                self._restart_required = True
+            else:
+                # The hook owns the atomic resource switch. Keep the old config
+                # available throughout it and commit the next one only after it
+                # reports a successful live apply.
+                self.host_config = next_config
+            return result.to_dict()
         if request.method == HEALTH:
+            # Keep restart fencing outside the overridable health() hook. A
+            # feature-specific readiness implementation must not accidentally
+            # report ready after it has retired resources for replacement.
+            if self._restart_required:
+                return {"status": "restart-required", "ready": False}
             return await self.health()
         if request.method == TOOLS_LIST:
+            # Feature packages may intentionally override get_tools() and
+            # call_tool(); enforce the lifecycle boundary before either hook.
+            if self._restart_required:
+                raise ProtocolError("service is awaiting restart")
             return {"tools": [tool.to_dict() for tool in await self.get_tools()]}
         if request.method == TOOLS_CALL:
+            if self._restart_required:
+                raise ProtocolError("service is awaiting restart")
             name = request.params.get("name")
             if not isinstance(name, str) or not name:
                 raise ProtocolError("tools/call requires name")
@@ -299,6 +397,21 @@ class IsolatedFeatureService:
         if request.method == SHUTDOWN:
             return await self.on_shutdown()
         raise ProtocolError(f"unknown method: {request.method}")
+
+    @staticmethod
+    def _error_message(request: JsonRpcRequest, error: Exception) -> str:
+        """Return an RPC-safe error without reflecting host config values.
+
+        The service does not log JSON-RPC params. Generic lifecycle envelopes
+        also prevent a feature exception that interpolates a token or whole
+        config dict from crossing the transport boundary.
+        """
+
+        if request.method == CONFIG_TRANSITION:
+            return "config transition failed"
+        if request.method == INITIALIZE and isinstance(request.params.get("config"), dict):
+            return "initialization failed"
+        return str(error)
 
     async def _send(self, message: JsonRpcResponse | JsonRpcNotification) -> None:
         # Serialize concurrent writes (handlers now run concurrently) so a
