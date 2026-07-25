@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 105 tracked files (94 `.py`, 4 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 109 tracked files (97 `.py`, 5 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -19,6 +19,7 @@ Repo entry points and standard project files.
 - **AGENTS.md** — kestrel-sovereign-sdk — Agent Instructions — See [README.md](README.md) for package overview.
 - **LICENSE** — —
 - **.gitignore** — —
+- **CHANGELOG.md** — Changelog — All notable changes to this project are documented in this file.
 - **REPO_MAP.md** — kestrel-sovereign-sdk — Repo Map — Auto-generated file-tree + per-file purpose index.
 - **pyproject.toml** — (configuration)
 
@@ -76,8 +77,10 @@ Repo entry points and standard project files.
 - **kestrel_sdk/isolated_feature/__init__.py** — Isolated feature stdio JSON-RPC runtime contract.
 - **kestrel_sdk/isolated_feature/client.py** — Host-side client for isolated feature stdio JSON-RPC runtimes.
   - `class IsolatedFeatureClient`; `class SubprocessIsolatedFeatureClient`
+- **kestrel_sdk/isolated_feature/context.py** — Task-local access to trusted isolated-tool execution metadata.
+  - `def get_tool_execution_context()`
 - **kestrel_sdk/isolated_feature/protocol.py** — Versioned JSON-RPC protocol for isolated feature runtimes.
-  - `class ProtocolError`; `class ToolMetadata`; `class JsonRpcRequest`; `class JsonRpcNotification`; `class JsonRpcError`; `class JsonRpcResponse`; `def encode_message(message)`; `def decode_message(line)`
+  - `class ProtocolError`; `class ConfigTransitionError`; `class ConfigTransitionUnsupportedError`; `class ToolExecutionContextUnsupportedError`; `class ToolExecutionTrigger`; `class ToolExecutionContext`; `class ToolExecutionContextCapabilities`; `class ConfigTransitionCapabilities`; `…`
 - **kestrel_sdk/isolated_feature/service.py** — Service-side base class for isolated feature runtimes.
   - `class IsolatedFeatureService`
 - **kestrel_sdk/llm/__init__.py** — LLM-related types, protocols, and the adapter contract.
@@ -182,6 +185,10 @@ Repo entry points and standard project files.
   - `class MemoryReader`; `class MemoryWriter`; `def memory_stdio_pair()`; `async def test_service_client_lifecycle_tools_and_events()`; `async def test_unknown_tool_returns_json_rpc_error()`; `def test_protocol_rejects_non_object_tool_schema()`; `async def test_tools_are_gated_until_health_reports_ready()`; `def test_feature_event_notification_round_trip()`; `…`
 - **tests/test_isolated_feature_concurrency.py** — A slow tool handler must not wedge the whole isolated-feature service.
   - `async def test_slow_tool_does_not_block_health_or_other_requests()`; `async def test_shutdown_terminates_even_with_a_stuck_handler()`
+- **tests/test_isolated_feature_config_transition.py** — Negotiated host config-transition lifecycle coverage.
+  - `async def test_legacy_service_does_not_advertise_or_receive_transition_requests()`; `async def test_transition_round_trip_receives_next_config_with_old_config_intact()`; `async def test_live_apply_requires_capability_and_commits_config_after_hook()`; `async def test_transition_failure_is_returned_without_reflecting_secrets(caplog)`; `async def test_transition_shutdown_and_health_are_deterministically_serialized()`; `async def test_timed_out_transition_discards_late_response_and_requires_replacement()`; `async def test_restart_required_rejects_repeated_transitions_client_and_service_side()`; `async def test_wrapper_retains_first_replacement_config_after_later_rejection()`; `…`
+- **tests/test_isolated_feature_execution_context.py** — Execution-context propagation and isolation for isolated tool RPCs.
+  - `async def test_execution_context_round_trip_does_not_mutate_tool_arguments()`; `async def test_retry_preserves_idempotency_key_and_changes_attempt()`; `async def test_concurrent_calls_cannot_observe_each_others_context()`; `async def test_async_and_sync_handlers_receive_the_same_execution_context()`; `async def test_failure_and_cancelled_wait_leave_no_execution_context_behind()`; `async def test_background_task_loses_execution_context_after_rpc_returns()`; `async def test_cancelled_sync_worker_loses_execution_context_after_rpc_cancellation()`; `async def test_legacy_calls_work_in_both_directions_and_context_fails_closed()`; `…`
 - **tests/test_isolated_feature_robustness.py** — Robustness regressions for the isolated-feature runtime (review Wave 1).
   - `async def test_blocking_sync_handler_does_not_wedge_health()`; `async def test_read_loop_death_fails_inflight_requests()`; `async def test_request_after_read_loop_death_fails_fast()`; `async def test_close_during_inflight_request_does_not_hang()`; `async def test_wrapper_reattaches_event_handlers_after_restart()`
 - **tests/test_llm_contract.py** — Tests for the LLM provider contract.
