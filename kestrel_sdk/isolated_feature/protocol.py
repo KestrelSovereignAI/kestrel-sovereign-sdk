@@ -9,6 +9,7 @@ types, but stdio is the canonical transport for the SDK contract.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Literal
 import json
 
@@ -26,6 +27,14 @@ FEATURE_EVENT = "feature/event"
 # agent-callable tool surface.
 CONFIG_TRANSITION = "lifecycle/config-transition"
 CONFIG_TRANSITION_CAPABILITY = "config_transition"
+
+# ``tools/call`` parameter and initialize capability for trusted invocation
+# metadata.  This stays on the normal tool-call envelope: it is deliberately
+# not a scheduler-specific RPC surface and is never merged into tool arguments.
+TOOL_EXECUTION_CONTEXT = "execution_context"
+TOOL_EXECUTION_CONTEXT_CAPABILITY = "tool_execution_context"
+TOOL_EXECUTION_CONTEXT_VERSION = 1
+MAX_TOOL_EXECUTION_CONTEXT_BYTES = 4096
 
 CONFIG_TRANSITION_RESTART = "restart"
 CONFIG_TRANSITION_APPLIED = "applied"
@@ -48,6 +57,231 @@ class ConfigTransitionError(ProtocolError):
 
 class ConfigTransitionUnsupportedError(ConfigTransitionError):
     """Raised when a legacy service did not advertise config-transition support."""
+
+
+class ToolExecutionContextUnsupportedError(ProtocolError):
+    """Raised when a service did not advertise tool execution-context support."""
+
+
+_MAX_CONTEXT_IDENTIFIER_BYTES = 512
+_MAX_TRIGGER_KIND_BYTES = 64
+_SUPPORTED_TRIGGER_KINDS = frozenset({"scheduler", "event", "agent", "manual", "api"})
+_TRIGGER_FIELDS = frozenset(
+    {"kind", "id", "source_id", "triggered_at", "scheduled_for"}
+)
+_CONTEXT_FIELDS = frozenset(
+    {"version", "invocation_id", "idempotency_key", "attempt", "trigger"}
+)
+
+
+def _require_context_string(value: Any, field_name: str, *, maximum: int) -> str:
+    """Validate a bounded identifier without reflecting its value in errors."""
+
+    if not isinstance(value, str) or not value:
+        raise ProtocolError(f"tool execution context {field_name} must be a non-empty string")
+    if len(value.encode("utf-8")) > maximum:
+        raise ProtocolError(f"tool execution context {field_name} exceeds the size limit")
+    return value
+
+
+def _optional_context_string(value: Any, field_name: str) -> str | None:
+    if value is None:
+        return None
+    return _require_context_string(
+        value,
+        field_name,
+        maximum=_MAX_CONTEXT_IDENTIFIER_BYTES,
+    )
+
+
+def _require_aware_timestamp(value: Any, field_name: str) -> datetime:
+    if not isinstance(value, datetime):
+        raise ProtocolError(f"tool execution context {field_name} must be an RFC 3339 timestamp")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ProtocolError(f"tool execution context {field_name} must include a timezone")
+    return value
+
+
+def _parse_timestamp(value: Any, field_name: str) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value.encode("utf-8")) > _MAX_CONTEXT_IDENTIFIER_BYTES:
+        raise ProtocolError(f"tool execution context {field_name} must be an RFC 3339 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ProtocolError(
+            f"tool execution context {field_name} must be an RFC 3339 timestamp"
+        ) from exc
+    return _require_aware_timestamp(parsed, field_name)
+
+
+@dataclass(frozen=True)
+class ToolExecutionTrigger:
+    """Fixed, non-user-controlled provenance for a tool invocation.
+
+    ``id`` is the durable identifier of the direct trigger; ``source_id`` can
+    identify its source (for example, a schedule ID for a scheduler occurrence).
+    The two timestamps distinguish when a trigger fired from when it was due.
+    No open-ended metadata bag is permitted, so host secrets and arbitrary tool
+    input cannot become ambient handler state.
+    """
+
+    kind: Literal["scheduler", "event", "agent", "manual", "api"]
+    id: str | None = None
+    source_id: str | None = None
+    triggered_at: datetime | None = None
+    scheduled_for: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, str) or self.kind not in _SUPPORTED_TRIGGER_KINDS:
+            raise ProtocolError("tool execution context trigger kind is not supported")
+        if len(self.kind.encode("utf-8")) > _MAX_TRIGGER_KIND_BYTES:
+            raise ProtocolError("tool execution context trigger kind exceeds the size limit")
+        _optional_context_string(self.id, "trigger.id")
+        _optional_context_string(self.source_id, "trigger.source_id")
+        if self.triggered_at is not None:
+            _require_aware_timestamp(self.triggered_at, "trigger.triggered_at")
+        if self.scheduled_for is not None:
+            _require_aware_timestamp(self.scheduled_for, "trigger.scheduled_for")
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"kind": self.kind}
+        if self.id is not None:
+            data["id"] = self.id
+        if self.source_id is not None:
+            data["source_id"] = self.source_id
+        if self.triggered_at is not None:
+            data["triggered_at"] = self.triggered_at.isoformat()
+        if self.scheduled_for is not None:
+            data["scheduled_for"] = self.scheduled_for.isoformat()
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToolExecutionTrigger":
+        if not isinstance(data, dict):
+            raise ProtocolError("tool execution context trigger must be an object")
+        unknown = set(data).difference(_TRIGGER_FIELDS)
+        if unknown:
+            raise ProtocolError("tool execution context trigger contains reserved or unknown fields")
+        kind = data.get("kind")
+        if not isinstance(kind, str):
+            raise ProtocolError("tool execution context trigger requires kind")
+        return cls(
+            kind=kind,
+            id=_optional_context_string(data.get("id"), "trigger.id"),
+            source_id=_optional_context_string(data.get("source_id"), "trigger.source_id"),
+            triggered_at=_parse_timestamp(data.get("triggered_at"), "trigger.triggered_at"),
+            scheduled_for=_parse_timestamp(data.get("scheduled_for"), "trigger.scheduled_for"),
+        )
+
+
+@dataclass(frozen=True)
+class ToolExecutionContext:
+    """Versioned host-authenticated execution metadata for one tool call.
+
+    The stable ``idempotency_key`` is intentionally separate from
+    ``invocation_id``: retried deliveries may retain the former while changing
+    ``attempt``.  Instances are immutable and validated both when created by a
+    host and when decoded by a service at the JSON-RPC trust boundary.
+    """
+
+    invocation_id: str
+    attempt: int
+    trigger: ToolExecutionTrigger
+    idempotency_key: str | None = None
+    version: int = TOOL_EXECUTION_CONTEXT_VERSION
+
+    def __post_init__(self) -> None:
+        if isinstance(self.version, bool) or self.version != TOOL_EXECUTION_CONTEXT_VERSION:
+            raise ProtocolError("unsupported tool execution context version")
+        _require_context_string(
+            self.invocation_id,
+            "invocation_id",
+            maximum=_MAX_CONTEXT_IDENTIFIER_BYTES,
+        )
+        _optional_context_string(self.idempotency_key, "idempotency_key")
+        if isinstance(self.attempt, bool) or not isinstance(self.attempt, int) or self.attempt < 1:
+            raise ProtocolError("tool execution context attempt must be a positive integer")
+        if not isinstance(self.trigger, ToolExecutionTrigger):
+            raise ProtocolError("tool execution context trigger must be a ToolExecutionTrigger")
+        encoded = json.dumps(self.to_dict(), separators=(",", ":")).encode("utf-8")
+        if len(encoded) > MAX_TOOL_EXECUTION_CONTEXT_BYTES:
+            raise ProtocolError("tool execution context exceeds the size limit")
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "version": self.version,
+            "invocation_id": self.invocation_id,
+            "attempt": self.attempt,
+            "trigger": self.trigger.to_dict(),
+        }
+        if self.idempotency_key is not None:
+            data["idempotency_key"] = self.idempotency_key
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToolExecutionContext":
+        if not isinstance(data, dict):
+            raise ProtocolError("tool execution context must be an object")
+        encoded = json.dumps(data, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > MAX_TOOL_EXECUTION_CONTEXT_BYTES:
+            raise ProtocolError("tool execution context exceeds the size limit")
+        unknown = set(data).difference(_CONTEXT_FIELDS)
+        if unknown:
+            raise ProtocolError("tool execution context contains reserved or unknown fields")
+        version = data.get("version")
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise ProtocolError("tool execution context requires an integer version")
+        invocation_id = _require_context_string(
+            data.get("invocation_id"),
+            "invocation_id",
+            maximum=_MAX_CONTEXT_IDENTIFIER_BYTES,
+        )
+        attempt = data.get("attempt")
+        if isinstance(attempt, bool) or not isinstance(attempt, int):
+            raise ProtocolError("tool execution context requires an integer attempt")
+        trigger = ToolExecutionTrigger.from_dict(data.get("trigger"))
+        return cls(
+            version=version,
+            invocation_id=invocation_id,
+            idempotency_key=_optional_context_string(
+                data.get("idempotency_key"), "idempotency_key"
+            ),
+            attempt=attempt,
+            trigger=trigger,
+        )
+
+
+@dataclass(frozen=True)
+class ToolExecutionContextCapabilities:
+    """Execution-context versions a service accepts on ``tools/call``."""
+
+    versions: tuple[int, ...] = (TOOL_EXECUTION_CONTEXT_VERSION,)
+
+    def __post_init__(self) -> None:
+        if not self.versions or any(
+            isinstance(version, bool) or not isinstance(version, int) or version < 1
+            for version in self.versions
+        ):
+            raise ProtocolError("tool execution context capability requires positive versions")
+        if len(set(self.versions)) != len(self.versions):
+            raise ProtocolError("tool execution context capability versions must be unique")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"versions": list(self.versions)}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToolExecutionContextCapabilities":
+        if not isinstance(data, dict) or set(data) != {"versions"}:
+            raise ProtocolError("tool execution context capability requires versions")
+        versions = data.get("versions")
+        if not isinstance(versions, list):
+            raise ProtocolError("tool execution context capability versions must be a list")
+        return cls(versions=tuple(versions))
+
+    def supports(self, version: int) -> bool:
+        return version in self.versions
 
 
 @dataclass(frozen=True)

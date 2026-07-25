@@ -1,6 +1,7 @@
 """Isolated feature stdio JSON-RPC runtime contract."""
 
 from .client import IsolatedFeatureClient, SubprocessIsolatedFeatureClient
+from .context import get_tool_execution_context
 from .protocol import (
     CONFIG_TRANSITION,
     CONFIG_TRANSITION_APPLIED,
@@ -12,6 +13,9 @@ from .protocol import (
     JSONRPC_VERSION,
     PROTOCOL_VERSION,
     SHUTDOWN,
+    TOOL_EXECUTION_CONTEXT,
+    TOOL_EXECUTION_CONTEXT_CAPABILITY,
+    TOOL_EXECUTION_CONTEXT_VERSION,
     TOOLS_CALL,
     TOOLS_LIST,
     ConfigTransitionCapabilities,
@@ -23,6 +27,10 @@ from .protocol import (
     JsonRpcRequest,
     JsonRpcResponse,
     ProtocolError,
+    ToolExecutionContext,
+    ToolExecutionContextCapabilities,
+    ToolExecutionContextUnsupportedError,
+    ToolExecutionTrigger,
     ToolMetadata,
     decode_message,
     encode_message,
@@ -40,6 +48,9 @@ __all__ = [
     "JSONRPC_VERSION",
     "PROTOCOL_VERSION",
     "SHUTDOWN",
+    "TOOL_EXECUTION_CONTEXT",
+    "TOOL_EXECUTION_CONTEXT_CAPABILITY",
+    "TOOL_EXECUTION_CONTEXT_VERSION",
     "TOOLS_CALL",
     "TOOLS_LIST",
     "IsolatedFeatureClient",
@@ -53,8 +64,13 @@ __all__ = [
     "JsonRpcRequest",
     "JsonRpcResponse",
     "ProtocolError",
+    "ToolExecutionContext",
+    "ToolExecutionContextCapabilities",
+    "ToolExecutionContextUnsupportedError",
+    "ToolExecutionTrigger",
     "SubprocessIsolatedFeatureClient",
     "ToolMetadata",
     "decode_message",
     "encode_message",
+    "get_tool_execution_context",
 ]
