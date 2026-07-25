@@ -213,6 +213,45 @@ The service also processes transition and shutdown requests in stream order;
 health requests queued behind a transition see its final state. Config values
 are not logged or reflected in lifecycle error envelopes.
 
+## Isolated tool execution context
+
+Hosts can attach trusted, versioned invocation metadata to an isolated
+`tools/call` without adding scheduler fields to user tool arguments. New SDK
+services advertise the `tool_execution_context` capability; a host that passes
+context fails closed against legacy services that do not advertise it.
+
+```python
+from kestrel_sdk.isolated_feature import (
+    ToolExecutionContext,
+    ToolExecutionTrigger,
+    get_tool_execution_context,
+)
+
+# Host side: retain this idempotency key across retry attempts.
+context = ToolExecutionContext(
+    invocation_id="occurrence-execution-123",
+    idempotency_key="payment-effect-123",
+    attempt=2,
+    trigger=ToolExecutionTrigger(
+        kind="scheduler",
+        id="occurrence-123",
+        source_id="daily-payment-job",
+    ),
+)
+await client.call_tool("charge", {"amount": 100}, context=context)
+
+# Isolated handler side: this is task-local and never merged into arguments.
+async def charge(arguments):
+    context = get_tool_execution_context()
+    if context is not None:
+        await effect_boundary.deduplicate(context.idempotency_key)
+```
+
+The context schema has no free-form metadata field: it accepts only bounded
+invocation, idempotency, retry, trigger identifiers, and timezone-aware trigger
+timestamps. The service clears it after every successful, failed, or cancelled
+invocation; `asyncio.to_thread` sync handlers receive the same active context.
+
 ## Channels, Delivery, And Output Contracts
 
 Channel and delivery packages use SDK contracts rather than importing from the

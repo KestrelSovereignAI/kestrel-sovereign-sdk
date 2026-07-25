@@ -27,6 +27,12 @@ from .protocol import (
     JsonRpcRequest,
     JsonRpcResponse,
     ProtocolError,
+    TOOL_EXECUTION_CONTEXT,
+    TOOL_EXECUTION_CONTEXT_CAPABILITY,
+    TOOL_EXECUTION_CONTEXT_VERSION,
+    ToolExecutionContext,
+    ToolExecutionContextCapabilities,
+    ToolExecutionContextUnsupportedError,
     ToolMetadata,
     decode_message,
     encode_message,
@@ -171,6 +177,34 @@ class IsolatedFeatureClient:
         return self.config_transition_capabilities is not None
 
     @property
+    def tool_execution_context_capabilities(
+        self,
+    ) -> ToolExecutionContextCapabilities | None:
+        """Return accepted execution-context versions, if advertised by the child.
+
+        A malformed capability is treated as unsupported so a host that requires
+        trusted execution metadata fails closed instead of silently dropping it.
+        """
+
+        capability = self.capabilities.get(TOOL_EXECUTION_CONTEXT_CAPABILITY)
+        if not isinstance(capability, dict):
+            return None
+        try:
+            return ToolExecutionContextCapabilities.from_dict(capability)
+        except ProtocolError:
+            return None
+
+    @property
+    def supports_tool_execution_context(self) -> bool:
+        """Whether the initialized service accepts the current context version."""
+
+        capabilities = self.tool_execution_context_capabilities
+        return (
+            capabilities is not None
+            and capabilities.supports(TOOL_EXECUTION_CONTEXT_VERSION)
+        )
+
+    @property
     def replacement_required(self) -> bool:
         """Whether this client has been fenced pending process replacement.
 
@@ -290,14 +324,38 @@ class IsolatedFeatureClient:
         self.tools = [ToolMetadata.from_dict(item) for item in result["tools"]]
         return self.tools
 
-    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        context: ToolExecutionContext | None = None,
+    ) -> Any:
+        """Call a tool, optionally carrying trusted host execution metadata.
+
+        Context is sent in the reserved ``execution_context`` RPC envelope,
+        never merged into the user-controlled ``arguments`` object. A supplied
+        context requires explicit child capability advertisement; callers that
+        do not supply one retain the legacy wire format and behavior.
+        """
+
         if self._restart_required:
             raise ProtocolError("service replacement is required before tools can be called")
         if not self.ready:
             raise ProtocolError("health must report ready before tools can be called")
+        params: dict[str, Any] = {"name": name, "arguments": arguments or {}}
+        if context is not None:
+            if not isinstance(context, ToolExecutionContext):
+                raise TypeError("context must be a ToolExecutionContext")
+            capabilities = self.tool_execution_context_capabilities
+            if capabilities is None or not capabilities.supports(context.version):
+                raise ToolExecutionContextUnsupportedError(
+                    "service does not advertise support for this tool execution context"
+                )
+            params[TOOL_EXECUTION_CONTEXT] = context.to_dict()
         return await self.request(
             TOOLS_CALL,
-            {"name": name, "arguments": arguments or {}},
+            params,
         )
 
     async def shutdown(self) -> dict[str, Any]:
@@ -575,6 +633,22 @@ class SubprocessIsolatedFeatureClient:
         return self.client is not None and self.client.supports_config_transition
 
     @property
+    def tool_execution_context_capabilities(
+        self,
+    ) -> ToolExecutionContextCapabilities | None:
+        """Return execution-context versions accepted by the running child."""
+
+        if self.client is None:
+            return None
+        return self.client.tool_execution_context_capabilities
+
+    @property
+    def supports_tool_execution_context(self) -> bool:
+        """Whether the running child accepts the current execution context."""
+
+        return self.client is not None and self.client.supports_tool_execution_context
+
+    @property
     def replacement_required(self) -> bool:
         """Whether the running child must be replaced before more work."""
 
@@ -596,8 +670,14 @@ class SubprocessIsolatedFeatureClient:
     async def list_tools(self) -> list[ToolMetadata]:
         return await self._require_client().list_tools()
 
-    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
-        return await self._require_client().call_tool(name, arguments)
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        context: ToolExecutionContext | None = None,
+    ) -> Any:
+        return await self._require_client().call_tool(name, arguments, context=context)
 
     async def prepare_config_transition(
         self, next_config: dict[str, Any]

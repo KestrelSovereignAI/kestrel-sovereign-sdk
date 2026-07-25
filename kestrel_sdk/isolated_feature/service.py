@@ -28,10 +28,15 @@ from .protocol import (
     JsonRpcRequest,
     JsonRpcResponse,
     ProtocolError,
+    TOOL_EXECUTION_CONTEXT,
+    TOOL_EXECUTION_CONTEXT_CAPABILITY,
+    ToolExecutionContext,
+    ToolExecutionContextCapabilities,
     ToolMetadata,
     decode_message,
     encode_message,
 )
+from .context import _ToolExecutionContextScope, _active_tool_execution_context
 
 ToolHandler = Callable[[dict[str, Any]], Awaitable[Any] | Any]
 
@@ -88,6 +93,10 @@ class IsolatedFeatureService:
         # A successful prepare-only hook has retired old resources. Refuse new
         # tool calls until the host performs the required replacement.
         self._restart_required = False
+        # New SDK services understand the fixed, validated execution-context
+        # envelope. Legacy services simply lack this initialize capability, so
+        # current hosts can fail closed before sending context to them.
+        self._tool_execution_context_capabilities = ToolExecutionContextCapabilities()
 
     def advertise_channel(
         self,
@@ -164,6 +173,10 @@ class IsolatedFeatureService:
         if self._config_transition_capabilities is not None:
             capabilities[CONFIG_TRANSITION_CAPABILITY] = (
                 self._config_transition_capabilities.to_dict()
+            )
+        if self._tool_execution_context_capabilities is not None:
+            capabilities[TOOL_EXECUTION_CONTEXT_CAPABILITY] = (
+                self._tool_execution_context_capabilities.to_dict()
             )
         return {
             "protocolVersion": self.protocol_version,
@@ -393,7 +406,27 @@ class IsolatedFeatureService:
                 arguments = {}
             if not isinstance(arguments, dict):
                 raise ProtocolError("tools/call arguments must be an object")
-            return await self.call_tool(name, arguments)
+            context: ToolExecutionContext | None = None
+            if TOOL_EXECUTION_CONTEXT in request.params:
+                if self._tool_execution_context_capabilities is None:
+                    raise ProtocolError("tool execution context is not supported")
+                context = ToolExecutionContext.from_dict(
+                    request.params[TOOL_EXECUTION_CONTEXT]
+                )
+                if not self._tool_execution_context_capabilities.supports(context.version):
+                    raise ProtocolError("tool execution context version is not supported")
+            # ContextVar state is task-local, but its values are copied into
+            # child tasks and ``asyncio.to_thread`` workers. Store a shared
+            # scope rather than the immutable context directly and revoke it
+            # before the reset, so copied contexts cannot retain invocation
+            # metadata after this RPC succeeds, fails, or is cancelled.
+            scope = _ToolExecutionContextScope(context)
+            token = _active_tool_execution_context.set(scope)
+            try:
+                return await self.call_tool(name, arguments)
+            finally:
+                scope.invalidate()
+                _active_tool_execution_context.reset(token)
         if request.method == SHUTDOWN:
             return await self.on_shutdown()
         raise ProtocolError(f"unknown method: {request.method}")
