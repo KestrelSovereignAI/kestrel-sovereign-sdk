@@ -8,10 +8,12 @@ types, but stdio is the canonical transport for the SDK contract.
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
-import json
+from math import isfinite
+from typing import Any, Literal, TypeAlias
 
 JSONRPC_VERSION = "2.0"
 PROTOCOL_VERSION = "2026-06-17"
@@ -27,6 +29,16 @@ FEATURE_EVENT = "feature/event"
 # agent-callable tool surface.
 CONFIG_TRANSITION = "lifecycle/config-transition"
 CONFIG_TRANSITION_CAPABILITY = "config_transition"
+
+# Private, host-to-service ingress. This intentionally lives outside
+# ``tools/*``: registrations are control-plane callbacks for the trusted host,
+# never feature tools that an agent can discover or invoke.
+HOST_INGRESS = "host/ingress"
+HOST_INGRESS_CALL = HOST_INGRESS
+HOST_INGRESS_CAPABILITY = "host_ingress"
+HOST_INGRESS_VERSION = 1
+MAX_HOST_INGRESS_NAME_BYTES = 64
+MAX_HOST_INGRESS_PAYLOAD_BYTES = 64 * 1024
 
 # ``tools/call`` parameter and initialize capability for trusted invocation
 # metadata.  This stays on the normal tool-call envelope: it is deliberately
@@ -63,6 +75,102 @@ class ToolExecutionContextUnsupportedError(ProtocolError):
     """Raised when a service did not advertise tool execution-context support."""
 
 
+class HostIngressError(ProtocolError):
+    """A private host-ingress request could not be completed safely.
+
+    The public message for this error is deliberately generic. Ingress payloads
+    often contain host-only state, so neither a handler exception nor malformed
+    input is reflected through the RPC boundary.
+    """
+
+
+class HostIngressUnsupportedError(HostIngressError):
+    """Raised when a service does not advertise a compatible ingress contract."""
+
+
+class HostIngressUnknownNameError(HostIngressUnsupportedError):
+    """Raised when a requested ingress name was not advertised by the service."""
+
+
+HostIngressPayload: TypeAlias = (
+    None
+    | bool
+    | int
+    | float
+    | str
+    | list["HostIngressPayload"]
+    | dict[str, "HostIngressPayload"]
+)
+
+_HOST_INGRESS_NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
+_MAX_HOST_INGRESS_PAYLOAD_DEPTH = 32
+
+
+def validate_host_ingress_name(value: Any) -> str:
+    """Validate a bounded, conservative host-ingress slug.
+
+    Names are API identifiers rather than user content. Restricting them to
+    lowercase ASCII slug components keeps capability comparison unambiguous and
+    prevents a registered callback from being accidentally addressable through
+    an alternate spelling. Error messages never include the supplied value.
+    """
+
+    if not isinstance(value, str) or not value.isascii():
+        raise ProtocolError("host ingress name must be a lowercase slug")
+    if len(value) > MAX_HOST_INGRESS_NAME_BYTES:
+        raise ProtocolError("host ingress name exceeds the size limit")
+    if _HOST_INGRESS_NAME.fullmatch(value) is None:
+        raise ProtocolError("host ingress name must be a lowercase slug")
+    return value
+
+
+def _validate_host_ingress_json(value: Any, *, depth: int) -> None:
+    """Ensure ``value`` is a strict JSON value without serializing its data."""
+
+    if depth > _MAX_HOST_INGRESS_PAYLOAD_DEPTH:
+        raise ProtocolError("host ingress payload exceeds the nesting limit")
+    if value is None or isinstance(value, (bool, str, int)):
+        return
+    if isinstance(value, float):
+        if not isfinite(value):
+            raise ProtocolError("host ingress payload must be valid JSON")
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_host_ingress_json(item, depth=depth + 1)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ProtocolError("host ingress payload must be valid JSON")
+            _validate_host_ingress_json(item, depth=depth + 1)
+        return
+    raise ProtocolError("host ingress payload must be valid JSON")
+
+
+def validate_host_ingress_payload(value: Any) -> HostIngressPayload:
+    """Validate and size-bound a JSON payload at an ingress trust boundary.
+
+    This is deliberately used by both client and service. The client avoids
+    putting oversized or non-JSON data on the wire, while the service treats
+    raw JSON-RPC callers as untrusted and repeats exactly the same validation.
+    """
+
+    _validate_host_ingress_json(value, depth=0)
+    try:
+        encoded = json.dumps(
+            value,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        raise ProtocolError("host ingress payload must be valid JSON") from exc
+    if len(encoded) > MAX_HOST_INGRESS_PAYLOAD_BYTES:
+        raise ProtocolError("host ingress payload exceeds the size limit")
+    return value
+
+
 _MAX_CONTEXT_IDENTIFIER_BYTES = 512
 _MAX_TRIGGER_KIND_BYTES = 64
 _SUPPORTED_TRIGGER_KINDS = frozenset({"scheduler", "event", "agent", "manual", "api"})
@@ -78,9 +186,13 @@ def _require_context_string(value: Any, field_name: str, *, maximum: int) -> str
     """Validate a bounded identifier without reflecting its value in errors."""
 
     if not isinstance(value, str) or not value:
-        raise ProtocolError(f"tool execution context {field_name} must be a non-empty string")
+        raise ProtocolError(
+            f"tool execution context {field_name} must be a non-empty string"
+        )
     if len(value.encode("utf-8")) > maximum:
-        raise ProtocolError(f"tool execution context {field_name} exceeds the size limit")
+        raise ProtocolError(
+            f"tool execution context {field_name} exceeds the size limit"
+        )
     return value
 
 
@@ -96,17 +208,26 @@ def _optional_context_string(value: Any, field_name: str) -> str | None:
 
 def _require_aware_timestamp(value: Any, field_name: str) -> datetime:
     if not isinstance(value, datetime):
-        raise ProtocolError(f"tool execution context {field_name} must be an RFC 3339 timestamp")
+        raise ProtocolError(
+            f"tool execution context {field_name} must be an RFC 3339 timestamp"
+        )
     if value.tzinfo is None or value.utcoffset() is None:
-        raise ProtocolError(f"tool execution context {field_name} must include a timezone")
+        raise ProtocolError(
+            f"tool execution context {field_name} must include a timezone"
+        )
     return value
 
 
 def _parse_timestamp(value: Any, field_name: str) -> datetime | None:
     if value is None:
         return None
-    if not isinstance(value, str) or len(value.encode("utf-8")) > _MAX_CONTEXT_IDENTIFIER_BYTES:
-        raise ProtocolError(f"tool execution context {field_name} must be an RFC 3339 timestamp")
+    if (
+        not isinstance(value, str)
+        or len(value.encode("utf-8")) > _MAX_CONTEXT_IDENTIFIER_BYTES
+    ):
+        raise ProtocolError(
+            f"tool execution context {field_name} must be an RFC 3339 timestamp"
+        )
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
@@ -137,7 +258,9 @@ class ToolExecutionTrigger:
         if not isinstance(self.kind, str) or self.kind not in _SUPPORTED_TRIGGER_KINDS:
             raise ProtocolError("tool execution context trigger kind is not supported")
         if len(self.kind.encode("utf-8")) > _MAX_TRIGGER_KIND_BYTES:
-            raise ProtocolError("tool execution context trigger kind exceeds the size limit")
+            raise ProtocolError(
+                "tool execution context trigger kind exceeds the size limit"
+            )
         _optional_context_string(self.id, "trigger.id")
         _optional_context_string(self.source_id, "trigger.source_id")
         if self.triggered_at is not None:
@@ -163,16 +286,24 @@ class ToolExecutionTrigger:
             raise ProtocolError("tool execution context trigger must be an object")
         unknown = set(data).difference(_TRIGGER_FIELDS)
         if unknown:
-            raise ProtocolError("tool execution context trigger contains reserved or unknown fields")
+            raise ProtocolError(
+                "tool execution context trigger contains reserved or unknown fields"
+            )
         kind = data.get("kind")
         if not isinstance(kind, str):
             raise ProtocolError("tool execution context trigger requires kind")
         return cls(
             kind=kind,
             id=_optional_context_string(data.get("id"), "trigger.id"),
-            source_id=_optional_context_string(data.get("source_id"), "trigger.source_id"),
-            triggered_at=_parse_timestamp(data.get("triggered_at"), "trigger.triggered_at"),
-            scheduled_for=_parse_timestamp(data.get("scheduled_for"), "trigger.scheduled_for"),
+            source_id=_optional_context_string(
+                data.get("source_id"), "trigger.source_id"
+            ),
+            triggered_at=_parse_timestamp(
+                data.get("triggered_at"), "trigger.triggered_at"
+            ),
+            scheduled_for=_parse_timestamp(
+                data.get("scheduled_for"), "trigger.scheduled_for"
+            ),
         )
 
 
@@ -193,7 +324,10 @@ class ToolExecutionContext:
     version: int = TOOL_EXECUTION_CONTEXT_VERSION
 
     def __post_init__(self) -> None:
-        if isinstance(self.version, bool) or self.version != TOOL_EXECUTION_CONTEXT_VERSION:
+        if (
+            isinstance(self.version, bool)
+            or self.version != TOOL_EXECUTION_CONTEXT_VERSION
+        ):
             raise ProtocolError("unsupported tool execution context version")
         _require_context_string(
             self.invocation_id,
@@ -201,10 +335,18 @@ class ToolExecutionContext:
             maximum=_MAX_CONTEXT_IDENTIFIER_BYTES,
         )
         _optional_context_string(self.idempotency_key, "idempotency_key")
-        if isinstance(self.attempt, bool) or not isinstance(self.attempt, int) or self.attempt < 1:
-            raise ProtocolError("tool execution context attempt must be a positive integer")
+        if (
+            isinstance(self.attempt, bool)
+            or not isinstance(self.attempt, int)
+            or self.attempt < 1
+        ):
+            raise ProtocolError(
+                "tool execution context attempt must be a positive integer"
+            )
         if not isinstance(self.trigger, ToolExecutionTrigger):
-            raise ProtocolError("tool execution context trigger must be a ToolExecutionTrigger")
+            raise ProtocolError(
+                "tool execution context trigger must be a ToolExecutionTrigger"
+            )
         encoded = json.dumps(self.to_dict(), separators=(",", ":")).encode("utf-8")
         if len(encoded) > MAX_TOOL_EXECUTION_CONTEXT_BYTES:
             raise ProtocolError("tool execution context exceeds the size limit")
@@ -229,7 +371,9 @@ class ToolExecutionContext:
             raise ProtocolError("tool execution context exceeds the size limit")
         unknown = set(data).difference(_CONTEXT_FIELDS)
         if unknown:
-            raise ProtocolError("tool execution context contains reserved or unknown fields")
+            raise ProtocolError(
+                "tool execution context contains reserved or unknown fields"
+            )
         version = data.get("version")
         if isinstance(version, bool) or not isinstance(version, int):
             raise ProtocolError("tool execution context requires an integer version")
@@ -264,9 +408,13 @@ class ToolExecutionContextCapabilities:
             isinstance(version, bool) or not isinstance(version, int) or version < 1
             for version in self.versions
         ):
-            raise ProtocolError("tool execution context capability requires positive versions")
+            raise ProtocolError(
+                "tool execution context capability requires positive versions"
+            )
         if len(set(self.versions)) != len(self.versions):
-            raise ProtocolError("tool execution context capability versions must be unique")
+            raise ProtocolError(
+                "tool execution context capability versions must be unique"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {"versions": list(self.versions)}
@@ -277,11 +425,66 @@ class ToolExecutionContextCapabilities:
             raise ProtocolError("tool execution context capability requires versions")
         versions = data.get("versions")
         if not isinstance(versions, list):
-            raise ProtocolError("tool execution context capability versions must be a list")
+            raise ProtocolError(
+                "tool execution context capability versions must be a list"
+            )
         return cls(versions=tuple(versions))
 
     def supports(self, version: int) -> bool:
         return version in self.versions
+
+
+@dataclass(frozen=True)
+class HostIngressCapabilities:
+    """Versioned private host-ingress names accepted by a service.
+
+    The explicit name list lets a host fail closed before writing an unknown
+    callback request to a child. It is intentionally capability metadata only;
+    unlike :class:`ToolMetadata`, it is never part of ``tools/list``.
+    """
+
+    names: tuple[str, ...]
+    version: int = HOST_INGRESS_VERSION
+
+    def __post_init__(self) -> None:
+        if isinstance(self.version, bool) or self.version != HOST_INGRESS_VERSION:
+            raise ProtocolError("unsupported host ingress capability version")
+        if not self.names:
+            raise ProtocolError("host ingress capability requires names")
+        if len(set(self.names)) != len(self.names):
+            raise ProtocolError("host ingress capability names must be unique")
+        for name in self.names:
+            validate_host_ingress_name(name)
+
+    @property
+    def ingress_names(self) -> tuple[str, ...]:
+        """Alias for callers that prefer the fully-qualified field name."""
+
+        return self.names
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"version": self.version, "names": list(self.names)}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HostIngressCapabilities:
+        if not isinstance(data, dict) or set(data) != {"version", "names"}:
+            raise ProtocolError("host ingress capability requires version and names")
+        version = data.get("version")
+        names = data.get("names")
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise ProtocolError("host ingress capability version must be an integer")
+        if not isinstance(names, list) or not all(
+            isinstance(name, str) for name in names
+        ):
+            raise ProtocolError(
+                "host ingress capability names must be a list of strings"
+            )
+        return cls(version=version, names=tuple(names))
+
+    def supports(self, name: str) -> bool:
+        """Whether this capability accepts ``name`` at the current version."""
+
+        return self.version == HOST_INGRESS_VERSION and name in self.names
 
 
 @dataclass(frozen=True)

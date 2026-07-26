@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from inspect import isawaitable, iscoroutinefunction
-from typing import Any
 import asyncio
 import os
 import sys
+from collections.abc import Awaitable, Callable
+from inspect import isawaitable, iscoroutinefunction
+from typing import Any
 
+from .context import _active_tool_execution_context, _ToolExecutionContextScope
 from .protocol import (
     CONFIG_TRANSITION,
     CONFIG_TRANSITION_APPLIED,
@@ -16,29 +17,37 @@ from .protocol import (
     CONFIG_TRANSITION_RESTART,
     FEATURE_EVENT,
     HEALTH,
+    HOST_INGRESS,
+    HOST_INGRESS_CAPABILITY,
     INITIALIZE,
     PROTOCOL_VERSION,
     SHUTDOWN,
+    TOOL_EXECUTION_CONTEXT,
+    TOOL_EXECUTION_CONTEXT_CAPABILITY,
     TOOLS_CALL,
     TOOLS_LIST,
     ConfigTransitionCapabilities,
     ConfigTransitionResult,
+    HostIngressCapabilities,
+    HostIngressPayload,
     JsonRpcError,
     JsonRpcNotification,
     JsonRpcRequest,
     JsonRpcResponse,
     ProtocolError,
-    TOOL_EXECUTION_CONTEXT,
-    TOOL_EXECUTION_CONTEXT_CAPABILITY,
     ToolExecutionContext,
     ToolExecutionContextCapabilities,
     ToolMetadata,
     decode_message,
     encode_message,
+    validate_host_ingress_name,
+    validate_host_ingress_payload,
 )
-from .context import _ToolExecutionContextScope, _active_tool_execution_context
 
 ToolHandler = Callable[[dict[str, Any]], Awaitable[Any] | Any]
+HostIngressHandler = Callable[
+    [HostIngressPayload], Awaitable[HostIngressPayload] | HostIngressPayload
+]
 
 
 def _is_async_callable(handler: ToolHandler) -> bool:
@@ -76,6 +85,11 @@ class IsolatedFeatureService:
         # never wedge the event loop (and with it HEALTH, which the supervisor
         # polls). Decided once at registration rather than per call.
         self._handler_is_async: dict[str, bool] = {}
+        # Private host callbacks are separate from tools so registering one can
+        # never make it agent-discoverable. They use the same async/sync worker
+        # model as tools, but accept only validated JSON payloads.
+        self._host_ingress_handlers: dict[str, HostIngressHandler] = {}
+        self._host_ingress_handler_is_async: dict[str, bool] = {}
         self._writer: Any = None
         self._stopping = False
         # Requests are handled concurrently (see ``serve``); serialize the actual
@@ -145,6 +159,28 @@ class IsolatedFeatureService:
         self._handlers[metadata.name] = handler
         self._handler_is_async[metadata.name] = _is_async_callable(handler)
 
+    def register_host_ingress(self, name: str, handler: HostIngressHandler) -> None:
+        """Register one private host-to-service ingress callback.
+
+        Each registration advertises its name through the versioned
+        ``host_ingress`` initialize capability. This is deliberately distinct
+        from :meth:`register_tool`: it does not alter ``tools/list`` or any
+        agent tool inventory. Register callbacks before ``initialize`` so the
+        host observes the complete negotiated capability.
+        """
+
+        validated_name = validate_host_ingress_name(name)
+        if not callable(handler):
+            raise TypeError("host ingress handler must be callable")
+        self._host_ingress_handlers[validated_name] = handler
+        self._host_ingress_handler_is_async[validated_name] = _is_async_callable(
+            handler
+        )
+
+    # Keep the longer spelling available for hosts/services that use an
+    # explicit "handler" noun in their registration APIs.
+    register_host_ingress_handler = register_host_ingress
+
     async def get_tools(self) -> list[ToolMetadata]:
         """Return tools exposed by this service."""
 
@@ -161,7 +197,8 @@ class IsolatedFeatureService:
         requested = params.get("protocolVersion")
         if requested != self.protocol_version:
             raise ProtocolError(
-                f"unsupported protocolVersion {requested!r}; expected {self.protocol_version!r}"
+                "unsupported protocolVersion "
+                f"{requested!r}; expected {self.protocol_version!r}"
             )
         config = params.get("config")
         if isinstance(config, dict):
@@ -178,6 +215,10 @@ class IsolatedFeatureService:
             capabilities[TOOL_EXECUTION_CONTEXT_CAPABILITY] = (
                 self._tool_execution_context_capabilities.to_dict()
             )
+        if self._host_ingress_handlers:
+            capabilities[HOST_INGRESS_CAPABILITY] = HostIngressCapabilities(
+                names=tuple(self._host_ingress_handlers)
+            ).to_dict()
         return {
             "protocolVersion": self.protocol_version,
             "serverInfo": {"name": self.name, "version": self.version},
@@ -238,7 +279,37 @@ class IsolatedFeatureService:
             return await result
         return result
 
-    async def emit_event(self, event_type: str, payload: dict[str, Any] | None = None) -> None:
+    async def call_host_ingress(
+        self, name: str, payload: HostIngressPayload
+    ) -> HostIngressPayload:
+        """Dispatch a private host ingress callback without exposing a tool.
+
+        Native coroutine handlers run on the event loop; synchronous handlers
+        run in ``asyncio.to_thread`` so a blocked host callback cannot starve
+        health checks or unrelated concurrent RPCs.
+        """
+
+        if self._stopping or self._restart_required:
+            raise ProtocolError("host ingress is unavailable")
+        handler = self._host_ingress_handlers.get(name)
+        if handler is None:
+            raise ProtocolError("host ingress is unavailable")
+        if self._host_ingress_handler_is_async.get(name):
+            result = await handler(payload)
+        else:
+            result = await asyncio.to_thread(handler, payload)
+            if isawaitable(result):
+                result = await result
+        # The result crosses the same JSON-RPC boundary. Validate it before
+        # framing so a handler cannot emit an unbounded/non-JSON response.
+        return validate_host_ingress_payload(result)
+
+    # Symmetric naming for code that uses "invoke" on the client side.
+    invoke_host_ingress = call_host_ingress
+
+    async def emit_event(
+        self, event_type: str, payload: dict[str, Any] | None = None
+    ) -> None:
         """Emit a service-to-host notification."""
 
         if self._writer is None:
@@ -344,6 +415,23 @@ class IsolatedFeatureService:
                     ),
                 )
             )
+        except asyncio.CancelledError:
+            # A host callback can await a child task that was independently
+            # cancelled. That cancellation is a callback failure, not a
+            # cancellation of this RPC task, and must still receive a bounded
+            # response. Preserve cancellation actually directed at this request
+            # task so serve() can stop in-flight work during shutdown.
+            current = asyncio.current_task()
+            if request.method != HOST_INGRESS or (
+                current is not None and current.cancelling()
+            ):
+                raise
+            await self._send(
+                JsonRpcResponse(
+                    id=request.id,
+                    error=JsonRpcError(code=-32602, message="host ingress failed"),
+                )
+            )
         except Exception as exc:
             await self._send(
                 JsonRpcResponse(
@@ -373,7 +461,9 @@ class IsolatedFeatureService:
                 result.action == CONFIG_TRANSITION_APPLIED
                 and not self._config_transition_capabilities.supports_live_apply
             ):
-                raise ProtocolError("config transition hook returned an unadvertised action")
+                raise ProtocolError(
+                    "config transition hook returned an unadvertised action"
+                )
             if result.action == CONFIG_TRANSITION_RESTART:
                 self._restart_required = True
             else:
@@ -413,8 +503,12 @@ class IsolatedFeatureService:
                 context = ToolExecutionContext.from_dict(
                     request.params[TOOL_EXECUTION_CONTEXT]
                 )
-                if not self._tool_execution_context_capabilities.supports(context.version):
-                    raise ProtocolError("tool execution context version is not supported")
+                if not self._tool_execution_context_capabilities.supports(
+                    context.version
+                ):
+                    raise ProtocolError(
+                        "tool execution context version is not supported"
+                    )
             # ContextVar state is task-local, but its values are copied into
             # child tasks and ``asyncio.to_thread`` workers. Store a shared
             # scope rather than the immutable context directly and revoke it
@@ -427,7 +521,27 @@ class IsolatedFeatureService:
             finally:
                 scope.invalidate()
                 _active_tool_execution_context.reset(token)
+        if request.method == HOST_INGRESS:
+            # Keep lifecycle fencing in dispatch, not only in the overridable
+            # hook, so a subclass cannot accidentally accept ingress after it
+            # has shut down or requested process replacement. Likewise, check
+            # registration before entering the overridable hook so a raw RPC
+            # cannot bypass the capability registry.
+            if self._stopping or self._restart_required:
+                raise ProtocolError("host ingress is unavailable")
+            if set(request.params) != {"name", "payload"}:
+                raise ProtocolError("host ingress request is invalid")
+            name = validate_host_ingress_name(request.params.get("name"))
+            if name not in self._host_ingress_handlers:
+                raise ProtocolError("host ingress is unavailable")
+            payload = validate_host_ingress_payload(request.params.get("payload"))
+            result = await self.call_host_ingress(name, payload)
+            return validate_host_ingress_payload(result)
         if request.method == SHUTDOWN:
+            # Latch termination before calling the overridable cleanup hook.
+            # Overrides may omit ``super()`` or raise, but neither may leave
+            # ingress open or cause ``serve()`` to keep reading requests.
+            self._stopping = True
             return await self.on_shutdown()
         raise ProtocolError(f"unknown method: {request.method}")
 
@@ -442,7 +556,11 @@ class IsolatedFeatureService:
 
         if request.method == CONFIG_TRANSITION:
             return "config transition failed"
-        if request.method == INITIALIZE and isinstance(request.params.get("config"), dict):
+        if request.method == HOST_INGRESS:
+            return "host ingress failed"
+        if request.method == INITIALIZE and isinstance(
+            request.params.get("config"), dict
+        ):
             return "initialization failed"
         return str(error)
 
