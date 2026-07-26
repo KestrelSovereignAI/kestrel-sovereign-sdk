@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.33.0 — 2026-07-26
+
+### Added
+
+- Capability-negotiated private host ingress for isolated features. Services
+  register named, bounded JSON handlers; hosts use the typed
+  `call_host_ingress()` API only after a compatible capability advertises the
+  name. Ingress remains outside `tools/*`, is invisible to agent tool
+  inventories, validates JSON at both trust boundaries, offloads sync handlers,
+  and redacts errors and payload values.
+
 ## 0.32.0 — 2026-07-25
 
 ### Added

@@ -213,6 +213,39 @@ The service also processes transition and shutdown requests in stream order;
 health requests queued behind a transition see its final state. Config values
 are not logged or reflected in lifecycle error envelopes.
 
+## Private host ingress
+
+An isolated service can register bounded JSON callbacks for its trusted host
+without creating agent-callable tools. Registration advertises the versioned
+`host_ingress` capability during `initialize`; the host can call only the
+registered names with `client.call_host_ingress(...)`. Legacy or malformed
+capabilities, unknown names, malformed JSON, and oversized payloads fail
+closed before the host writes the request.
+
+```python
+from kestrel_sdk.isolated_feature import IsolatedFeatureService
+
+class ChannelService(IsolatedFeatureService):
+    def __init__(self):
+        super().__init__(name="channel", version="1.0.0")
+        self.register_host_ingress("routing-update", self.apply_routing_update)
+
+    async def apply_routing_update(self, payload):
+        # payload is a strict JSON value, bounded to 64 KiB on both sides.
+        self.routes = payload["routes"]
+        return {"accepted": True}
+
+# Host side, after initialize:
+await client.call_host_ingress("routing-update", {"routes": ["primary"]})
+```
+
+Ingress uses the private `host/ingress` JSON-RPC method, never `tools/*`, so
+it remains absent from `tools/list` and agent tool inventories. Synchronous
+handlers run in a worker thread; native async handlers preserve normal request
+concurrency. Ingress is rejected once shutdown or restart-required lifecycle
+fencing begins, and public errors never reflect handler exceptions or payload
+values.
+
 ## Isolated tool execution context
 
 Hosts can attach trusted, versioned invocation metadata to an isolated

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
-import asyncio
 
 from .protocol import (
     CONFIG_TRANSITION,
@@ -14,28 +14,37 @@ from .protocol import (
     CONFIG_TRANSITION_CAPABILITY,
     FEATURE_EVENT,
     HEALTH,
+    HOST_INGRESS,
+    HOST_INGRESS_CAPABILITY,
     INITIALIZE,
     PROTOCOL_VERSION,
     SHUTDOWN,
+    TOOL_EXECUTION_CONTEXT,
+    TOOL_EXECUTION_CONTEXT_CAPABILITY,
+    TOOL_EXECUTION_CONTEXT_VERSION,
     TOOLS_CALL,
     TOOLS_LIST,
     ConfigTransitionCapabilities,
     ConfigTransitionError,
     ConfigTransitionResult,
     ConfigTransitionUnsupportedError,
+    HostIngressCapabilities,
+    HostIngressError,
+    HostIngressPayload,
+    HostIngressUnknownNameError,
+    HostIngressUnsupportedError,
     JsonRpcNotification,
     JsonRpcRequest,
     JsonRpcResponse,
     ProtocolError,
-    TOOL_EXECUTION_CONTEXT,
-    TOOL_EXECUTION_CONTEXT_CAPABILITY,
-    TOOL_EXECUTION_CONTEXT_VERSION,
     ToolExecutionContext,
     ToolExecutionContextCapabilities,
     ToolExecutionContextUnsupportedError,
     ToolMetadata,
     decode_message,
     encode_message,
+    validate_host_ingress_name,
+    validate_host_ingress_payload,
 )
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
@@ -77,7 +86,9 @@ class IsolatedFeatureClient:
         # and flushed to the first handler. A service may emit feature events
         # (e.g. channel.inbound from an already-linked session) during startup,
         # before the host has called on_event — without this they would be lost.
-        self._pending_notifications: deque[dict[str, Any]] = deque(maxlen=_MAX_PENDING_EVENTS)
+        self._pending_notifications: deque[dict[str, Any]] = deque(
+            maxlen=_MAX_PENDING_EVENTS
+        )
         # Serializes event delivery so a buffered-event flush cannot interleave
         # with (or reorder relative to) live notifications from the read loop.
         self._event_lock = asyncio.Lock()
@@ -199,10 +210,48 @@ class IsolatedFeatureClient:
         """Whether the initialized service accepts the current context version."""
 
         capabilities = self.tool_execution_context_capabilities
-        return (
-            capabilities is not None
-            and capabilities.supports(TOOL_EXECUTION_CONTEXT_VERSION)
+        return capabilities is not None and capabilities.supports(
+            TOOL_EXECUTION_CONTEXT_VERSION
         )
+
+    @property
+    def host_ingress_capabilities(self) -> HostIngressCapabilities | None:
+        """Return the negotiated private host-ingress contract, if valid.
+
+        Older services do not advertise this capability. Malformed metadata is
+        deliberately indistinguishable from an absent capability to callers,
+        which makes the typed API fail closed before any ingress request is
+        written to a child with unknown behavior.
+        """
+
+        capability = self.capabilities.get(HOST_INGRESS_CAPABILITY)
+        if not isinstance(capability, dict):
+            return None
+        try:
+            return HostIngressCapabilities.from_dict(capability)
+        except ProtocolError:
+            return None
+
+    @property
+    def supports_host_ingress(self) -> bool:
+        """Whether the initialized service advertises a valid ingress contract."""
+
+        return self.host_ingress_capabilities is not None
+
+    def supports_host_ingress_name(self, name: str) -> bool:
+        """Whether a valid capability explicitly advertises ``name``.
+
+        Invalid names return ``False`` instead of raising, making this a safe
+        probe for host routing code. The invoking API still validates and
+        reports a typed failure for invalid names.
+        """
+
+        try:
+            validated_name = validate_host_ingress_name(name)
+        except ProtocolError:
+            return False
+        capabilities = self.host_ingress_capabilities
+        return capabilities is not None and capabilities.supports(validated_name)
 
     @property
     def replacement_required(self) -> bool:
@@ -310,12 +359,17 @@ class IsolatedFeatureClient:
         if self._restart_required:
             self.ready = False
             return {"status": "restart-required", "ready": False}
-        self.ready = result.get("ready") is True or result.get("status") in {"ready", "ok"}
+        self.ready = result.get("ready") is True or result.get("status") in {
+            "ready",
+            "ok",
+        }
         return result
 
     async def list_tools(self) -> list[ToolMetadata]:
         if self._restart_required:
-            raise ProtocolError("service replacement is required before tools are exposed")
+            raise ProtocolError(
+                "service replacement is required before tools are exposed"
+            )
         if not self.ready:
             raise ProtocolError("health must report ready before tools are exposed")
         result = await self.request(TOOLS_LIST)
@@ -340,7 +394,9 @@ class IsolatedFeatureClient:
         """
 
         if self._restart_required:
-            raise ProtocolError("service replacement is required before tools can be called")
+            raise ProtocolError(
+                "service replacement is required before tools can be called"
+            )
         if not self.ready:
             raise ProtocolError("health must report ready before tools can be called")
         params: dict[str, Any] = {"name": name, "arguments": arguments or {}}
@@ -357,6 +413,45 @@ class IsolatedFeatureClient:
             TOOLS_CALL,
             params,
         )
+
+    async def call_host_ingress(
+        self, name: str, payload: HostIngressPayload = None
+    ) -> HostIngressPayload:
+        """Invoke one negotiated private host-ingress callback.
+
+        The callback name must have been advertised by the initialized service;
+        a legacy, malformed, or unknown capability fails locally and sends no
+        request. Payloads are strict, size-bounded JSON values and are checked
+        again by the service. All public failures use a generic message so host
+        payloads and feature exception text cannot cross this API boundary.
+        """
+
+        if self._shutdown_started or self._restart_required:
+            raise HostIngressError("host ingress is unavailable")
+        try:
+            validated_name = validate_host_ingress_name(name)
+            validated_payload = validate_host_ingress_payload(payload)
+        except ProtocolError as exc:
+            raise HostIngressError("host ingress failed") from exc
+        capabilities = self.host_ingress_capabilities
+        if capabilities is None:
+            raise HostIngressUnsupportedError("host ingress is not supported")
+        if not capabilities.supports(validated_name):
+            raise HostIngressUnknownNameError("host ingress name is not available")
+        try:
+            result = await self.request(
+                HOST_INGRESS,
+                {"name": validated_name, "payload": validated_payload},
+            )
+            return validate_host_ingress_payload(result)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise HostIngressError("host ingress failed") from exc
+
+    # ``invoke`` reads naturally at host call sites; retain the symmetric alias
+    # without adding another wire-level operation.
+    invoke_host_ingress = call_host_ingress
 
     async def shutdown(self) -> dict[str, Any]:
         async with self._lifecycle_lock:
@@ -404,7 +499,11 @@ class IsolatedFeatureClient:
             self._pending.pop(request_id, None)
             raise self._closed_exc
         try:
-            self.writer.write(encode_message(JsonRpcRequest(method=method, params=params or {}, id=request_id)))
+            self.writer.write(
+                encode_message(
+                    JsonRpcRequest(method=method, params=params or {}, id=request_id)
+                )
+            )
             drain = getattr(self.writer, "drain", None)
             if drain is not None:
                 await drain()
@@ -649,6 +748,20 @@ class SubprocessIsolatedFeatureClient:
         return self.client is not None and self.client.supports_tool_execution_context
 
     @property
+    def host_ingress_capabilities(self) -> HostIngressCapabilities | None:
+        """Return the running child's valid private host-ingress capability."""
+
+        if self.client is None:
+            return None
+        return self.client.host_ingress_capabilities
+
+    @property
+    def supports_host_ingress(self) -> bool:
+        """Whether the running child advertises private host ingress."""
+
+        return self.client is not None and self.client.supports_host_ingress
+
+    @property
     def replacement_required(self) -> bool:
         """Whether the running child must be replaced before more work."""
 
@@ -662,7 +775,9 @@ class SubprocessIsolatedFeatureClient:
                 result = await client.health()
                 async with self._state_lock:
                     if generation != self._generation or self.client is not client:
-                        raise RuntimeError("isolated feature was stopped during health check")
+                        raise RuntimeError(
+                            "isolated feature was stopped during health check"
+                        )
                 return result
         finally:
             await self._unregister_operation(operation)
@@ -678,6 +793,15 @@ class SubprocessIsolatedFeatureClient:
         context: ToolExecutionContext | None = None,
     ) -> Any:
         return await self._require_client().call_tool(name, arguments, context=context)
+
+    async def call_host_ingress(
+        self, name: str, payload: HostIngressPayload = None
+    ) -> HostIngressPayload:
+        """Invoke a private host-ingress callback on the running child."""
+
+        return await self._require_client().call_host_ingress(name, payload)
+
+    invoke_host_ingress = call_host_ingress
 
     async def prepare_config_transition(
         self, next_config: dict[str, Any]
@@ -711,7 +835,9 @@ class SubprocessIsolatedFeatureClient:
                     )
                     async with self._state_lock:
                         if generation != self._generation or self.client is not client:
-                            raise RuntimeError("isolated feature was stopped before transition")
+                            raise RuntimeError(
+                                "isolated feature was stopped before transition"
+                            )
                         self._pending_transition = pending
                 try:
                     transition = await client.prepare_config_transition(next_config)
@@ -858,7 +984,9 @@ class SubprocessIsolatedFeatureClient:
             return
         async with self._state_lock:
             if self._pending_transition is pending:
-                self.config = pending.next_config if retain_next else pending.previous_config
+                self.config = (
+                    pending.next_config if retain_next else pending.previous_config
+                )
                 self._pending_transition = None
 
     async def _detach_child_if_current(
