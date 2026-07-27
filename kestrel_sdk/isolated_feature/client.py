@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import logging
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -49,11 +51,17 @@ from .protocol import (
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
 
+logger = logging.getLogger(__name__)
+
 # Cap on feature events buffered before any handler subscribes, so a host that
 # only uses tools (never calls on_event) can't accumulate events unbounded.
 # Oldest events are dropped past this — the buffer exists to cover the brief
 # startup window, not to be a durable queue.
 _MAX_PENDING_EVENTS = 256
+# Every potentially blocking phase of subprocess retirement is bounded.  This
+# is deliberately a module constant so regression tests can exercise the
+# timeout paths without making the production grace period shorter.
+_SUBPROCESS_STOP_TIMEOUT = 3.0
 
 
 class IsolatedFeatureClient:
@@ -77,6 +85,15 @@ class IsolatedFeatureClient:
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._event_handlers: list[EventHandler] = []
         self._read_task: asyncio.Task[None] | None = None
+        # ``on_event()`` may need a separate buffered-event drain.  Keep every
+        # such task owned by this client so retirement cannot discard the
+        # client while a handler (and the child-controlled payload it received)
+        # is still running.
+        self._event_tasks: set[asyncio.Task[None]] = set()
+        # Closing streams and joining event delivery is independently owned.
+        # A supervisor can time-bound its observation of ``close()`` without
+        # cancelling this mandatory cleanup half-way through.
+        self._close_task: asyncio.Task[None] | None = None
         # Latched once the read loop terminates (EOF, decode error, cancel).
         # After this is set the stream is dead: request()/start() fail fast with
         # it instead of writing to a broken pipe and awaiting a reply that can
@@ -107,14 +124,127 @@ class IsolatedFeatureClient:
         self._restart_required = False
 
     async def start(self) -> None:
+        if self._closed_exc is not None:
+            self._raise_terminal_error()
         if self._read_task is None:
             self._read_task = asyncio.create_task(self._read_loop())
 
     def on_event(self, handler: EventHandler) -> None:
         first_handler = not self._event_handlers
         self._event_handlers.append(handler)
-        if first_handler and self._pending_notifications:
-            asyncio.create_task(self._drain_pending())
+        if first_handler and self._pending_notifications and not self._shutdown_started:
+            self._create_event_task(self._drain_pending())
+
+    def _create_event_task(self, coroutine: Awaitable[None]) -> asyncio.Task[None]:
+        """Create one client-owned event-delivery task and retain it to join."""
+
+        task = asyncio.create_task(coroutine)
+        self._event_tasks.add(task)
+        task.add_done_callback(self._finish_event_task)
+        return task
+
+    def _finish_event_task(self, task: asyncio.Task[None]) -> None:
+        """Consume a buffered-delivery failure before releasing its ownership.
+
+        A callback is required here rather than a bare ``set.discard``: a
+        buffered handler can fail after its client has been detached, and an
+        unread task exception both produces asyncio's warning and retains the
+        decoded event through its traceback.  Delivery failures are deliberately
+        payload-free at this boundary.
+        """
+
+        self._event_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:  # pragma: no cover - task raced cancellation
+            return
+        if exc is not None:
+            logger.warning("isolated feature event delivery failed")
+            self._discard_exception_traceback(exc)
+
+    @staticmethod
+    def _discard_exception_traceback(exc: BaseException) -> None:
+        """Best-effort severing of chains that may retain child-controlled data.
+
+        This cleanup sits on a hostile boundary: feature code can raise an
+        ``Exception`` subclass which overrides ``__getattribute__`` or
+        ``__setattr__`` specifically for the standard exception fields.  Do
+        not invoke those overrides here.  Each native BaseException operation
+        is isolated so one uncooperative object cannot prevent draining the
+        remaining cause/context/ExceptionGroup graph.
+        """
+
+        try:
+            seen: set[int] = set()
+            to_discard: list[BaseException] = [exc]
+            while to_discard:
+                try:
+                    current = to_discard.pop()
+                    marker = id(current)
+                    if marker in seen:
+                        continue
+                    seen.add(marker)
+                except BaseException:  # noqa: BLE001, S112 -- mandatory cleanup boundary
+                    # The worklist only contains BaseExceptions, but cleanup
+                    # must remain non-throwing even under pathological runtime
+                    # conditions.
+                    continue
+
+                # Read every link before clearing it.  Calling the base type's
+                # slot directly bypasses a subclass's Python-level attribute
+                # hooks; each individual read still gets a guard because some
+                # interpreter-provided exception objects can reject mutation.
+                try:
+                    cause = BaseException.__getattribute__(current, "__cause__")
+                except BaseException:  # noqa: BLE001 -- hostile exception attribute
+                    cause = None
+                try:
+                    context = BaseException.__getattribute__(current, "__context__")
+                except BaseException:  # noqa: BLE001 -- hostile exception attribute
+                    context = None
+                if isinstance(current, BaseExceptionGroup):
+                    # ``BaseException.__getattribute__`` still honors a
+                    # subclass property named ``exceptions``.  Read the
+                    # built-in descriptor directly so a hostile
+                    # ExceptionGroup subclass cannot hide nested exceptions
+                    # whose tracebacks retain decoded feature data.
+                    try:
+                        nested = BaseExceptionGroup.exceptions.__get__(
+                            current, type(current)
+                        )
+                    except BaseException:  # noqa: BLE001 -- hostile native object
+                        nested = None
+                else:
+                    try:
+                        nested = BaseException.__getattribute__(current, "exceptions")
+                    except BaseException:  # noqa: BLE001 -- hostile exception attribute
+                        nested = None
+
+                for attribute in ("__traceback__", "__cause__", "__context__"):
+                    try:
+                        BaseException.__setattr__(current, attribute, None)
+                    except BaseException:  # noqa: BLE001, S110 -- best-effort scrub
+                        pass
+
+                for linked in (cause, context):
+                    if isinstance(linked, BaseException):
+                        try:
+                            to_discard.append(linked)
+                        except BaseException:  # noqa: BLE001, S110 -- best-effort scrub
+                            pass
+                if isinstance(nested, tuple):
+                    for member in nested:
+                        if isinstance(member, BaseException):
+                            try:
+                                to_discard.append(member)
+                            except BaseException:  # noqa: BLE001, S110 -- best-effort scrub
+                                pass
+        except BaseException:  # noqa: BLE001 -- sanitization must never escape
+            # Sanitization itself is never allowed to strand request futures,
+            # terminal state, or a later cleanup phase.
+            return
 
     async def _drain_pending(self) -> None:
         async with self._event_lock:
@@ -136,9 +266,30 @@ class IsolatedFeatureClient:
 
     async def _dispatch_event(self, params: dict[str, Any]) -> None:
         for handler in list(self._event_handlers):
-            result = handler(params)
-            if asyncio.iscoroutine(result):
-                await result
+            try:
+                result = handler(params)
+                # EventHandler intentionally accepts every Awaitable, not only
+                # a native coroutine.  In particular a handler may return a
+                # Task or Future it created itself; awaiting it here keeps that
+                # work under the read/drain owner so stop() cannot report
+                # success while the child-controlled event remains live in an
+                # escaped task.
+                if inspect.isawaitable(result):
+                    await result
+            except asyncio.CancelledError as exc:
+                # A separately-created handler Task/Future can be cancelled
+                # without cancelling the read task that merely awaited it. In
+                # that case it is a handler failure, not reader cancellation.
+                # A cancellation actually requested for this owner retains its
+                # normal propagation semantics.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                self._discard_exception_traceback(exc)
+                raise RuntimeError("isolated feature event delivery failed") from None
+            except BaseException as exc:  # noqa: BLE001 -- hostile feature boundary
+                self._discard_exception_traceback(exc)
+                raise RuntimeError("isolated feature event delivery failed") from None
 
     async def initialize(
         self,
@@ -464,29 +615,141 @@ class IsolatedFeatureClient:
             return result
 
     async def close(self) -> None:
+        """Close streams only after every client-owned event task has settled.
+
+        The actual close runs in a private task.  In particular, a read-task
+        done callback is allowed to cancel this caller without being mistaken
+        for the read task's expected cancellation: awaiting the private task
+        through ``shield`` propagates the caller's exact cancellation rather
+        than swallowing it.  The private task remains available to a later
+        retirement retry if a cancellation-resistant handler does not settle.
+        """
+
         # Prevent a later public transition call from starting while the stream
         # is being closed by a supervisor.
         self._shutdown_started = True
-        if self._read_task is not None:
-            self._read_task.cancel()
-            try:
-                await self._read_task
-            except asyncio.CancelledError:
-                pass
-            self._read_task = None
+        task = self._close_task
+        if task is None:
+            task = asyncio.create_task(self._close_owned())
+            self._close_task = task
+        return await asyncio.shield(task)
+
+    async def _close_owned(self) -> None:
+        """Release streams, then join read and event delivery under one owner."""
+
+        read_task = self._read_task
+        tasks = set(self._event_tasks)
+        if read_task is not None:
+            tasks.add(read_task)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
+        # Closing stdin/stdout must not wait for a hostile handler.  The
+        # subsequent joins still prove whether it is safe to release this
+        # client from retirement ownership.
+        self._close_reader_transport()
         close = getattr(self.writer, "close", None)
         if close is not None:
-            close()
-        wait_closed = getattr(self.writer, "wait_closed", None)
-        if wait_closed is not None:
+            try:
+                close()
+            except Exception:  # noqa: BLE001, S110 -- best-effort stream close
+                pass
+
+        try:
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            wait_closed = getattr(self.writer, "wait_closed", None)
+            if wait_closed is not None:
+                await self._wait_writer_closed_owned(wait_closed)
+        finally:
+            # The buffer can contain child-provided, potentially secret event
+            # dictionaries.  Clear it only after coordinated event shutdown so
+            # a draining task never races a disposal-time mutation.
+            if all(task.done() for task in tasks):
+                async with self._event_lock:
+                    self._pending_notifications.clear()
+                    self._event_handlers.clear()
+                if read_task is self._read_task:
+                    self._read_task = None
+                # Replace the terminal classification with the coordinated-close
+                # sentinel.  ``_read_loop`` already discards raw exceptions,
+                # but this distinguishes a completed close for later callers.
+                self._closed_exc = ConnectionError("isolated feature client is closed")
+
+    async def _wait_writer_closed_owned(
+        self, wait_closed: Callable[[], Awaitable[Any]]
+    ) -> None:
+        """Best-effort writer close without mistaking its cancellation for ours.
+
+        An alternate StreamWriter can await an independently cancelled Future.
+        That propagates ``CancelledError`` to this owner without incrementing
+        its cancellation count.  Treat it like any other close failure so the
+        retained close task settles and a later retirement retry is not fenced
+        forever.  A cancellation directed at this owner still propagates.
+        """
+
+        owner = asyncio.current_task()
+        cancellation_count = owner.cancelling() if owner is not None else 0
+        try:
             await wait_closed()
+        except asyncio.CancelledError as exc:
+            if owner is not None and owner.cancelling() > cancellation_count:
+                raise
+            self._discard_exception_traceback(exc)
+        except BaseException as exc:  # noqa: BLE001 -- best-effort stream close
+            # A failed writer close cannot justify retaining decoded event
+            # data once all event work has actually stopped.
+            self._discard_exception_traceback(exc)
+
+    def _close_reader_transport(self) -> None:
+        """Best-effort close of a reader and its underlying pipe transport."""
+
+        close = getattr(self.reader, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:  # noqa: BLE001, S110 -- reader compatibility hook
+                pass
+
+        feed_eof = getattr(self.reader, "feed_eof", None)
+        if feed_eof is not None:
+            try:
+                feed_eof()
+            except Exception:  # noqa: BLE001, S110 -- reader compatibility hook
+                pass
+
+        # asyncio.StreamReader exposes its transport privately on supported
+        # Python versions.  Some compatible readers expose it publicly instead;
+        # checking both keeps shutdown defensive without coupling callers to a
+        # platform-specific subprocess implementation.
+        transport = getattr(self.reader, "_transport", None)
+        if transport is None:
+            transport = getattr(self.reader, "transport", None)
+        close_transport = getattr(transport, "close", None)
+        if close_transport is not None:
+            try:
+                close_transport()
+            except Exception:  # noqa: BLE001, S110 -- reader compatibility hook
+                pass
+
+        # An externally retained StreamReader would otherwise keep every byte
+        # already pulled from stdout after ownership is retired. This is a
+        # defensive release only for readers that expose asyncio's buffer.
+        buffer = getattr(self.reader, "_buffer", None)
+        clear_buffer = getattr(buffer, "clear", None)
+        if clear_buffer is not None:
+            try:
+                clear_buffer()
+            except Exception:  # noqa: BLE001, S110 -- reader compatibility hook
+                pass
 
     async def request(self, method: str, params: dict[str, Any] | None = None) -> Any:
         await self.start()
         # Fail fast on a dead stream rather than writing to a broken pipe and
         # awaiting a reply that will never come (the wedge this fixes).
         if self._closed_exc is not None:
-            raise self._closed_exc
+            self._raise_terminal_error()
         self._next_id += 1
         request_id = self._next_id
         loop = asyncio.get_running_loop()
@@ -497,7 +760,7 @@ class IsolatedFeatureClient:
         # future — resolve it against the latched error instead of hanging.
         if self._closed_exc is not None:
             self._pending.pop(request_id, None)
-            raise self._closed_exc
+            self._raise_terminal_error()
         try:
             self.writer.write(
                 encode_message(
@@ -519,7 +782,7 @@ class IsolatedFeatureClient:
 
     async def _read_loop(self) -> None:
         # Default terminal cause if the loop somehow exits without raising.
-        exc: BaseException = ConnectionError("isolated feature stream closed")
+        raw_exc: BaseException = ConnectionError("isolated feature stream closed")
         try:
             while True:
                 line = await self.reader.readline()
@@ -541,24 +804,87 @@ class IsolatedFeatureClient:
             # close() cancels us deliberately; still fail in-flight requests
             # (see finally) so a tool call outstanding during a restart doesn't
             # hang forever, then propagate so the task ends cancelled as awaited.
-            exc = cancelled
+            raw_exc = cancelled
             raise
-        except Exception as loop_exc:  # noqa: BLE001 — terminal; surfaced via futures
-            exc = loop_exc
+        except BaseException as loop_exc:  # noqa: BLE001 -- terminal feature boundary
+            raw_exc = loop_exc
         finally:
-            # Latch the terminal condition and fail EVERY pending request so no
-            # waiter is stranded, and so later request() calls fail fast.
-            self._closed_exc = exc
-            for pending in self._pending.values():
-                if not pending.done():
-                    pending.set_exception(exc)
-            self._pending.clear()
+            # Never retain or re-raise the raw reader/handler exception.  Its
+            # traceback can hold decoded event parameters, and re-raising it
+            # later would attach subsequent request parameters to that same
+            # client-owned object.  The stored sentinel preserves only the
+            # public terminal classification; every recipient gets a fresh
+            # generic instance below.
+            try:
+                self._closed_exc = self._terminal_sentinel(raw_exc)
+            except BaseException:  # noqa: BLE001 -- install generic fallback
+                # Even an exotic terminal object must not leave a live stream
+                # without a payload-free, generic terminal classification.
+                self._closed_exc = ConnectionError("isolated feature stream closed")
+            try:
+                self._discard_exception_traceback(raw_exc)
+            finally:
+                # A hostile exception must not prevent every already-issued
+                # request from receiving a terminal result.  Clear ownership in
+                # a finally block even if an alternate Future implementation
+                # rejects inspection or completion.
+                try:
+                    pending_futures = tuple(self._pending.values())
+                except BaseException:  # noqa: BLE001 -- defensive pending snapshot
+                    pending_futures = ()
+                try:
+                    for pending in pending_futures:
+                        try:
+                            if not pending.done():
+                                pending.set_exception(self._fresh_terminal_error())
+                        except BaseException as completion_exc:  # noqa: BLE001 -- hostile Future hook
+                            # An externally retained Future-compatible object
+                            # can fail from either ``done()`` or
+                            # ``set_exception()``.  Its traceback includes
+                            # this terminal reader frame and may therefore
+                            # retain the decoded event that ended the stream.
+                            self._discard_exception_traceback(completion_exc)
+                            continue
+                finally:
+                    self._pending.clear()
 
     def _mark_restart_required(self) -> None:
         """Fence local work after a child restart outcome becomes possible."""
 
         self._restart_required = True
         self.ready = False
+
+    def _raise_terminal_error(self) -> None:
+        """Raise a fresh terminal failure without tainting the stored sentinel."""
+
+        if self._closed_exc is None:  # pragma: no cover - callers guard this helper
+            return
+        raise self._fresh_terminal_error() from None
+
+    def _terminal_sentinel(self, raw_exc: BaseException) -> BaseException:
+        """Return a traceback-free, payload-free terminal classification."""
+
+        if isinstance(raw_exc, EOFError):
+            return EOFError("isolated feature stream closed")
+        if isinstance(raw_exc, ProtocolError):
+            return ProtocolError("isolated feature protocol failed")
+        return ConnectionError("isolated feature stream closed")
+
+    def _fresh_terminal_error(self) -> BaseException:
+        """Create an unshared generic error for one terminal observation."""
+
+        terminal = self._closed_exc
+        if isinstance(terminal, EOFError):
+            return EOFError("isolated feature stream closed")
+        if isinstance(terminal, ProtocolError):
+            return ProtocolError("isolated feature protocol failed")
+        if (
+            self._shutdown_started
+            and self._close_task is not None
+            and self._close_task.done()
+        ):
+            return ConnectionError("isolated feature client is closed")
+        return ConnectionError("isolated feature stream closed")
 
     async def _handle_notification(self, notification: JsonRpcNotification) -> None:
         if notification.method != FEATURE_EVENT:
@@ -582,6 +908,40 @@ class _PendingConfigTransition:
 
     previous_config: dict[str, Any] | None
     next_config: dict[str, Any]
+
+
+@dataclass
+class _ChildRetirement:
+    """Private ownership of one detached child until its reaping is known."""
+
+    client: IsolatedFeatureClient | None
+    process: asyncio.subprocess.Process | None
+    task: asyncio.Task[bool] | None = None
+    # ``Process.wait()`` must be started once and observed through shields.
+    # Cancelling a fresh coroutine for every bounded phase leaks waiters in the
+    # subprocess transport and can retain the child long after stop returned.
+    wait_task: asyncio.Task[Any] | None = None
+    # Each client phase is started once and retained through an unresolved
+    # retirement.  A phase that suppresses cancellation must never make a
+    # timeout observer wait for cancellation to finish, nor be forgotten.
+    shutdown_task: asyncio.Task[Any] | None = None
+    close_task: asyncio.Task[Any] | None = None
+    # Signal intent belongs to this exact process generation.  A delayed reap
+    # must not turn a stop retry into another TERM/KILL delivery.
+    terminate_requested: bool = False
+    kill_requested: bool = False
+    # Subprocess creation itself is an owned startup phase.  It can suppress
+    # cancellation and return a live Process only after public start() timed
+    # out, so it needs its own handoff rather than being treated as an ordinary
+    # startup task whose result can be discarded.
+    spawn_task: asyncio.Task[asyncio.subprocess.Process] | None = None
+    # Cancellation intent is durable: a hostile task can call uncancel() after
+    # observing its first request, but a later stop retry must not send another.
+    spawn_cancel_requested: bool = False
+    # A startup RPC may suppress cancellation after its own deadline. Keep it
+    # with the detached child until it has actually settled, just like close.
+    startup_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+    startup_cancel_requested: set[asyncio.Task[Any]] = field(default_factory=set)
 
 
 @dataclass
@@ -638,6 +998,23 @@ class SubprocessIsolatedFeatureClient:
         init=False,
         repr=False,
     )
+    # Operations cancelled by stop() transfer here before the cancellation is
+    # requested.  A task may suppress CancelledError (including by calling
+    # uncancel()), so it remains a replacement fence until it really settles
+    # rather than becoming invisible when it leaves _active_operations.
+    _retiring_operations: set[asyncio.Task[Any]] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
+    # Cancellation is an intent, not a property of Task.cancelling(): a task
+    # can clear its own cancellation state.  Retain this per-task marker until
+    # it settles so a repeated stop observes rather than re-cancels it.
+    _operation_cancel_requested: set[asyncio.Task[Any]] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
     # One actual lifecycle/config-transition RPC may be in flight because
     # ``_lifecycle_lock`` serializes it with health/start.  Its explicit
     # ownership makes cancellation/stop semantics deterministic: a stop that
@@ -648,76 +1025,329 @@ class SubprocessIsolatedFeatureClient:
         init=False,
         repr=False,
     )
+    # Detached children are not exposed through ``client`` / ``process``, but
+    # remain privately owned here until a bounded wait proves they exited.  A
+    # failed final reap is intentionally retained so a later stop can retry the
+    # *same* process instead of falsely succeeding or spawning a replacement.
+    _retirements: list[_ChildRetirement] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
+    # Public stop callers await this shielded supervisor task.  It is separate
+    # from any caller task so cancelling the sole caller cannot cancel or lose
+    # the retirement it started.
+    _stop_task: asyncio.Task[bool] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    # A stop can win while create_subprocess_exec() is in progress.  The
+    # starting task is then cancelled and must settle (having either published
+    # or retired its exact child) before stop can truthfully report success.
+    _starting: bool = field(default=False, init=False, repr=False)
+    # The generation owns the start slot until its ``finally`` has made the
+    # child handoff definitive.  Keep uncertainty attached to that same
+    # generation so a late timeout result cannot fence a start that already
+    # settled while waiting to reacquire ``_state_lock``.
+    _starting_generation: int | None = field(default=None, init=False, repr=False)
+    _start_uncertain_generation: int | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _start_settled: asyncio.Event = field(
+        default_factory=asyncio.Event,
+        init=False,
+        repr=False,
+    )
+    # At most one start generation is admitted at a time. Its phase tasks stay
+    # here until they finish or are atomically handed to a retirement record.
+    _startup_tasks: set[asyncio.Task[Any]] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
+    _startup_cancel_requested: set[asyncio.Task[Any]] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
+    # The process-creation task is tracked separately because, unlike an RPC
+    # phase, its late result is a resource that retirement must adopt and reap.
+    # It is assigned synchronously before the first await after task creation.
+    _spawn_task: asyncio.Task[asyncio.subprocess.Process] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _spawn_cancel_requested: bool = field(default=False, init=False, repr=False)
     _generation: int = field(default=0, init=False, repr=False)
     _stopping: bool = field(default=False, init=False, repr=False)
 
+    def __post_init__(self) -> None:
+        # No start is in flight immediately after construction.
+        self._start_settled.set()
+
     async def start(self) -> None:
         operation = await self._register_operation()
+        cancellations: list[tuple[Any, ...]] = []
+        failure: BaseException | None = None
+        # A new generation is not publicly successful until this outer method
+        # returns.  In particular, a caller can be cancelled while the private
+        # start finalizer or this operation's unregister handoff is running.
+        # Retain the generation so that cancellation still retires *this* child
+        # instead of returning an error with a live public handle pair.
+        started_generation: int | None = None
         try:
             async with self._lifecycle_lock:
-                await self._start()
+                started_generation = await self._start()
+        except BaseException as exc:  # noqa: BLE001 -- preserve cancellation state
+            failure = exc
+            if isinstance(exc, asyncio.CancelledError):
+                cancellations.append(exc.args)
         finally:
-            await self._unregister_operation(operation)
+            if cancellations or failure is not None:
+                try:
+                    await self._unregister_operation_owned(operation, cancellations)
+                except BaseException as exc:  # noqa: BLE001 -- cleanup must settle
+                    if isinstance(exc, asyncio.CancelledError):
+                        cancellations.append(exc.args)
+                    elif failure is None:
+                        failure = exc
+            else:
+                # ``start()`` has crossed its public success boundary only when
+                # this invocation releases its operation. This helper cannot
+                # yield, so the event loop cannot run stop() between removal
+                # and the return below: stop either already transferred and
+                # cancelled this operation (which follows the failure path), or
+                # sees no stale long-lived caller Task after success returns.
+                self._unregister_successful_start_at_return(operation)
+        if started_generation is not None and (cancellations or failure is not None):
+            try:
+                retired = await self._retire_start_result_owned(
+                    started_generation, cancellations
+                )
+                if failure is None and not retired:
+                    failure = RuntimeError("isolated feature retirement is unresolved")
+            except BaseException as exc:  # noqa: BLE001 -- cleanup must settle
+                if isinstance(exc, asyncio.CancelledError):
+                    cancellations.append(exc.args)
+                elif failure is None:
+                    failure = exc
+        if cancellations:
+            self._raise_latest_cancellation(cancellations)
+        if failure is not None:
+            raise failure
 
-    async def _start(self) -> None:
-        async with self._state_lock:
-            if self.process is not None:
-                return
-            if self._stopping:
-                raise RuntimeError("isolated feature stop is in progress")
-            generation = self._generation
-
-        process = await asyncio.create_subprocess_exec(
-            *self.command,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            # Inherit the parent's stderr rather than PIPE: a service that logs
-            # to stderr would otherwise fill an unread pipe buffer and block,
-            # hanging the JSON-RPC protocol on stdout. Inheriting keeps the
-            # service's logs visible to the host and removes the deadlock.
-            stderr=None,
-            env=self.env,
-            cwd=self.cwd,
-        )
-        if process.stdout is None or process.stdin is None:
-            raise RuntimeError("subprocess stdio pipes were not created")
-        client = IsolatedFeatureClient(
-            process.stdout,
-            process.stdin,
-            protocol_version=self.protocol_version,
-        )
-        # Re-attach persisted handlers BEFORE initialize so the inner client's
-        # startup-event buffer flushes to them (a relinked service may emit
-        # channel.inbound during the handshake). On a first start this list is
-        # empty and this is a no-op; on a restart it restores delivery.
-        for handler in self._handlers:
-            client.on_event(handler)
-
-        async with self._state_lock:
-            # ``stop()`` increments the generation before it cancels active
-            # work.  If it won this race while subprocess creation was pending,
-            # this freshly spawned child was never published and must be cleaned
-            # up locally instead of becoming a post-stop zombie.
-            stale = generation != self._generation or self._stopping
-            if not stale:
-                self.process = process
-                self.client = client
-        if stale:
-            await self._stop_child(client, process)
-            return
-
+    async def _start(self) -> int | None:
+        generation: int | None = None
+        process: asyncio.subprocess.Process | None = None
+        client: IsolatedFeatureClient | None = None
+        spawn_task: asyncio.Task[asyncio.subprocess.Process] | None = None
+        startup_deadline: float | None = None
+        retirement_claimed = False
+        retirement_task: asyncio.Task[bool] | None = None
+        failure: BaseException | None = None
+        cancellations: list[tuple[Any, ...]] = []
         try:
-            await client.initialize(config=self.config)
-            await self._wait_until_ready(client)
-            await client.list_tools()
-        except BaseException:
+            # A published Process can already have exited between callers.  It
+            # is not a running client merely because its handle is non-None:
+            # detach it into the same authoritative retirement path as stop(),
+            # join that exact cleanup under shielded ownership, and only then
+            # admit a replacement start.  Recheck beneath the admission lock:
+            # the transport can publish returncode while this task is waiting
+            # to reacquire it after the retirement helper's first observation.
+            while True:
+                await self._retire_terminal_published_child(cancellations)
+                if cancellations:
+                    self._raise_latest_cancellation(cancellations)
+
+                async with self._state_lock:
+                    self._clear_settled_start_uncertainty_locked()
+                    if self.process is not None or self.client is not None:
+                        if not self._published_child_is_terminal_locked():
+                            return
+                        # The child became terminal in the handoff gap above.
+                        # Release the lock and move its exact published pair
+                        # through the same authoritative retirement path.
+                        continue
+                    if (
+                        self._stopping
+                        or self._starting
+                        or self._start_uncertain_generation is not None
+                        or self._retirements
+                        or self._retiring_operations
+                        or (self._stop_task is not None and not self._stop_task.done())
+                    ):
+                        raise RuntimeError("isolated feature retirement is in progress")
+                    # A completed successful supervisor describes the previous child.
+                    # Once a new start is admitted, a later stop must create a fresh
+                    # attempt for this generation rather than replaying that old success.
+                    self._stop_task = None
+                    generation = self._generation
+                    self._starting = True
+                    self._starting_generation = generation
+                    self._start_settled.clear()
+                    # This deadline starts at generation admission, before
+                    # subprocess creation.  A slow spawn is part of startup,
+                    # not an unbounded prelude to it.
+                    startup_deadline = (
+                        asyncio.get_running_loop().time() + self.ready_timeout
+                    )
+                    break
+
+            # Create and retain subprocess creation before its first await.
+            # ``create_subprocess_exec`` can itself be cancellation-resistant
+            # on a platform transport.  If it returns a Process after the
+            # public start has failed, the exact task is transferred to a
+            # retirement record which adopts and reaps that late process.
+            spawn_task = asyncio.create_task(
+                asyncio.create_subprocess_exec(
+                    *self.command,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    # Inherit the parent's stderr rather than PIPE: a service that logs
+                    # to stderr would otherwise fill an unread pipe buffer and block,
+                    # hanging the JSON-RPC protocol on stdout. Inheriting keeps the
+                    # service's logs visible to the host and removes the deadlock.
+                    stderr=None,
+                    env=self.env,
+                    cwd=self.cwd,
+                )
+            )
+            self._retain_retirement_task(spawn_task)
+            self._spawn_task = spawn_task
+            self._spawn_cancel_requested = False
+            spawn_task.add_done_callback(self._on_spawn_task_done)
+            # ``startup_deadline`` is set synchronously with admission above.
+            if startup_deadline is None:  # pragma: no cover - admission is required
+                raise RuntimeError("isolated feature startup was not admitted")
+            process = await self._await_spawn_phase(spawn_task, startup_deadline)
+            # No await occurs between taking the Process result and publishing
+            # it.  The event loop therefore cannot expose an unowned process
+            # even when another task deliberately holds ``_state_lock``.
+            if self._spawn_task is spawn_task:
+                self._spawn_task = None
+                self._spawn_cancel_requested = False
+            spawn_task = None
+            if process.stdout is None or process.stdin is None:
+                raise RuntimeError("subprocess stdio pipes were not created")
+            client = IsolatedFeatureClient(
+                process.stdout,
+                process.stdin,
+                protocol_version=self.protocol_version,
+            )
+            # Re-attach persisted handlers BEFORE initialize so the inner client's
+            # startup-event buffer flushes to them (a relinked service may emit
+            # channel.inbound during the handshake). On a first start this list is
+            # empty and this is a no-op; on a restart it restores delivery.
+            for handler in self._handlers:
+                client.on_event(handler)
+            # Publishing is deliberately event-loop-local and synchronous.
+            # There is no suspension between creation and this assignment, so
+            # stop() can never observe a live child in an attachment gap.
+            self.process = process
+            self.client = client
+
+            # One absolute deadline covers spawn, initialize, health, retry
+            # sleep, and tools/list. A child that wedges any phase follows the
+            # authoritative retirement path rather than extending startup.
+            await self._await_startup_phase(
+                client.initialize(config=self.config),
+                client,
+                process,
+                generation,
+                startup_deadline,
+            )
+            await self._wait_until_ready(client, process, generation, startup_deadline)
+            await self._await_startup_phase(
+                client.list_tools(),
+                client,
+                process,
+                generation,
+                startup_deadline,
+            )
+        except BaseException as exc:  # noqa: BLE001 -- retain startup ownership
             # Do not leave a half-initialized child behind on startup failure or
-            # cancellation. If stop() already detached it, that call owns its
-            # cleanup and this is a no-op.
-            owns_child = await self._detach_child_if_current(client, process)
-            if owns_child:
-                await self._stop_child(client, process)
-            raise
+            # cancellation. If stop() already detached it, its private
+            # retirement record is joined here instead of being forgotten.
+            failure = exc
+            if isinstance(exc, asyncio.CancelledError):
+                cancellations.append(exc.args)
+            if not retirement_claimed and (
+                process is not None or spawn_task is not None
+            ):
+                retirement_claimed = True
+                # Creating the task is synchronous. It therefore owns the
+                # exact child *or* spawn task even if a newer cancellation
+                # arrives before this task can await the retirement claim.
+                if spawn_task is None:
+                    retirement_task = asyncio.create_task(
+                        self._retire_startup_child(client, process)
+                    )
+                else:
+                    retirement_task = asyncio.create_task(
+                        self._retire_startup_child(client, process, spawn_task)
+                    )
+        finally:
+            if retirement_task is not None:
+                try:
+                    retired = await self._await_owned_task(
+                        retirement_task, cancellations
+                    )
+                    if failure is None and not retired:
+                        failure = RuntimeError(
+                            "isolated feature retirement is unresolved"
+                        )
+                except BaseException as exc:  # noqa: BLE001 -- record cleanup failure
+                    if isinstance(exc, asyncio.CancelledError):
+                        cancellations.append(exc.args)
+                    elif failure is None:
+                        failure = exc
+
+            if generation is not None:
+                # State settlement is separately owned for the same reason as
+                # child retirement: a repeated caller cancellation must not
+                # strand _starting or a generation fence behind _state_lock.
+                finalizer = asyncio.create_task(self._finalize_start(generation))
+                try:
+                    await self._await_owned_task(finalizer, cancellations)
+                except BaseException as exc:  # noqa: BLE001 -- record cleanup failure
+                    if isinstance(exc, asyncio.CancelledError):
+                        cancellations.append(exc.args)
+                    elif failure is None:
+                        failure = exc
+
+        # A cancellation that arrives while the mandatory finalizer is queued
+        # or running was not visible to the earlier ``except`` block.  The
+        # public start call must still either return success or detach this
+        # exact child into bounded retirement before it reports that failure.
+        if (
+            not retirement_claimed
+            and generation is not None
+            and (cancellations or failure is not None)
+            and (client is not None or process is not None)
+        ):
+            retirement_claimed = True
+            retirement_task = asyncio.create_task(
+                self._retire_startup_child(client, process)
+            )
+            try:
+                retired = await self._await_owned_task(retirement_task, cancellations)
+                if failure is None and not retired:
+                    failure = RuntimeError("isolated feature retirement is unresolved")
+            except BaseException as exc:  # noqa: BLE001 -- record cleanup failure
+                if isinstance(exc, asyncio.CancelledError):
+                    cancellations.append(exc.args)
+                elif failure is None:
+                    failure = exc
+
+        if cancellations:
+            self._raise_latest_cancellation(cancellations)
+        if failure is not None:
+            raise failure
+        return generation
 
     @property
     def capabilities(self) -> dict[str, Any]:
@@ -769,6 +1399,9 @@ class SubprocessIsolatedFeatureClient:
 
     async def health(self) -> dict[str, Any]:
         operation = await self._register_operation()
+        cancellations: list[tuple[Any, ...]] = []
+        failure: BaseException | None = None
+        result: dict[str, Any] | None = None
         try:
             async with self._lifecycle_lock:
                 client, generation = await self._current_client()
@@ -778,9 +1411,25 @@ class SubprocessIsolatedFeatureClient:
                         raise RuntimeError(
                             "isolated feature was stopped during health check"
                         )
-                return result
+        except BaseException as exc:  # noqa: BLE001 -- preserve cancellation state
+            failure = exc
+            if isinstance(exc, asyncio.CancelledError):
+                cancellations.append(exc.args)
         finally:
-            await self._unregister_operation(operation)
+            try:
+                await self._unregister_operation_owned(operation, cancellations)
+            except BaseException as exc:  # noqa: BLE001 -- cleanup must settle
+                if isinstance(exc, asyncio.CancelledError):
+                    cancellations.append(exc.args)
+                elif failure is None:
+                    failure = exc
+        if cancellations:
+            self._raise_latest_cancellation(cancellations)
+        if failure is not None:
+            raise failure
+        if result is None:  # pragma: no cover - client.health() returns an object
+            raise RuntimeError("isolated feature health check did not complete")
+        return result
 
     async def list_tools(self) -> list[ToolMetadata]:
         return await self._require_client().list_tools()
@@ -818,6 +1467,9 @@ class SubprocessIsolatedFeatureClient:
         """
 
         operation = await self._register_operation()
+        cancellations: list[tuple[Any, ...]] = []
+        failure: BaseException | None = None
+        transition: ConfigTransitionResult | None = None
         try:
             async with self._lifecycle_lock:
                 client, generation = await self._current_client()
@@ -841,29 +1493,49 @@ class SubprocessIsolatedFeatureClient:
                         self._pending_transition = pending
                 try:
                     transition = await client.prepare_config_transition(next_config)
-                except asyncio.CancelledError:
+                except BaseException as exc:  # noqa: BLE001 -- finalize all outcomes
                     # A cancelled local wait cannot retract a request that may
                     # already be on the wire. Only this call's *new* fence earns
                     # ownership of next_config; an existing fence belongs to a
                     # prior transition and leaves previous_config intact.
-                    if not was_replacement_required and client.replacement_required:
-                        await self._finish_transition(pending, retain_next=True)
-                    else:
-                        await self._finish_transition(pending, retain_next=False)
-                    raise
-                except Exception:
                     # Hook rejection keeps the old child/config. Terminal
                     # transport failures newly fence this client and therefore
                     # require the next effective config for replacement.
-                    if not was_replacement_required and client.replacement_required:
-                        await self._finish_transition(pending, retain_next=True)
-                    else:
-                        await self._finish_transition(pending, retain_next=False)
-                    raise
-                await self._finish_transition(pending, retain_next=True)
-                return transition
+                    failure = exc
+                    if isinstance(exc, asyncio.CancelledError):
+                        cancellations.append(exc.args)
+                    retain_next = (
+                        not was_replacement_required and client.replacement_required
+                    )
+                else:
+                    retain_next = True
+                # This handoff is mandatory: a second cancellation must not
+                # leave both configs reachable through ``_pending_transition``.
+                # Give the finalizer private ownership and replay at most the
+                # newest cancellation once the state lock update has settled.
+                await self._finish_transition_owned(
+                    pending, retain_next=retain_next, cancellations=cancellations
+                )
+        except BaseException as exc:  # noqa: BLE001 -- preserve cancellation state
+            if failure is None:
+                failure = exc
+            if isinstance(exc, asyncio.CancelledError):
+                cancellations.append(exc.args)
         finally:
-            await self._unregister_operation(operation)
+            try:
+                await self._unregister_operation_owned(operation, cancellations)
+            except BaseException as exc:  # noqa: BLE001 -- cleanup must settle
+                if isinstance(exc, asyncio.CancelledError):
+                    cancellations.append(exc.args)
+                elif failure is None:
+                    failure = exc
+        if cancellations:
+            self._raise_latest_cancellation(cancellations)
+        if failure is not None:
+            raise failure
+        if transition is None:  # pragma: no cover - protocol result is required
+            raise RuntimeError("config transition did not complete")
+        return transition
 
     def on_event(self, handler: EventHandler) -> None:
         # Record on the wrapper so restarts re-attach it (see start()), and
@@ -873,13 +1545,45 @@ class SubprocessIsolatedFeatureClient:
             self.client.on_event(handler)
 
     async def stop(self) -> None:
-        # Deliberately bypass ``_lifecycle_lock``. A child can indefinitely
-        # stall initialize/health/transition, and waiting for that lock would
-        # make the bounded terminate/kill path unreachable.
+        """Retire every owned child, without letting caller cancellation lose it.
+
+        The public handle pair is intentionally detached at the beginning of
+        the supervised attempt.  The attempt itself is a private task retained
+        by the wrapper, so a cancelled public ``stop()`` keeps waiting (under a
+        shield) until the exact child is either reaped or recorded as uncertain.
+        Cancellation counts remain intact for enclosing timeout managers; only
+        after retirement settles is the newest cancellation delivered to the
+        caller without scheduling another one.
+        """
+
+        caller = asyncio.current_task()
         async with self._stop_lock:
+            task = self._stop_task
+            if task is None or (task.done() and not self._stop_task_result(task)):
+                task = asyncio.create_task(self._run_stop_attempt(caller))
+                self._stop_task = task
+
+        cancellations: list[tuple[Any, ...]] = []
+        while True:
+            try:
+                retired = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError as cancelled:
+                cancellations.append(cancelled.args)
+
+        if cancellations:
+            self._replay_cancellations(cancellations)
+        if not retired:
+            raise RuntimeError("isolated feature retirement is unresolved")
+
+    async def _run_stop_attempt(self, caller: asyncio.Task[Any] | None) -> bool:
+        """Detach, cancel competing lifecycle work, and reap known children."""
+
+        try:
             current = asyncio.current_task()
             async with self._state_lock:
                 self._stopping = True
+                self._clear_settled_start_uncertainty_locked()
                 self._generation += 1
                 # A transition that has started may already have written its RPC.
                 # Preserve the requested config synchronously, before cancelling
@@ -890,58 +1594,870 @@ class SubprocessIsolatedFeatureClient:
                 operations = [
                     task
                     for task in self._active_operations
-                    if task is not current and not task.done()
+                    # A caller can await start() and then stop() in the same
+                    # outer Task. That successful start remains visible until
+                    # Task.done() by design, but it has already crossed its
+                    # public success boundary and must not cancel its own
+                    # stop caller. Every other live operation is transferred.
+                    if task is not current and task is not caller and not task.done()
                 ]
+                for operation in operations:
+                    # Transfer before scheduling cancellation.  This is the
+                    # only ownership handoff, so an uncancel-suppressing task
+                    # can never be lost between the active and retired sets.
+                    self._active_operations.discard(operation)
+                    self._retiring_operations.add(operation)
+                    self._operation_cancel_requested.add(operation)
+                    operation.add_done_callback(self._release_retired_operation)
                 client = self.client
                 process = self.process
                 self.client = None
                 self.process = None
+                starting_generation = self._starting_generation
+                startup_tasks = (
+                    self._startup_tasks if starting_generation is not None else None
+                )
+                startup_cancel_requested = (
+                    self._startup_cancel_requested
+                    if starting_generation is not None
+                    else None
+                )
+                spawn_task = (
+                    self._spawn_task if starting_generation is not None else None
+                )
+                spawn_cancel_requested = self._spawn_cancel_requested
+                if spawn_task is not None:
+                    self._spawn_task = None
+                    self._spawn_cancel_requested = False
+                self._claim_retirement_locked(
+                    client,
+                    process,
+                    startup_tasks,
+                    spawn_task,
+                    startup_cancel_requested,
+                    spawn_cancel_requested,
+                )
             for operation in operations:
-                operation.cancel()
-            try:
-                await self._stop_child(client, process)
-            finally:
-                async with self._state_lock:
-                    self._stopping = False
+                # The durable marker above deliberately controls retries; do
+                # not use Task.cancelling(), which hostile code can reset with
+                # uncancel().
+                if not operation.done():
+                    operation.cancel()
 
-    async def _stop_child(
+            # When a concurrent start has not yet published its process, do not
+            # report a clean stop until that task settles and transfers any child
+            # it created into a private retirement record. A bounded wait that
+            # does not settle remains an explicit fail-closed uncertainty.
+            if (
+                starting_generation is not None
+                and not await self._wait_for_start_settlement(starting_generation)
+            ):
+                async with self._state_lock:
+                    # The timed wait releases this task before it reacquires
+                    # the lock. A cancelled start may have queued its finally
+                    # first and settled in that gap, so only fence the exact
+                    # generation if it is still demonstrably unsettled now.
+                    if not self._start_is_settled_locked(starting_generation):
+                        self._start_uncertain_generation = starting_generation
+                    else:
+                        self._clear_settled_start_uncertainty_locked()
+                # The start task can have queued its mandatory private handoff
+                # ahead of this timeout observation, yet require one loop turn
+                # after the state lock is released to queue its finalizer. Keep
+                # the generation fenced and give that exact handoff one more
+                # bounded observation before reporting unresolved retirement.
+                if not await self._wait_for_start_settlement(starting_generation):
+                    return False
+                async with self._state_lock:
+                    self._clear_settled_start_uncertainty_locked()
+
+            return await self._reap_owned_children()
+        except BaseException:  # noqa: BLE001 -- supervisor returns fail-closed status
+            # This task is deliberately exception-free: a retained, false result
+            # means later stop calls retry exact retirement rather than emitting
+            # an unobserved task exception or claiming success.
+            return False
+        finally:
+            async with self._state_lock:
+                self._stopping = False
+
+    async def _wait_for_start_settlement(self, generation: int) -> bool:
+        """Bound the handoff from one concurrently cancelled start task."""
+
+        try:
+            async with asyncio.timeout(_SUBPROCESS_STOP_TIMEOUT):
+                await self._start_settled.wait()
+        except TimeoutError:
+            return False
+        async with self._state_lock:
+            return self._start_is_settled_locked(generation)
+
+    async def _reap_owned_children(self) -> bool:
+        """Join each authoritative retirement and retain any uncertain child."""
+
+        async with self._state_lock:
+            # A start may settle after a previous stop timed out.  A later stop
+            # is authoritative enough to remove that stale fence once the
+            # generation's event and slot show its handoff is complete.
+            self._clear_settled_start_uncertainty_locked()
+            # An earlier bounded attempt may have reached an uncertain final
+            # reap.  A later stop owns a fresh retry of that exact record;
+            # reusing its old ``False`` result would merely repeat the false
+            # failure without ever observing a delayed process exit.
+            for retirement in self._retirements:
+                task = retirement.task
+                if task is None or (
+                    task.done()
+                    and (
+                        not self._stop_task_result(task)
+                        or retirement.startup_tasks
+                        or retirement.spawn_task is not None
+                    )
+                ):
+                    task = asyncio.create_task(self._retire_child(retirement))
+                    self._retain_retirement_task(task)
+                    retirement.task = task
+            retirements = list(self._retirements)
+        if not retirements:
+            async with self._state_lock:
+                children_retired = self._start_uncertain_generation is None
+            operations_retired = await self._observe_retiring_operations()
+            return children_retired and operations_retired
+
+        retired: list[_ChildRetirement] = []
+        for retirement in retirements:
+            task = retirement.task
+            if task is None:
+                return False
+            try:
+                complete = await asyncio.shield(task)
+            except BaseException:  # noqa: BLE001 -- one child cannot abort reaping peers
+                complete = False
+            if complete:
+                retired.append(retirement)
+
+        async with self._state_lock:
+            for retirement in retired:
+                self._remove_retirement_if_complete_locked(retirement)
+            # A child that did not settle remains in ``_retirements`` with its
+            # exact process handle, fencing replacement and enabling retry.
+            self._clear_settled_start_uncertainty_locked()
+            children_retired = (
+                not self._retirements and self._start_uncertain_generation is None
+            )
+        operations_retired = await self._observe_retiring_operations()
+        return children_retired and operations_retired
+
+    async def _observe_retiring_operations(self) -> bool:
+        """Boundedly observe stop-cancelled wrapper operations without recancelling.
+
+        These operations can own ``_lifecycle_lock`` even after the process and
+        inner client were retired.  Replacement calls must therefore fail fast
+        until they settle; waiting behind that stale lock would bypass a new
+        start's own readiness deadline.
+        """
+
+        async with self._state_lock:
+            self._prune_completed_operations_locked()
+            operations = set(self._retiring_operations)
+        if not operations:
+            return True
+
+        _done, _ = await asyncio.wait(operations, timeout=_SUBPROCESS_STOP_TIMEOUT)
+        async with self._state_lock:
+            # The operation's own finally only releases its active registration.
+            # Retired ownership remains until the outer Task has actually
+            # completed; this observer also prunes any callback that has not
+            # yet had a chance to acquire the state lock.
+            self._prune_completed_operations_locked()
+            return not self._retiring_operations
+
+    def _start_is_settled_locked(self, generation: int) -> bool:
+        """Return whether ``generation`` has completed its startup handoff."""
+
+        return self._starting_generation != generation and self._start_settled.is_set()
+
+    def _clear_settled_start_uncertainty_locked(self) -> None:
+        """Release only an uncertainty whose own start is now settled."""
+
+        generation = self._start_uncertain_generation
+        if generation is not None and self._start_is_settled_locked(generation):
+            self._start_uncertain_generation = None
+
+    def _remove_retirement_if_complete_locked(
+        self, retirement: _ChildRetirement
+    ) -> bool:
+        """Release a record only after every dynamically attached task settles."""
+
+        if retirement.startup_tasks or retirement.spawn_task is not None:
+            return False
+        for owned in self._retirements:
+            if owned is retirement:
+                self._retirements.remove(owned)
+                return True
+        return False
+
+    async def _finalize_start(self, generation: int) -> None:
+        """Settle one admitted start slot under independently owned cleanup."""
+
+        async with self._state_lock:
+            # A replacement start cannot normally overlap this one, but retain
+            # generation ownership defensively: an old start must never settle
+            # the event or clear uncertainty for a newer one.
+            if self._starting_generation == generation:
+                self._starting = False
+                self._starting_generation = None
+                # A prior stop can only mark this generation uncertain while it
+                # is running. Reaching here means this task has either retired
+                # its child or retained an exact record.
+                if self._start_uncertain_generation == generation:
+                    self._start_uncertain_generation = None
+                self._start_settled.set()
+
+    def _claim_retirement_locked(
         self,
         client: IsolatedFeatureClient | None,
         process: asyncio.subprocess.Process | None,
-    ) -> None:
-        if client is not None:
-            try:
-                # Bound the graceful-shutdown RPC: if the child is wedged or no
-                # longer reading stdin, an unbounded wait would never reach the
-                # terminate/kill fallback below.
-                await asyncio.wait_for(client.shutdown(), timeout=3)
-            except Exception:
-                pass  # wedged/already-closed — fall through to terminate/kill
-            finally:
-                try:
-                    await asyncio.wait_for(client.close(), timeout=3)
-                except Exception:
-                    pass
-        if process is not None and process.returncode is None:
-            try:
-                await asyncio.wait_for(process.wait(), timeout=3)
-            except asyncio.TimeoutError:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=3)
-                except asyncio.TimeoutError:
-                    process.kill()
-                    await process.wait()
+        startup_tasks: set[asyncio.Task[Any]] | None = None,
+        spawn_task: asyncio.Task[asyncio.subprocess.Process] | None = None,
+        startup_cancel_requested: set[asyncio.Task[Any]] | None = None,
+        spawn_cancel_requested: bool = False,
+    ) -> _ChildRetirement | None:
+        """Retain exact detached ownership while ``_state_lock`` is held."""
 
-    async def _wait_until_ready(self, client: IsolatedFeatureClient) -> None:
-        deadline = asyncio.get_running_loop().time() + self.ready_timeout
+        if (
+            client is None
+            and process is None
+            and not startup_tasks
+            and spawn_task is None
+        ):
+            return None
+        for retirement in self._retirements:
+            if (
+                (client is not None and retirement.client is client)
+                or (process is not None and retirement.process is process)
+                or (spawn_task is not None and retirement.spawn_task is spawn_task)
+            ):
+                if startup_tasks:
+                    retirement.startup_tasks.update(startup_tasks)
+                    startup_tasks.clear()
+                    if startup_cancel_requested:
+                        retirement.startup_cancel_requested.update(
+                            startup_cancel_requested
+                        )
+                        startup_cancel_requested.clear()
+                if retirement.spawn_task is None and spawn_task is not None:
+                    retirement.spawn_task = spawn_task
+                    retirement.spawn_cancel_requested = spawn_cancel_requested
+                elif spawn_task is not None:
+                    retirement.spawn_cancel_requested = (
+                        retirement.spawn_cancel_requested or spawn_cancel_requested
+                    )
+                return retirement
+        retirement = _ChildRetirement(
+            client=client,
+            process=process,
+            spawn_task=spawn_task,
+            spawn_cancel_requested=spawn_cancel_requested,
+        )
+        if startup_tasks:
+            retirement.startup_tasks.update(startup_tasks)
+            startup_tasks.clear()
+            if startup_cancel_requested:
+                retirement.startup_cancel_requested.update(startup_cancel_requested)
+                startup_cancel_requested.clear()
+        retirement.task = asyncio.create_task(self._retire_child(retirement))
+        self._retain_retirement_task(retirement.task)
+        self._retirements.append(retirement)
+        return retirement
+
+    async def _retire_terminal_published_child(
+        self, cancellations: list[tuple[Any, ...]]
+    ) -> None:
+        """Retire a terminal public generation before admitting a replacement.
+
+        A non-``None`` process handle is insufficient proof of liveness: either
+        the subprocess transport can publish ``returncode`` or the inner client
+        can latch a dead stdout stream while the OS process remains alive. This
+        moves that exact pair into the normal private retirement record while
+        holding state, then observes its close/reap task through the same
+        cancellation-safe owner used by startup-failure cleanup.
+        """
+
+        async with self._state_lock:
+            if not self._published_child_is_terminal_locked():
+                return
+            process = self.process
+            client = self.client
+            self.client = None
+            self.process = None
+            self._generation += 1
+            retirement = self._claim_retirement_locked(client, process)
+
+        if retirement is None:  # pragma: no cover - terminal process is retained
+            return
+        task = retirement.task
+        if task is None:  # pragma: no cover - claim always creates a task
+            complete = False
+        else:
+            complete = await self._await_owned_task(task, cancellations)
+        if not complete:
+            raise RuntimeError("isolated feature retirement is unresolved")
+
+        async with self._state_lock:
+            complete = self._remove_retirement_if_complete_locked(retirement)
+        if not complete:
+            raise RuntimeError("isolated feature retirement is unresolved")
+
+    def _published_child_is_terminal_locked(self) -> bool:
+        """Return whether the currently published pair needs retirement.
+
+        The caller holds ``_state_lock`` so the terminal observation and
+        detachment in :meth:`_retire_terminal_published_child` are one atomic
+        wrapper state transition.  ``IsolatedFeatureClient`` latches terminal
+        stream state synchronously in its read loop before it yields again.
+        """
+
+        process = self.process
+        client = self.client
+        return (process is not None and process.returncode is not None) or (
+            client is not None and client._closed_exc is not None
+        )
+
+    async def _retire_startup_child(
+        self,
+        client: IsolatedFeatureClient | None,
+        process: asyncio.subprocess.Process | None,
+        spawn_task: asyncio.Task[asyncio.subprocess.Process] | None = None,
+    ) -> bool:
+        """Move a failed startup child or spawn task into private ownership."""
+
+        async with self._state_lock:
+            if (
+                (client is not None or process is not None)
+                and self.client is client
+                and self.process is process
+            ):
+                self.client = None
+                self.process = None
+                self._generation += 1
+            if self._spawn_task is spawn_task:
+                self._spawn_task = None
+                spawn_cancel_requested = self._spawn_cancel_requested
+                self._spawn_cancel_requested = False
+            else:
+                spawn_cancel_requested = False
+            retirement = self._claim_retirement_locked(
+                client,
+                process,
+                self._startup_tasks,
+                spawn_task,
+                self._startup_cancel_requested,
+                spawn_cancel_requested,
+            )
+        if retirement is None:  # pragma: no cover - caller owns a resource/task
+            return True
+
+        task = retirement.task
+        if task is None:  # pragma: no cover - claim always creates one
+            complete = False
+        else:
+            complete = await asyncio.shield(task)
+        if complete:
+            async with self._state_lock:
+                complete = self._remove_retirement_if_complete_locked(retirement)
+        return complete
+
+    async def _retire_start_result_owned(
+        self,
+        generation: int,
+        cancellations: list[tuple[Any, ...]],
+    ) -> bool:
+        """Retire a successful-but-unreturned start generation exactly once.
+
+        This is the public start success boundary.  ``_start()`` can have
+        completed all child RPCs while the outer operation is still unregistering
+        itself.  If cancellation or an unregister failure wins in that final
+        window, detach only the generation that just completed.  A concurrent
+        stop may already have detached it (and advanced ``_generation``); in
+        that case its authoritative retirement record remains the owner.
+        """
+
+        async with self._state_lock:
+            if self._generation != generation:
+                return True
+            client = self.client
+            process = self.process
+            if client is None and process is None:
+                return True
+
+        # Create the claim task before the first cancellation-sensitive await.
+        # It uses the same process/client identity handoff as startup failure,
+        # so no later cancellation can expose an unowned published child.
+        task = asyncio.create_task(self._retire_startup_child(client, process))
+        return await self._await_owned_task(task, cancellations)
+
+    async def _retire_child(self, retirement: _ChildRetirement) -> bool:
+        """Run the fully bounded shutdown/TERM/KILL/reap sequence for one child."""
+
+        spawn_retired = await self._retire_spawn_task(retirement)
+        startup_retired = await self._retire_startup_tasks(retirement)
+        client = retirement.client
+        client_retired = spawn_retired and startup_retired
+        if client is not None:
+            shutdown_task = retirement.shutdown_task
+            if shutdown_task is None:
+                shutdown_task = asyncio.create_task(client.shutdown())
+                self._retain_retirement_task(shutdown_task)
+                retirement.shutdown_task = shutdown_task
+            # Give the graceful protocol request its own bounded observation
+            # before stream close begins. Close still follows after a timeout
+            # so a hostile child cannot block TERM/KILL, but it can no longer
+            # preempt a graceful shutdown that would otherwise succeed.
+            shutdown_settled, _ = await self._observe_retirement_task(shutdown_task)
+            close_task = retirement.close_task
+            if close_task is None:
+                close_task = asyncio.create_task(client.close())
+                self._retain_retirement_task(close_task)
+                retirement.close_task = close_task
+
+            close_settled, close_succeeded = await self._observe_retirement_task(
+                close_task
+            )
+            # close() can terminate the reader and thereby settle a shutdown
+            # request that had just exhausted its first bounded observation.
+            # Re-observe only an already-complete task here: this same stop
+            # attempt should release a fully settled child, but must not add an
+            # unbounded (or duplicate full-timeout) shutdown wait.
+            if not shutdown_settled and shutdown_task.done():
+                shutdown_settled = True
+            # Event delivery may be cancellation-resistant.  It retains
+            # child-controlled payloads and must remain authoritative until
+            # both phases are settled and close has completed successfully,
+            # even if the OS process is already dead. Releasing this client
+            # here would admit a restart while a prior generation task lives.
+            client_retired = (
+                spawn_retired
+                and startup_retired
+                and shutdown_settled
+                and close_settled
+                and close_succeeded
+            )
+            if client_retired:
+                async with self._state_lock:
+                    if retirement.startup_tasks:
+                        client_retired = False
+                    else:
+                        retirement.client = None
+
+        process = retirement.process
+        if process is None:
+            return client_retired
+        if await self._wait_for_process(retirement):
+            return client_retired
+        # A process-compatible implementation can publish ``returncode`` just
+        # before its retained wait task settles.  Do not signal that exited
+        # child again, but do fail closed until the single waiter has observed
+        # the reap.
+        if process.returncode is not None:
+            return False
+
+        if not retirement.terminate_requested and process.returncode is None:
+            # Mark before signalling: Process-compatible implementations may
+            # raise after accepting the intent, and retries must never deliver
+            # a duplicate signal to this generation.
+            retirement.terminate_requested = True
+            try:
+                process.terminate()
+            except (ProcessLookupError, OSError):
+                pass
+        if await self._wait_for_process(retirement):
+            return client_retired
+        if process.returncode is not None:
+            return False
+
+        if not retirement.kill_requested and process.returncode is None:
+            retirement.kill_requested = True
+            try:
+                process.kill()
+            except (ProcessLookupError, OSError):
+                pass
+        # The post-SIGKILL reap is bounded too.  A timeout is not success: the
+        # exact process remains in ``_retirements`` for a later stop to retry.
+        return client_retired and await self._wait_for_process(retirement)
+
+    async def _retire_spawn_task(self, retirement: _ChildRetirement) -> bool:
+        """Cancel/observe one owned spawn and adopt a late Process exactly once."""
+
+        spawn_task = retirement.spawn_task
+        if spawn_task is None:
+            return True
+        self._cancel_retired_spawn_once(retirement, spawn_task)
+        settled, succeeded = await self._observe_retirement_task(spawn_task)
+        if not settled:
+            return False
+
+        process: asyncio.subprocess.Process | None = None
+        if succeeded:
+            try:
+                process = spawn_task.result()
+            except BaseException as exc:  # noqa: BLE001 -- observed above
+                # A failed spawn has no Process to retire. The task's done
+                # callback already clears the original traceback.
+                IsolatedFeatureClient._discard_exception_traceback(exc)
+
+        async with self._state_lock:
+            # Another private observer can only have processed this task after
+            # it settled. Do not overwrite a process it already adopted.
+            if retirement.spawn_task is not spawn_task:
+                return retirement.process is not None or process is None
+            retirement.spawn_task = None
+            if process is not None and retirement.process is None:
+                retirement.process = process
+                stdout = getattr(process, "stdout", None)
+                stdin = getattr(process, "stdin", None)
+                if stdout is not None and stdin is not None:
+                    # This child never reached public publication, but its
+                    # stdio still needs the same stream disposal as a normal
+                    # client before it is reaped.
+                    retirement.client = IsolatedFeatureClient(
+                        stdout,
+                        stdin,
+                        protocol_version=self.protocol_version,
+                    )
+        return True
+
+    async def _retire_startup_tasks(self, retirement: _ChildRetirement) -> bool:
+        """Bound and retain startup phases that survived their own deadline."""
+
+        tasks = set(retirement.startup_tasks)
+        if not tasks:
+            return True
+        for task in tasks:
+            self._cancel_retired_startup_task_once(retirement, task)
+        done, _ = await asyncio.wait(tasks, timeout=_SUBPROCESS_STOP_TIMEOUT)
+        for task in done:
+            if task.cancelled():
+                continue
+            try:
+                task.result()
+            except BaseException as exc:  # noqa: BLE001 -- callback consumed details
+                IsolatedFeatureClient._discard_exception_traceback(exc)
+        # A phase task can be attached while this bounded observation yields.
+        # Remove only the exact completed snapshot while holding the same lock
+        # used by attachment, so a late task cannot be overwritten or lost.
+        async with self._state_lock:
+            retirement.startup_tasks.difference_update(done)
+            retirement.startup_cancel_requested.difference_update(done)
+            return not retirement.startup_tasks
+
+    def _on_spawn_task_done(
+        self, spawn_task: asyncio.Task[asyncio.subprocess.Process]
+    ) -> None:
+        """Continue private retirement when a cancellation-suppressing spawn ends."""
+
+        # A normally completing live start consumes the result synchronously
+        # before the event loop can run this callback. A transferred task is
+        # instead retained by a private record and must be reaped even if no
+        # caller makes another stop() attempt.
+        if self._spawn_task is spawn_task:
+            return
+        for retirement in self._retirements:
+            if retirement.spawn_task is spawn_task:
+                task = asyncio.create_task(
+                    self._complete_late_spawn_retirement(retirement, spawn_task)
+                )
+                self._retain_retirement_task(task)
+                return
+
+    async def _complete_late_spawn_retirement(
+        self,
+        retirement: _ChildRetirement,
+        spawn_task: asyncio.Task[asyncio.subprocess.Process],
+    ) -> None:
+        """Retry and release one late-spawn retirement without public help."""
+
+        async with self._state_lock:
+            if (
+                retirement not in self._retirements
+                or retirement.spawn_task is not spawn_task
+            ):
+                return
+            task = retirement.task
+            if task is None or task.done():
+                task = asyncio.create_task(self._retire_child(retirement))
+                self._retain_retirement_task(task)
+                retirement.task = task
+        try:
+            complete = await asyncio.shield(task)
+        except BaseException:  # noqa: BLE001 -- preserve the private fence
+            complete = False
+        if complete:
+            async with self._state_lock:
+                self._remove_retirement_if_complete_locked(retirement)
+
+    async def _wait_for_process(self, retirement: _ChildRetirement) -> bool:
+        """Observe one retained process waiter without cancelling it on timeout."""
+
+        process = retirement.process
+        if process is None:
+            return True
+        wait_task = retirement.wait_task
+        if wait_task is None:
+            # Even a published returncode still needs its one wait coroutine
+            # observed.  That joins the subprocess transport and proves the
+            # prior generation has completed cleanup before a replacement is
+            # admitted, rather than treating a merely terminal handle as done.
+            wait_task = asyncio.create_task(process.wait())
+            self._retain_retirement_task(wait_task)
+            retirement.wait_task = wait_task
+        settled, succeeded = await self._observe_retirement_task(wait_task)
+        if not settled:
+            return False
+        if not succeeded:
+            # A Process-compatible implementation can publish returncode just
+            # before its wait task reports an error. Retain it unless that
+            # definitive terminal state is visible.
+            return process.returncode is not None
+        try:
+            result = wait_task.result()
+        except BaseException as exc:  # pragma: no cover - observed above # noqa: BLE001
+            IsolatedFeatureClient._discard_exception_traceback(exc)
+            return process.returncode is not None
+        # asyncio's Process.wait() returns the reaped integer return code.
+        # Keep the explicit check as a fail-closed guard for alternate
+        # Process-compatible implementations that return None prematurely.
+        return process.returncode is not None or result is not None
+
+    @staticmethod
+    def _retain_retirement_task(task: asyncio.Task[Any]) -> None:
+        """Consume a late phase failure even if no caller retries stop()."""
+
+        def consume(done: asyncio.Task[Any]) -> None:
+            if done.cancelled():
+                return
+            try:
+                exc = done.exception()
+            except asyncio.CancelledError:  # pragma: no cover - race-safe guard
+                return
+            if exc is not None:
+                IsolatedFeatureClient._discard_exception_traceback(exc)
+
+        task.add_done_callback(consume)
+
+    def _cancel_spawn_once(
+        self, task: asyncio.Task[asyncio.subprocess.Process]
+    ) -> None:
+        """Request one spawn cancellation across live and retired ownership."""
+
+        if task.done():
+            return
+        if self._spawn_task is task:
+            if self._spawn_cancel_requested:
+                return
+            self._spawn_cancel_requested = True
+            task.cancel()
+            return
+        for retirement in self._retirements:
+            if retirement.spawn_task is task:
+                self._cancel_retired_spawn_once(retirement, task)
+                return
+
+    @staticmethod
+    def _cancel_retired_spawn_once(
+        retirement: _ChildRetirement,
+        task: asyncio.Task[asyncio.subprocess.Process],
+    ) -> None:
+        """Request exactly one cancellation for a spawn in a retirement record."""
+
+        if task.done() or retirement.spawn_cancel_requested:
+            return
+        retirement.spawn_cancel_requested = True
+        task.cancel()
+
+    def _cancel_startup_task_once(self, task: asyncio.Task[Any]) -> None:
+        """Request one phase cancellation across live and retired ownership."""
+
+        if task.done():
+            return
+        if task in self._startup_tasks:
+            if task in self._startup_cancel_requested:
+                return
+            self._startup_cancel_requested.add(task)
+            task.cancel()
+            return
+        for retirement in self._retirements:
+            if task in retirement.startup_tasks:
+                self._cancel_retired_startup_task_once(retirement, task)
+                return
+
+    @staticmethod
+    def _cancel_retired_startup_task_once(
+        retirement: _ChildRetirement,
+        task: asyncio.Task[Any],
+    ) -> None:
+        """Request exactly one cancellation for one retained startup phase."""
+
+        if task.done() or task in retirement.startup_cancel_requested:
+            return
+        retirement.startup_cancel_requested.add(task)
+        task.cancel()
+
+    @staticmethod
+    async def _observe_retirement_task(
+        task: asyncio.Task[Any],
+    ) -> tuple[bool, bool]:
+        """Hard-bound observation without cancelling or discarding ``task``.
+
+        ``asyncio.wait_for`` waits for a cancelled coroutine to finish. Using
+        ``asyncio.wait`` leaves the owned phase task running after the deadline,
+        so the supervisor can continue process retirement and a later stop can
+        observe that same task rather than creating another one.
+        """
+
+        done, _ = await asyncio.wait((task,), timeout=_SUBPROCESS_STOP_TIMEOUT)
+        if not done:
+            return False, False
+        if task.cancelled():
+            return True, False
+        try:
+            task.result()
+        except BaseException:  # noqa: BLE001 -- task callback consumed details
+            return True, False
+        return True, True
+
+    @staticmethod
+    def _stop_task_result(task: asyncio.Task[bool]) -> bool:
+        """Read a supervisor result defensively; it is never allowed to escape."""
+
+        if task.cancelled():
+            return False
+        try:
+            return task.result()
+        except BaseException:  # noqa: BLE001 -- supervisor results are fail-closed
+            return False
+
+    @staticmethod
+    async def _await_owned_task(
+        task: asyncio.Task[Any], cancellations: list[tuple[Any, ...]]
+    ) -> Any:
+        """Join private work while retaining, but not redelivering, cancellation."""
+
         while True:
-            health = await client.health()
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError as cancelled:
+                # Catching CancelledError does not decrement Task.cancelling().
+                # Continuing to await is therefore safe until another cancel
+                # arrives, and preserving that count lets nested timeout
+                # managers distinguish their own expiry from external cancel.
+                cancellations.append(cancelled.args)
+
+    @staticmethod
+    def _replay_cancellations(cancellations: list[tuple[Any, ...]]) -> None:
+        """Deliver the newest observed cancellation without scheduling another."""
+
+        raise asyncio.CancelledError(*cancellations[-1])
+
+    _raise_latest_cancellation = _replay_cancellations
+
+    async def _await_spawn_phase(
+        self,
+        task: asyncio.Task[asyncio.subprocess.Process],
+        deadline: float,
+    ) -> asyncio.subprocess.Process:
+        """Observe the already-owned subprocess spawn within startup's deadline."""
+
+        try:
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            done, _ = await asyncio.wait((task,), timeout=remaining)
+            if not done:
+                self._cancel_spawn_once(task)
+                raise TimeoutError
+            try:
+                return task.result()
+            except asyncio.CancelledError as phase_cancelled:
+                # ``task.result()`` can raise because the owned spawn was
+                # independently cancelled.  That is a failed startup phase,
+                # not cancellation of this public start observer.
+                IsolatedFeatureClient._discard_exception_traceback(phase_cancelled)
+                raise RuntimeError(
+                    "isolated feature startup phase was cancelled"
+                ) from None
+        except asyncio.CancelledError:
+            self._cancel_spawn_once(task)
+            raise
+
+    async def _await_startup_phase(
+        self,
+        awaitable: Awaitable[Any],
+        client: IsolatedFeatureClient,
+        process: asyncio.subprocess.Process,
+        generation: int,
+        deadline: float,
+    ) -> Any:
+        """Run one startup phase to an absolute deadline without losing it.
+
+        ``asyncio.timeout_at`` has the same cancellation-waiting behavior as
+        ``wait_for`` when its inner coroutine catches ``CancelledError``. A
+        separately owned task lets this start fail promptly while retirement
+        keeps observing the exact phase task until it actually settles.
+        """
+
+        task = asyncio.create_task(awaitable)
+        self._retain_retirement_task(task)
+        # Task ownership is event-loop-local and therefore synchronous: no
+        # cancellation or competing stop() task can run between create_task()
+        # and this insertion. Stop transfers this exact set while holding its
+        # state lock; the done callback only removes it from the still-live
+        # set, never from a retirement record it has already entered.
+        self._startup_tasks.add(task)
+        task.add_done_callback(self._finish_startup_task)
+
+        try:
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            done, _ = await asyncio.wait((task,), timeout=remaining)
+            if not done:
+                self._cancel_startup_task_once(task)
+                raise TimeoutError
+            try:
+                return task.result()
+            except asyncio.CancelledError as phase_cancelled:
+                # See _await_spawn_phase(): cancellation of this child task is
+                # a sanitized generic startup failure.  Only cancellation of
+                # the observing start task propagates as CancelledError.
+                IsolatedFeatureClient._discard_exception_traceback(phase_cancelled)
+                raise RuntimeError(
+                    "isolated feature startup phase was cancelled"
+                ) from None
+        except asyncio.CancelledError:
+            self._cancel_startup_task_once(task)
+            raise
+
+    def _finish_startup_task(self, task: asyncio.Task[Any]) -> None:
+        """Synchronously release a completed phase from the live handoff set."""
+
+        self._startup_tasks.discard(task)
+        self._startup_cancel_requested.discard(task)
+
+    async def _wait_until_ready(
+        self,
+        client: IsolatedFeatureClient,
+        process: asyncio.subprocess.Process,
+        generation: int,
+        deadline: float,
+    ) -> None:
+        """Wait for readiness without extending the startup deadline."""
+
+        while True:
+            health = await self._await_startup_phase(
+                client.health(), client, process, generation, deadline
+            )
             if health.get("ready") is True or health.get("status") in {"ready", "ok"}:
                 return
-            if asyncio.get_running_loop().time() >= deadline:
-                raise TimeoutError("isolated feature did not become ready")
-            await asyncio.sleep(0.1)
+            await self._await_startup_phase(
+                asyncio.sleep(0.1), client, process, generation, deadline
+            )
 
     def _require_client(self) -> IsolatedFeatureClient:
         if self.client is None:
@@ -965,12 +2481,132 @@ class SubprocessIsolatedFeatureClient:
         if operation is None:  # pragma: no cover - asyncio always provides one
             raise RuntimeError("isolated feature operation has no asyncio task")
         async with self._state_lock:
+            # A done callback normally releases transferred ownership.  Prune
+            # here too so callback scheduling can never leave a completed task
+            # as a stale replacement fence or cause unbounded retention.
+            self._prune_completed_operations_locked()
+            if (
+                self._stopping
+                or self._retiring_operations
+                or self._retirements
+                or self._start_uncertain_generation is not None
+            ):
+                raise RuntimeError("isolated feature retirement is in progress")
             self._active_operations.add(operation)
         return operation
 
     async def _unregister_operation(self, operation: asyncio.Task[Any]) -> None:
         async with self._state_lock:
             self._active_operations.discard(operation)
+            # stop() can transfer this outer task before its finally runs.
+            # Removing a transferred task from this child cleanup coroutine
+            # creates a one-turn admission gap while the operation itself is
+            # still running.  Its done callback releases retired ownership
+            # only after ``Task.done()`` becomes true.
+            if operation not in self._retiring_operations:
+                self._operation_cancel_requested.discard(operation)
+
+    def _unregister_successful_start_at_return(
+        self, operation: asyncio.Task[Any]
+    ) -> None:
+        """Synchronously end one successful ``start()`` invocation's ownership.
+
+        This deliberately does not acquire ``_state_lock``: acquiring an
+        ``asyncio.Lock`` could suspend after removing the operation and recreate
+        the old post-unregister race. Asyncio only switches tasks at suspension
+        points, and this method has none, so these two mutations and the public
+        return form one event-loop-local boundary. A concurrent ``stop()`` that
+        ran earlier has already moved the operation to
+        ``_retiring_operations`` and cancelled it; the outer start then takes
+        its cancellation/failure retirement path instead of reaching here.
+        """
+
+        self._active_operations.discard(operation)
+        self._operation_cancel_requested.discard(operation)
+
+    def _release_retired_operation(self, operation: asyncio.Task[Any]) -> None:
+        """Autonomously drop a transferred operation after its outer task ends."""
+
+        self._consume_retired_operation_failure(operation)
+        task = asyncio.create_task(self._release_retired_operation_owned(operation))
+        self._retain_retirement_task(task)
+
+    async def _release_retired_operation_owned(
+        self, operation: asyncio.Task[Any]
+    ) -> None:
+        """Release exactly one settled transferred operation under state ownership."""
+
+        async with self._state_lock:
+            if operation.done():
+                self._retiring_operations.discard(operation)
+                self._operation_cancel_requested.discard(operation)
+
+    def _prune_completed_operations_locked(self) -> None:
+        """Release completed operation ownership while ``_state_lock`` is held."""
+
+        completed = {
+            operation
+            for operation in self._active_operations | self._retiring_operations
+            if operation.done()
+        }
+        for operation in completed:
+            self._consume_retired_operation_failure(operation)
+        self._active_operations.difference_update(completed)
+        self._retiring_operations.difference_update(completed)
+        self._operation_cancel_requested.difference_update(completed)
+
+    @staticmethod
+    def _consume_retired_operation_failure(operation: asyncio.Task[Any]) -> None:
+        """Mark a transferred operation exception observed without changing await.
+
+        Stop owns an operation after it requests cancellation, but a task may
+        suppress that cancellation and later fail from its generation fence. A
+        done callback/prune path must retrieve that failure before dropping the
+        final task reference; otherwise asyncio reports ``Task exception was
+        never retrieved`` and retains its traceback. Calling ``exception()``
+        only marks the task's stored result observed, so a caller that still
+        holds the task can later await the same result or exception normally.
+        """
+
+        if operation.cancelled():
+            return
+        try:
+            exc = operation.exception()
+        except asyncio.CancelledError:
+            # A task can transition to cancelled between the check above and
+            # retrieval. Expected cancellation is not an operation failure.
+            return
+        except BaseException as retrieval_failure:  # noqa: BLE001 -- Task API guard
+            IsolatedFeatureClient._discard_exception_traceback(retrieval_failure)
+            return
+        if exc is not None:
+            IsolatedFeatureClient._discard_exception_traceback(exc)
+
+    async def _unregister_operation_owned(
+        self,
+        operation: asyncio.Task[Any],
+        cancellations: list[tuple[Any, ...]],
+    ) -> None:
+        """Unregister an operation even if its caller is cancelled repeatedly."""
+
+        task = asyncio.create_task(self._unregister_operation(operation))
+        await self._await_owned_task(task, cancellations)
+
+    async def _finish_transition_owned(
+        self,
+        pending: _PendingConfigTransition | None,
+        *,
+        retain_next: bool,
+        cancellations: list[tuple[Any, ...]],
+    ) -> None:
+        """Finalize one config handoff under private, shielded ownership."""
+
+        if pending is None:
+            return
+        task = asyncio.create_task(
+            self._finish_transition(pending, retain_next=retain_next)
+        )
+        await self._await_owned_task(task, cancellations)
 
     async def _finish_transition(
         self,
@@ -988,21 +2624,6 @@ class SubprocessIsolatedFeatureClient:
                     pending.next_config if retain_next else pending.previous_config
                 )
                 self._pending_transition = None
-
-    async def _detach_child_if_current(
-        self,
-        client: IsolatedFeatureClient,
-        process: asyncio.subprocess.Process,
-    ) -> bool:
-        """Detach a failed startup only if a concurrent stop did not first."""
-
-        async with self._state_lock:
-            if self.client is not client or self.process is not process:
-                return False
-            self.client = None
-            self.process = None
-            self._generation += 1
-            return True
 
 
 def _dict_field(data: dict[str, Any], key: str) -> dict[str, Any]:

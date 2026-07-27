@@ -1,11 +1,19 @@
 name: Publish to PyPI
 
 # Triggered on a semver tag push (e.g. v0.1.0). The `ci` job calls
-# SDK CI as a reusable workflow — lint + import-walk + build-check +
-# install-check matrix must ALL pass on the tag's SHA before `build`
-# and `publish` fire. Then `build` produces sdist + wheel, asserts
-# tag version == pyproject version, and `publish` uploads to PyPI via
-# OIDC trusted publishing. No API token used.
+# SDK CI as a reusable workflow gates the source tree. This workflow then
+# builds one exact wheel/sdist pair, validates those downloaded artifacts on
+# every supported Python, and uploads that same pair to PyPI via OIDC. No API
+# token or rebuild exists between the artifact gate and publishing.
+#
+# External repository and environment prerequisites (not configured here):
+# an active GitHub repository ruleset must cover release-tag creation, update,
+# and deletion for refs/tags/v*. A creation bypass may be granted only to
+# tightly scoped release principals; update and deletion must have no bypass.
+# The pypi environment must independently require approval by an authorized
+# protected reviewer. The final checks below fail closed on a move or deletion
+# they observe, but no workflow-only check can replace those controls or
+# eliminate the final micro-race after its last remote read and before upload.
 #
 # Trusted publisher binding on PyPI:
 #   project:     kestrel-sovereign-sdk
@@ -19,69 +27,468 @@ on:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
   workflow_dispatch:
     inputs:
-      ref:
-        description: 'Tag or commit to publish (e.g. v0.1.0)'
+      tag:
+        description: 'Release tag to publish (strict vX.Y.Z, e.g. v0.1.0)'
         required: true
 
 permissions:
   contents: read
 
 jobs:
+  resolve-release:
+    name: Resolve immutable release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.release.outputs.sha }}
+      ref: ${{ steps.release.outputs.ref }}
+      validated: ${{ steps.release.outputs.validated }}
+      pypi_environment: ${{ steps.release.outputs.pypi_environment }}
+    steps:
+      # This checkout provides the caller workflow definition.  The later CI
+      # and build jobs receive only the immutable SHA produced below, so a
+      # moving branch or a retargeted tag cannot change their source tree.
+      - name: Checkout caller workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Validate and resolve release tag
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+          EVENT_REF_TYPE: ${{ github.ref_type }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_REF_NAME: ${{ github.ref_name }}
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            TAG="$EVENT_REF_NAME"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$DISPATCH_TAG"
+          else
+            echo "::error::unsupported publish event: $EVENT_NAME"
+            exit 1
+          fi
+
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::publish requires a strict vX.Y.Z release tag"
+            exit 1
+          fi
+
+          EXPECTED_REF="refs/tags/$TAG"
+          # A manual run must execute the tagged workflow revision itself, not
+          # a branch's workflow that happens to name an existing release tag.
+          # Apply the same shape check to tag pushes for one uniform invariant.
+          if [ "$EVENT_REF_TYPE" != "tag" ]; then
+            echo "::error::publish requires github.ref_type=tag"
+            exit 1
+          fi
+          if [ "$EVENT_REF" != "$EXPECTED_REF" ]; then
+            echo "::error::publish ref $EVENT_REF does not match release tag $TAG"
+            exit 1
+          fi
+
+          # Fetch the named tag explicitly, then peel annotated tags to the
+          # immutable commit that every following checkout must use.
+          git fetch --force --no-tags origin "$EXPECTED_REF:$EXPECTED_REF"
+          TAG_SHA=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
+          if ! [[ "$TAG_SHA" =~ ^[0-9a-f]{40,64}$ ]]; then
+            echo "::error::resolved release tag did not peel to a commit SHA"
+            exit 1
+          fi
+          # GitHub supplies the tagged commit (the peeled commit for annotated
+          # tags) as github.sha for both tag pushes and tag dispatches.
+          if [ "$TAG_SHA" != "$EVENT_SHA" ]; then
+            echo "::error::release tag $TAG does not resolve to github.sha"
+            exit 1
+          fi
+          # Defense in depth only: the tag must point at main-lineage source,
+          # but this read cannot authorize tag creation or replace repository
+          # rules and the independently approved PyPI environment.
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          if ! git merge-base --is-ancestor "$TAG_SHA" origin/main; then
+            echo "::error::release tag $TAG is not on origin/main lineage"
+            exit 1
+          fi
+
+          printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+          printf 'sha=%s\n' "$TAG_SHA" >> "$GITHUB_OUTPUT"
+          printf 'ref=%s\n' "$EXPECTED_REF" >> "$GITHUB_OUTPUT"
+          printf 'validated=true\n' >> "$GITHUB_OUTPUT"
+          printf 'pypi_environment=pypi\n' >> "$GITHUB_OUTPUT"
+
   ci:
     name: CI gate
+    needs: resolve-release
     uses: ./.github/workflows/ci.yml
+    with:
+      # Local reusable workflow code is loaded from the caller revision above;
+      # its checkouts receive the one resolved, immutable release commit.
+      source_sha: ${{ needs.resolve-release.outputs.sha }}
     secrets: inherit
 
   build:
-    name: Build sdist + wheel
-    needs: ci
+    name: Build exact sdist + wheel
+    needs: [resolve-release, ci]
     runs-on: ubuntu-latest
+    outputs:
+      source_tag: ${{ steps.provenance.outputs.tag }}
+      source_sha: ${{ steps.provenance.outputs.sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ needs.resolve-release.outputs.sha }}
+          fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.9.22"
 
-      - name: Build
-        run: uv build
-
-      - name: Verify the version metadata matches the tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Verify immutable checkout and release metadata
+        id: provenance
+        env:
+          RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
+          RELEASE_REF: ${{ needs.resolve-release.outputs.ref }}
+          RELEASE_VALIDATED: ${{ needs.resolve-release.outputs.validated }}
+          EXPECTED_SHA: ${{ needs.resolve-release.outputs.sha }}
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PKG_VERSION=$(uv run --no-project python -c "import tomllib; print(tomllib.loads(open('pyproject.toml').read())['project']['version'])")
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match pyproject.toml version $PKG_VERSION"
+          set -euo pipefail
+          if [ "$RELEASE_VALIDATED" != "true" ]; then
+            echo "::error::release provenance was not validated"
             exit 1
           fi
-          echo "tag $GITHUB_REF_NAME matches pyproject.toml version $PKG_VERSION"
+          if [ "$RELEASE_REF" != "refs/tags/$RELEASE_TAG" ]; then
+            echo "::error::release ref $RELEASE_REF does not match tag $RELEASE_TAG"
+            exit 1
+          fi
+          ACTUAL_SHA=$(git rev-parse HEAD)
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::build checkout $ACTUAL_SHA does not match $EXPECTED_SHA"
+            exit 1
+          fi
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::resolved release tag is not strict vX.Y.Z"
+            exit 1
+          fi
+          # Detect a tag retarget between resolution and build rather than
+          # publishing an older commit under a moved release tag.
+          git fetch --force --no-tags origin "$RELEASE_REF:$RELEASE_REF"
+          CURRENT_TAG_SHA=$(git rev-parse --verify "${RELEASE_REF}^{commit}")
+          if [ "$CURRENT_TAG_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::release tag $RELEASE_TAG moved after resolution"
+            exit 1
+          fi
+          TAG_VERSION="${RELEASE_TAG#v}"
+          PKG_VERSION=$(uv run --no-project python -c "import tomllib; print(tomllib.loads(open('pyproject.toml').read())['project']['version'])")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag $RELEASE_TAG does not match pyproject.toml version $PKG_VERSION"
+            exit 1
+          fi
+          echo "tag $RELEASE_TAG matches pyproject.toml version $PKG_VERSION"
+          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          printf 'sha=%s\n' "$ACTUAL_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          BUILD_CONSTRAINTS=$(mktemp)
+          trap 'rm -f "$BUILD_CONSTRAINTS"' EXIT
+          cat > "$BUILD_CONSTRAINTS" <<'EOF'
+          hatchling==1.31.0 \
+              --hash=sha256:6b48ad4068a482ed7239b3a8215bc55b47aad3345d58dfc94e553c5d2d46211b \
+              --hash=sha256:aac80bec8b6fe35e8480f1c335be8910fa210a0e6f735a139be205dadcacb544
+          packaging==26.2 \
+              --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e \
+              --hash=sha256:ff452ff5a3e828ce110190feff1178bb1f2ea2281fa2075aadb987c2fb221661
+          pathspec==1.1.1 \
+              --hash=sha256:17db5ecd524104a120e173814c90367a96a98d07c45b2e10c2f3919fff91bf5a \
+              --hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189
+          pluggy==1.6.0 \
+              --hash=sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3 \
+              --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
+          trove-classifiers==2026.6.1.19 \
+              --hash=sha256:ab4c4ec93cc4a4e7815fa759906e05e6bb3f2fbd92ea0f897288c6a43efd15b3 \
+              --hash=sha256:c5132b4b61a829d11cfbd2d72e97f20a45ed6edb95e45c5efdeb5e00836b2745
+          EOF
+          uv build --wheel --sdist --clear --force-pep517 \
+            --build-constraints "$BUILD_CONSTRAINTS" --require-hashes
 
       - name: Show artifacts
-        run: ls -la dist/
+        run: |
+          set -e
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l | tr -d ' ')" = 1
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d ' ')" = 1
+          ls -la dist/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: dist
+          name: publish-dist
           path: dist/
           if-no-files-found: error
 
-  publish:
-    name: Upload to PyPI
+  artifact-test:
+    name: Test exact artifacts (Python ${{ matrix.python-version }})
     needs: build
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write   # OIDC token for trusted publishing
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          name: dist
+          version: "0.9.22"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        env:
+          MATRIX_PYTHON_VERSION: ${{ matrix.python-version }}
+        run: uv python install "$MATRIX_PYTHON_VERSION"
+
+      - name: Download exact build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: publish-dist
           path: dist/
 
-      - name: Publish via OIDC trusted publishing
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Install and import exact wheel and sdist
+        env:
+          MATRIX_PYTHON_VERSION: ${{ matrix.python-version }}
+        run: |
+          set -e
+          WHEEL=$(find dist -maxdepth 1 -name '*.whl' -print -quit)
+          SDIST=$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)
+          test -n "$WHEEL"
+          test -n "$SDIST"
+          SMOKE_DIR=$(mktemp -d)
+          uv venv --python "$MATRIX_PYTHON_VERSION" .venv-wheel
+          uv pip install --python .venv-wheel/bin/python "$WHEEL"
+          (
+          cd "$SMOKE_DIR"
+          "$GITHUB_WORKSPACE/.venv-wheel/bin/python" -c "
+          import kestrel_sdk
+          from kestrel_sdk.features.base import Feature
+          from kestrel_sdk.signals.models import Signal
+          from kestrel_sdk.security import SecurityError
+          import os
+          print('wheel imports OK on Python ' + os.environ['MATRIX_PYTHON_VERSION'])
+          "
+          )
+          uv pip install --python .venv-wheel/bin/python "${WHEEL}[crypto]"
+          (
+          cd "$SMOKE_DIR"
+          "$GITHUB_WORKSPACE/.venv-wheel/bin/python" -c "
+          from kestrel_sdk.security.aead import AEADCipher
+          from kestrel_sdk.security import encryption
+          import os
+          print('wheel crypto imports OK on Python ' + os.environ['MATRIX_PYTHON_VERSION'])
+          "
+          )
+          uv venv --python "$MATRIX_PYTHON_VERSION" .venv-sdist
+          uv pip install --python .venv-sdist/bin/python "$SDIST"
+          (
+          cd "$SMOKE_DIR"
+          "$GITHUB_WORKSPACE/.venv-sdist/bin/python" -c "
+          import kestrel_sdk
+          from kestrel_sdk.features.base import Feature
+          from kestrel_sdk.signals.models import Signal
+          from kestrel_sdk.security import SecurityError
+          import os
+          print('sdist imports OK on Python ' + os.environ['MATRIX_PYTHON_VERSION'])
+          "
+          )
+          uv pip install --python .venv-sdist/bin/python "${SDIST}[crypto]"
+          (
+          cd "$SMOKE_DIR"
+          "$GITHUB_WORKSPACE/.venv-sdist/bin/python" -c "
+          from kestrel_sdk.security.aead import AEADCipher
+          from kestrel_sdk.security import encryption
+          import os
+          print('sdist crypto imports OK on Python ' + os.environ['MATRIX_PYTHON_VERSION'])
+          "
+          )
+
+  final-revalidate:
+    name: Final non-OIDC release revalidation
+    # This is deliberately a separate, non-OIDC gate after the full artifact
+    # matrix. It is the last place a moved or deleted tag can be rejected
+    # before the PyPI environment is entered; repository tag-protection rules
+    # remain necessary for the residual race after this remote observation.
+    needs: [resolve-release, ci, build, artifact-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      validated: ${{ steps.revalidate.outputs.validated }}
+    steps:
+      - name: Checkout immutable build source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Revalidate current release-tag provenance
+        id: revalidate
+        env:
+          RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
+          RELEASE_REF: ${{ needs.resolve-release.outputs.ref }}
+          RESOLVER_VALIDATED: ${{ needs.resolve-release.outputs.validated }}
+          RESOLVED_SHA: ${{ needs.resolve-release.outputs.sha }}
+          BUILD_TAG: ${{ needs.build.outputs.source_tag }}
+          BUILD_SHA: ${{ needs.build.outputs.source_sha }}
+          CI_RESULT: ${{ needs.ci.result }}
+          ARTIFACT_TEST_RESULT: ${{ needs.artifact-test.result }}
+        run: |
+          set -euo pipefail
+          if [ "$RESOLVER_VALIDATED" != "true" ]; then
+            echo "::error::release provenance was not validated"
+            exit 1
+          fi
+          if [ "$CI_RESULT" != "success" ] || [ "$ARTIFACT_TEST_RESULT" != "success" ]; then
+            echo "::error::release gates did not succeed"
+            exit 1
+          fi
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::resolved release tag is not strict vX.Y.Z"
+            exit 1
+          fi
+          if [ "$RELEASE_REF" != "refs/tags/$RELEASE_TAG" ]; then
+            echo "::error::release ref $RELEASE_REF does not match tag $RELEASE_TAG"
+            exit 1
+          fi
+          if [ "$BUILD_TAG" != "$RELEASE_TAG" ] || [ "$BUILD_SHA" != "$RESOLVED_SHA" ]; then
+            echo "::error::build provenance does not match resolved release"
+            exit 1
+          fi
+          if ! [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40,64}$ ]]; then
+            echo "::error::resolved release commit is not a SHA"
+            exit 1
+          fi
+          if [ "$(git rev-parse HEAD)" != "$BUILD_SHA" ]; then
+            echo "::error::final revalidation checkout does not match build SHA"
+            exit 1
+          fi
+          # Check the remote namespace before force-fetching the exact ref so
+          # a stale local tag can never hide a remote deletion. The fetch then
+          # refreshes an annotated or lightweight tag before it is peeled.
+          git ls-remote --exit-code --refs origin "$RELEASE_REF" >/dev/null
+          git fetch --force --no-tags origin "+$RELEASE_REF:$RELEASE_REF"
+          CURRENT_TAG_SHA=$(git rev-parse --verify "${RELEASE_REF}^{commit}")
+          if [ "$CURRENT_TAG_SHA" != "$RESOLVED_SHA" ]; then
+            echo "::error::release tag $RELEASE_TAG moved or no longer peels to the build SHA"
+            exit 1
+          fi
+          printf 'validated=true\n' >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Upload to PyPI
+    needs: [resolve-release, ci, build, artifact-test, final-revalidate]
+    # The resolver emits this environment name only after strict tag/ref/SHA
+    # validation. The job also binds it to the CI/build provenance outputs, so
+    # a branch claim, raw SHA, malformed tag, or mismatched artifact can never
+    # enter the PyPI environment.
+    if: >-
+      needs.resolve-release.result == 'success' &&
+      needs.ci.result == 'success' &&
+      needs.build.result == 'success' &&
+      needs.artifact-test.result == 'success' &&
+      needs.final-revalidate.result == 'success' &&
+      needs.resolve-release.outputs.validated == 'true' &&
+      needs.final-revalidate.outputs.validated == 'true' &&
+      needs.resolve-release.outputs.pypi_environment == 'pypi' &&
+      needs.resolve-release.outputs.ref == format('refs/tags/{0}', needs.resolve-release.outputs.tag) &&
+      needs.build.outputs.source_tag == needs.resolve-release.outputs.tag &&
+      needs.build.outputs.source_sha == needs.resolve-release.outputs.sha
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-release.outputs.pypi_environment }}
+    permissions:
+      contents: read
+      id-token: write   # OIDC token for trusted publishing
+    steps:
+      # Defense in depth only: the non-OIDC final-revalidate job above is the
+      # admission gate. This repeats the remote read immediately before the
+      # upload action, while repository tag-protection rules cover its final
+      # unavoidable read-to-upload race.
+      - name: Checkout immutable build source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          fetch-depth: 0
+
+      # This is the native, single-binary uploader. Pin both the action
+      # implementation and the uv release version before the final tag read;
+      # unlike the former Docker action, it cannot select a mutable base image.
+      - name: Install exact uv uploader
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.9.22"
+
+      - name: Record exact artifact provenance
+        env:
+          SOURCE_TAG: ${{ needs.build.outputs.source_tag }}
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          echo "Publishing artifacts built from tag: $SOURCE_TAG"
+          echo "Publishing artifacts built from SHA: $SOURCE_SHA"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: publish-dist
+          path: dist/
+
+      - name: Recheck release tag immediately before upload
+        env:
+          RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
+          RELEASE_REF: ${{ needs.resolve-release.outputs.ref }}
+          RESOLVED_SHA: ${{ needs.resolve-release.outputs.sha }}
+          BUILD_TAG: ${{ needs.build.outputs.source_tag }}
+          BUILD_SHA: ${{ needs.build.outputs.source_sha }}
+          FINAL_VALIDATED: ${{ needs.final-revalidate.outputs.validated }}
+        run: |
+          set -euo pipefail
+          if [ "$FINAL_VALIDATED" != "true" ]; then
+            echo "::error::final non-OIDC release revalidation did not pass"
+            exit 1
+          fi
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::resolved release tag is not strict vX.Y.Z"
+            exit 1
+          fi
+          if [ "$RELEASE_REF" != "refs/tags/$RELEASE_TAG" ]; then
+            echo "::error::release ref $RELEASE_REF does not match tag $RELEASE_TAG"
+            exit 1
+          fi
+          if [ "$BUILD_TAG" != "$RELEASE_TAG" ] || [ "$BUILD_SHA" != "$RESOLVED_SHA" ]; then
+            echo "::error::build provenance does not match resolved release"
+            exit 1
+          fi
+          if [ "$(git rev-parse HEAD)" != "$BUILD_SHA" ]; then
+            echo "::error::publish checkout does not match build SHA"
+            exit 1
+          fi
+          git ls-remote --exit-code --refs origin "$RELEASE_REF" >/dev/null
+          git fetch --force --no-tags origin "+$RELEASE_REF:$RELEASE_REF"
+          CURRENT_TAG_SHA=$(git rev-parse --verify "${RELEASE_REF}^{commit}")
+          if [ "$CURRENT_TAG_SHA" != "$RESOLVED_SHA" ]; then
+            echo "::error::release tag $RELEASE_TAG moved or no longer peels to the build SHA"
+            exit 1
+          fi
+
+      - name: Publish with uv OIDC trusted publishing
+        run: |
+          set -euo pipefail
+          uv publish --no-config --trusted-publishing always \
+            --publish-url https://upload.pypi.org/legacy/ \
+            dist/*
