@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 109 tracked files (97 `.py`, 5 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 110 tracked files (98 `.py`, 5 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -80,7 +80,7 @@ Repo entry points and standard project files.
 - **kestrel_sdk/isolated_feature/context.py** — Task-local access to trusted isolated-tool execution metadata.
   - `def get_tool_execution_context()`
 - **kestrel_sdk/isolated_feature/protocol.py** — Versioned JSON-RPC protocol for isolated feature runtimes.
-  - `class ProtocolError`; `class ConfigTransitionError`; `class ConfigTransitionUnsupportedError`; `class ToolExecutionContextUnsupportedError`; `class ToolExecutionTrigger`; `class ToolExecutionContext`; `class ToolExecutionContextCapabilities`; `class ConfigTransitionCapabilities`; `…`
+  - `class ProtocolError`; `class ConfigTransitionError`; `class ConfigTransitionUnsupportedError`; `class ToolExecutionContextUnsupportedError`; `class HostIngressError`; `class HostIngressUnsupportedError`; `class HostIngressUnknownNameError`; `def validate_host_ingress_name(value)`; `…`
 - **kestrel_sdk/isolated_feature/service.py** — Service-side base class for isolated feature runtimes.
   - `class IsolatedFeatureService`
 - **kestrel_sdk/llm/__init__.py** — LLM-related types, protocols, and the adapter contract.
@@ -189,6 +189,8 @@ Repo entry points and standard project files.
   - `async def test_legacy_service_does_not_advertise_or_receive_transition_requests()`; `async def test_transition_round_trip_receives_next_config_with_old_config_intact()`; `async def test_live_apply_requires_capability_and_commits_config_after_hook()`; `async def test_transition_failure_is_returned_without_reflecting_secrets(caplog)`; `async def test_transition_shutdown_and_health_are_deterministically_serialized()`; `async def test_timed_out_transition_discards_late_response_and_requires_replacement()`; `async def test_restart_required_rejects_repeated_transitions_client_and_service_side()`; `async def test_wrapper_retains_first_replacement_config_after_later_rejection()`; `…`
 - **tests/test_isolated_feature_execution_context.py** — Execution-context propagation and isolation for isolated tool RPCs.
   - `async def test_execution_context_round_trip_does_not_mutate_tool_arguments()`; `async def test_retry_preserves_idempotency_key_and_changes_attempt()`; `async def test_concurrent_calls_cannot_observe_each_others_context()`; `async def test_async_and_sync_handlers_receive_the_same_execution_context()`; `async def test_failure_and_cancelled_wait_leave_no_execution_context_behind()`; `async def test_background_task_loses_execution_context_after_rpc_returns()`; `async def test_cancelled_sync_worker_loses_execution_context_after_rpc_cancellation()`; `async def test_legacy_calls_work_in_both_directions_and_context_fails_closed()`; `…`
+- **tests/test_isolated_feature_host_ingress.py** — Private, capability-negotiated host-ingress contract coverage.
+  - `def test_host_ingress_protocol_capability_and_boundary_validation()`; `async def test_non_ascii_host_ingress_names_fail_closed(name)`; `async def test_registered_ingress_is_capability_negotiated_and_tool_invisible()`; `async def test_sync_and_async_host_ingress_handlers_are_supported()`; `async def test_legacy_malformed_and_unknown_ingress_capabilities_fail_closed()`; `async def test_client_and_service_reject_malformed_or_oversized_payloads_safely()`; `async def test_host_ingress_errors_do_not_reflect_handler_or_payload_secrets(caplog)`; `async def test_cancelled_host_ingress_child_returns_generic_error_without_hanging(implementation)`; `…`
 - **tests/test_isolated_feature_robustness.py** — Robustness regressions for the isolated-feature runtime (review Wave 1).
   - `async def test_blocking_sync_handler_does_not_wedge_health()`; `async def test_read_loop_death_fails_inflight_requests()`; `async def test_request_after_read_loop_death_fails_fast()`; `async def test_close_during_inflight_request_does_not_hang()`; `async def test_wrapper_reattaches_event_handlers_after_restart()`
 - **tests/test_llm_contract.py** — Tests for the LLM provider contract.
