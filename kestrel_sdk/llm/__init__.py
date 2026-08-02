@@ -50,6 +50,24 @@ from .capabilities import (
     ToolStreamingMode,
     VisionInputMode,
 )
+from .inference_lease import (
+    INFERENCE_LEASE_PROVIDER_ENTRY_POINT_GROUP,
+    InferenceLease,
+    InferenceLeaseConstraintError,
+    InferenceLeaseError,
+    InferenceLeaseFailure,
+    InferenceLeaseNotFoundError,
+    InferenceLeaseOwnershipError,
+    InferenceLeaseProvider,
+    InferenceLeaseProviderUnavailableError,
+    InferenceLeaseProvisioningError,
+    InferenceLeaseQuote,
+    InferenceLeaseRequest,
+    InferenceLeaseState,
+    InferencePrivacy,
+    InferenceProviderCapability,
+    InferenceRoute,
+)
 from .model_info import ModelCategory, ModelInfo
 from .provider import ProviderInfo
 from .response import (
@@ -110,6 +128,8 @@ from .types import BackendType
 SDK_LLM_CONTRACT_VERSION = 5
 
 __all__ = [
+    "INFERENCE_LEASE_PROVIDER_ENTRY_POINT_GROUP",
+    "SDK_LLM_CONTRACT_VERSION",
     "BackendType",
     "BatchHandle",
     "BatchMode",
@@ -122,6 +142,21 @@ __all__ = [
     "ComputerUseOptions",
     "FileRef",
     "FilesMode",
+    "InferenceLease",
+    "InferenceLeaseConstraintError",
+    "InferenceLeaseError",
+    "InferenceLeaseFailure",
+    "InferenceLeaseNotFoundError",
+    "InferenceLeaseOwnershipError",
+    "InferenceLeaseProvider",
+    "InferenceLeaseProviderUnavailableError",
+    "InferenceLeaseProvisioningError",
+    "InferenceLeaseQuote",
+    "InferenceLeaseRequest",
+    "InferenceLeaseState",
+    "InferencePrivacy",
+    "InferenceProviderCapability",
+    "InferenceRoute",
     "LLMAdapter",
     "LLMResponse",
     "MCPConnector",
@@ -133,7 +168,6 @@ __all__ = [
     "RawResponse",
     "ReasoningControlMode",
     "RequestOptions",
-    "SDK_LLM_CONTRACT_VERSION",
     "ServerToolMode",
     "ServerToolUse",
     "StructuredOutputMode",
