@@ -11,6 +11,43 @@ to their provider. Tool-call batches pair every governed function result with
 one continuation, while legacy single-result methods remain available for
 older adapters.
 
+## Private inference lease providers
+
+`kestrel_sdk.llm` defines the infrastructure-neutral boundary used when an
+agent requests bounded private inference capacity. The host quotes and selects
+a provider before provisioning, then activates the returned route only after
+the lease reaches `ready`. Provider packages register under
+`kestrel_sovereign.inference_lease_providers`; they own infrastructure state,
+while Kestrel core remains the single owner of active LLM routing.
+
+```python
+from decimal import Decimal
+
+from kestrel_sdk.llm import (
+    INFERENCE_LEASE_PROVIDER_ENTRY_POINT_GROUP,
+    InferenceLeaseRequest,
+    InferencePrivacy,
+)
+
+request = InferenceLeaseRequest(
+    request_id="agent-turn-123",
+    owner_id="did:kestrel:kite",
+    model="qwen3:8b",
+    runtime="ollama",
+    privacy=InferencePrivacy.AUTHENTICATED_ENDPOINT,
+    max_hourly_cost_usd=Decimal("0.75"),
+    max_total_cost_usd=Decimal("0.50"),
+)
+assert INFERENCE_LEASE_PROVIDER_ENTRY_POINT_GROUP == (
+    "kestrel_sovereign.inference_lease_providers"
+)
+```
+
+`InferenceLease.to_public_dict()` is the lease's only agent-facing serializer. It
+omits the owner, endpoint, API key, and secret headers. Host code may read the
+`InferenceRoute` secret values in memory to configure `LLMService`; providers
+must never put credentials in public metadata or failure messages.
+
 ## Installation
 
 ```bash
@@ -33,6 +70,7 @@ uv pip install "kestrel-sovereign-sdk[crypto] @ git+https://github.com/KestrelSo
 ```python
 from kestrel_sdk.features.base import Feature, Tool
 
+
 class MyFeature(Feature):
     name = "my-feature"
 
@@ -53,13 +91,15 @@ features implement.
 ```python
 from kestrel_sdk import HostFeature, HostContext, UIContributions
 
+
 class FleetObservability(HostFeature):
-    name = "fleet-observability"       # stable slug for discovery / mounting
-    capability = "fleet.observe"       # optional capability gate
+    name = "fleet-observability"  # stable slug for discovery / mounting
+    capability = "fleet.observe"  # optional capability gate
 
     def get_router(self):
         # Mounted at the HOST ROOT — no agent prefix, no get_agent dependency.
         from fastapi import APIRouter
+
         router = APIRouter()
         # ... host-scoped routes ...
         return router
@@ -110,6 +150,7 @@ Application packages can customize agent prompt context through the SDK-owned
 ```python
 from kestrel_sdk import AppExtension
 
+
 class CompanionExtension(AppExtension):
     def get_system_prompt_prefix(self) -> str:
         return "You are this application's companion persona."
@@ -125,10 +166,10 @@ develop against `kestrel_sdk.storage.database`:
 
 ```python
 from kestrel_sdk.storage.database import (
-    DatabaseBackend,           # async ABC: execute / fetch_* / transaction
-    PrivacyMode,               # 6-mode enum
-    EngineTarget,              # frozen dataclass: url, persistent, description
-    resolve_engine_target,     # PrivacyMode + fallback_url -> EngineTarget
+    DatabaseBackend,  # async ABC: execute / fetch_* / transaction
+    PrivacyMode,  # 6-mode enum
+    EngineTarget,  # frozen dataclass: url, persistent, description
+    resolve_engine_target,  # PrivacyMode + fallback_url -> EngineTarget
 )
 
 target = resolve_engine_target(PrivacyMode.NORMAL, "postgresql+asyncpg://...")
@@ -144,7 +185,7 @@ through the agent context they already receive in their `Feature.__init__`:
 class MyEntityFeature(Feature):
     def __init__(self, agent):
         super().__init__(agent)
-        self.db: DatabaseBackend = agent.db   # provided by sovereign
+        self.db: DatabaseBackend = agent.db  # provided by sovereign
 ```
 
 The SDK declares the `DatabaseBackend` ABC; sovereign provides the concrete
@@ -166,6 +207,7 @@ from kestrel_sdk.isolated_feature import (
     ConfigTransitionResult,
     IsolatedFeatureService,
 )
+
 
 class TelegramService(IsolatedFeatureService):
     def __init__(self):
@@ -225,6 +267,7 @@ closed before the host writes the request.
 ```python
 from kestrel_sdk.isolated_feature import IsolatedFeatureService
 
+
 class ChannelService(IsolatedFeatureService):
     def __init__(self):
         super().__init__(name="channel", version="1.0.0")
@@ -234,6 +277,7 @@ class ChannelService(IsolatedFeatureService):
         # payload is a strict JSON value, bounded to 64 KiB on both sides.
         self.routes = payload["routes"]
         return {"accepted": True}
+
 
 # Host side, after initialize:
 await client.call_host_ingress("routing-update", {"routes": ["primary"]})
@@ -272,6 +316,7 @@ context = ToolExecutionContext(
     ),
 )
 await client.call_tool("charge", {"amount": 100}, context=context)
+
 
 # Isolated handler side: this is task-local and never merged into arguments.
 async def charge(arguments):
@@ -324,6 +369,7 @@ Any class with the required attributes can serve as a timeline:
 ```python
 from datetime import datetime
 
+
 class StoryTimeline:
     def __init__(self):
         self.id = "timeline-123"
@@ -346,6 +392,7 @@ import json
 serializer = JSONTimelineSerializer()
 data = serializer.serialize(timeline, events, people)
 
+
 # Custom FHIR serializer
 class FHIRTimelineSerializer:
     content_type = "application/fhir+json"
@@ -362,6 +409,7 @@ Implement `VectorSearchBackend` for semantic timeline search. The SDK ships two 
 
 ```python
 from kestrel_sdk.timeline import VectorSearchBackend
+
 
 class MyVectorBackend:
     async def knn(self, query_embedding: bytes, k: int, filter: dict | None = None):

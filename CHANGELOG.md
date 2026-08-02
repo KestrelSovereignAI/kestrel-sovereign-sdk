@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.34.0 — 2026-08-02
+
+### Added
+
+- A provider-neutral, owner-scoped remote inference lease contract for private
+  on-demand model serving. The additive contract includes immutable request
+  constraints, pre-provisioning quotes, explicit lifecycle states, sanitized
+  failures and telemetry, and an in-memory route whose endpoint and credentials
+  cannot enter agent-facing serialization.
+- The `kestrel_sovereign.inference_lease_providers` entry-point group constant
+  and runtime-checkable provider protocol for external infrastructure packages.
+
 ## 0.33.0 — 2026-07-26
 
 ### Added
