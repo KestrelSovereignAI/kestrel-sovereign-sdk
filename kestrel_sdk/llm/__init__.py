@@ -111,6 +111,20 @@ from .types import BackendType
 # is additive; adapters pinning >=4 continue to work because get_response
 # remains the only abstract method.
 #
+# Version 6 (SDK 0.35.0): tightens the inference-lease provider contract in
+# two ways. Ordinary LLM adapters are unaffected by both; inference-capacity
+# plugins must satisfy both to be v6-conformant.
+#   (a) Providers must implement the owner-scoped, idempotent ``touch``
+#       operation for idle-deadline renewal. This is structurally enforced —
+#       the runtime-checkable protocol rejects a provider that omits it.
+#   (b) Providers must clamp the ``expires_at`` they report to
+#       ``requested_at + ready_deadline_seconds + expected_session_seconds``.
+#       ``InferenceLease.validate_for`` previously placed no upper bound on
+#       expiry and now raises ``InferenceLeaseConstraintError`` past that
+#       window, so a provider reporting a coarser natural expiry (e.g. a
+#       whole billing hour) that passed under v5 fails under v6. Adding
+#       ``touch`` alone does NOT make a provider v6-conformant.
+#
 # Version 2 (SDK 0.8.0): clarifies the meaning of
 # :attr:`ToolCallStarted.index`. The dataclass shape is unchanged
 # from version 1, but the documented contract for *consumers* of
@@ -125,7 +139,7 @@ from .types import BackendType
 # read ``marker.index`` directly continue to work; plugins that
 # wrote consumer code against the old (positional) wording must
 # update to read by stream order.
-SDK_LLM_CONTRACT_VERSION = 5
+SDK_LLM_CONTRACT_VERSION = 6
 
 __all__ = [
     "INFERENCE_LEASE_PROVIDER_ENTRY_POINT_GROUP",
