@@ -461,6 +461,78 @@ def test_realized_lease_validates_against_request_and_quote() -> None:
             lease.validate_for(request, quote)
 
 
+def test_realized_lease_rejects_expiry_beyond_request_session_deadline() -> None:
+    request = make_request()
+    quote = make_quote()
+    malicious_lease = make_lease(
+        expires_at=request.requested_at
+        + timedelta(
+            seconds=(
+                request.ready_deadline_seconds + request.expected_session_seconds + 1
+            )
+        )
+    )
+
+    with pytest.raises(InferenceLeaseConstraintError, match="session deadline"):
+        malicious_lease.validate_for(request, quote)
+
+
+def test_realized_lease_rejects_touch_that_extends_past_session_deadline() -> None:
+    """A renewal actually returned by ``touch`` is held to the same ceiling.
+
+    Driven through a provider rather than a hand-built lease so this covers
+    the renewal path the v6 contract added, instead of restating the
+    constraint check already asserted above.
+    """
+    request = make_request()
+    quote = make_quote()
+    latest_expiry = request.requested_at + timedelta(
+        seconds=request.ready_deadline_seconds + request.expected_session_seconds
+    )
+    make_lease(expires_at=latest_expiry).validate_for(request, quote)
+
+    class OvereagerRenewalProvider(CompleteProvider):
+        """Renews one second past the window the request authorized."""
+
+        async def touch(self, owner_id, lease_id):
+            return make_lease(
+                owner_id=owner_id,
+                lease_id=lease_id,
+                updated_at=latest_expiry - timedelta(minutes=1),
+                expires_at=latest_expiry + timedelta(seconds=1),
+            )
+
+    async def exercise() -> None:
+        provider = OvereagerRenewalProvider()
+        renewed_lease = await provider.touch(request.owner_id, "lease-renewal")
+        with pytest.raises(
+            InferenceLeaseConstraintError, match="session deadline"
+        ):
+            renewed_lease.validate_for(request, quote)
+
+    asyncio.run(exercise())
+
+
+def test_lease_expiry_check_stays_in_taxonomy_for_extreme_session_bounds() -> None:
+    """The absolute-lifetime check must fail closed, never ``OverflowError``.
+
+    ``expected_session_seconds`` and ``ready_deadline_seconds`` are bounded
+    only from below, so the SDK accepts a large-but-well-formed request. The
+    ceiling must therefore be computed without materializing a ``timedelta``
+    that cannot exist: ``OverflowError`` is an ``ArithmeticError`` and would
+    escape the ``InferenceLeaseError``/``ValueError`` taxonomy this module
+    documents, defeating every caller that guards ``validate_for``.
+    """
+    quote = make_quote()
+    for session_seconds in (10**12, 10**14):
+        request = make_request(
+            expected_session_seconds=session_seconds, idle_ttl_seconds=60
+        )
+        # The lease sits far inside so vast a window, so the ceiling is simply
+        # not reached — the point is that evaluating it does not explode.
+        make_lease().validate_for(request, quote)
+
+
 class CompleteProvider:
     provider_name = "example"
 
@@ -479,6 +551,14 @@ class CompleteProvider:
     async def status(self, owner_id, lease_id):
         return make_lease(owner_id=owner_id, lease_id=lease_id)
 
+    async def touch(self, owner_id, lease_id):
+        return make_lease(
+            owner_id=owner_id,
+            lease_id=lease_id,
+            updated_at=NOW + timedelta(minutes=3),
+            expires_at=NOW + timedelta(minutes=33),
+        )
+
     async def release(self, owner_id, lease_id):
         return make_lease(
             owner_id=owner_id,
@@ -492,9 +572,52 @@ class IncompleteProvider:
     provider_name = "incomplete"
 
 
+# Derived from ``CompleteProvider`` so the two can never drift apart: this
+# class differs from a conforming provider by exactly one member, ``touch``.
+ProviderMissingTouch = type(
+    "ProviderMissingTouch",
+    (),
+    {
+        name: value
+        for name, value in vars(CompleteProvider).items()
+        if name not in {"touch", "__dict__", "__weakref__"}
+    },
+)
+
+
 def test_provider_protocol_is_runtime_checkable() -> None:
     assert isinstance(CompleteProvider(), InferenceLeaseProvider)
     assert not isinstance(IncompleteProvider(), InferenceLeaseProvider)
+
+
+def test_provider_missing_only_touch_fails_contract_v6() -> None:
+    """``touch`` must be load-bearing, not merely documented.
+
+    ``IncompleteProvider`` fails the protocol for many reasons at once, so it
+    cannot show that contract v6 actually requires ``touch``.  This provider
+    implements every other member, so the isinstance check can only fail on
+    the operation v6 added — which is what makes "required" enforceable at
+    entry-point load time rather than at first real-traffic call.
+    """
+    assert not hasattr(ProviderMissingTouch, "touch")
+    unexpectedly_missing = tuple(
+        name
+        for name in (
+            "provider_name",
+            "capabilities",
+            "is_available",
+            "quote",
+            "acquire",
+            "status",
+            "release",
+        )
+        if not hasattr(ProviderMissingTouch, name)
+    )
+    assert not unexpectedly_missing, (
+        f"fixture lost unrelated members: {unexpectedly_missing}"
+    )
+
+    assert not isinstance(ProviderMissingTouch(), InferenceLeaseProvider)
 
 
 def test_complete_provider_async_contract_is_awaitable() -> None:
@@ -507,6 +630,10 @@ def test_complete_provider_async_contract_is_awaitable() -> None:
         lease.validate_for(request, quote)
         status = await provider.status(request.owner_id, lease.lease_id)
         assert status.state is InferenceLeaseState.READY
+        touched = await provider.touch(request.owner_id, lease.lease_id)
+        assert touched.state is InferenceLeaseState.READY
+        assert touched.expires_at > status.expires_at
+        touched.validate_for(request, quote)
         released = await provider.release(request.owner_id, lease.lease_id)
         assert released.state is InferenceLeaseState.RELEASED
 

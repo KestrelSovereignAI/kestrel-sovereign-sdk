@@ -1047,15 +1047,22 @@ class TestLLMAdapterContractVersion:
       * 5 — added optional provider-surface negotiation and neutral
         dataclasses for batch, files, token counting, request options,
         citations, server tools, and raw passthrough.
+      * 6 — tightened the private inference-lease provider contract twice
+        over (SDK 0.35.0): providers must implement the required owner-scoped
+        ``touch`` operation, AND must clamp the ``expires_at`` they report to
+        ``requested_at + ready_deadline_seconds + expected_session_seconds``,
+        which ``validate_for`` did not previously bound. Adding ``touch``
+        alone is not sufficient for v6. Ordinary LLM adapters are unchanged.
     """
 
-    def test_contract_version_is_5(self):
+    def test_contract_version_is_6(self):
         from kestrel_sdk.llm import SDK_LLM_CONTRACT_VERSION
 
-        assert SDK_LLM_CONTRACT_VERSION == 5, (
-            "LLM contract version 5 publishes the additive provider "
-            "surface expansion while keeping get_response as the only "
-            "abstract method."
+        assert SDK_LLM_CONTRACT_VERSION == 6, (
+            "LLM contract version 6 requires inference-lease providers to "
+            "renew idle deadlines and to bound lease expiry by the request's "
+            "authorized session window, while keeping get_response as the "
+            "only LLMAdapter abstract method."
         )
 
 

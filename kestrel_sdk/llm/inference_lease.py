@@ -707,6 +707,22 @@ class InferenceLease:
             raise InferenceLeaseConstraintError(
                 "lease exceeds quoted or maximum total cost"
             )
+        # Compare elapsed seconds rather than materializing
+        # ``requested_at + timedelta(...)``.  The request's session bounds are
+        # only bounded from below, so a large-but-well-formed value would make
+        # ``timedelta`` raise ``OverflowError`` — outside this module's
+        # documented ``InferenceLeaseError``/``ValueError`` taxonomy — instead
+        # of failing closed with a constraint error the caller can handle.
+        allowed_lifetime_seconds = (
+            request.ready_deadline_seconds + request.expected_session_seconds
+        )
+        lease_lifetime_seconds = (
+            self.expires_at - request.requested_at
+        ).total_seconds()
+        if lease_lifetime_seconds > allowed_lifetime_seconds:
+            raise InferenceLeaseConstraintError(
+                "lease expiry exceeds request session deadline"
+            )
 
     def to_public_dict(self) -> dict[str, Any]:
         """Serialize without owner identity, endpoint, or credentials."""
@@ -770,6 +786,16 @@ class InferenceLeaseProvider(Protocol):
 
     async def status(self, owner_id: str, lease_id: str) -> InferenceLease:
         """Return current state after enforcing owner isolation."""
+        ...
+
+    async def touch(self, owner_id: str, lease_id: str) -> InferenceLease:
+        """Idempotently renew the idle deadline when admitting real traffic.
+
+        Implementations must enforce owner isolation and return authoritative
+        lease state. A ready result may refresh host-only route material, but
+        touching must not provision replacement capacity or weaken the request's
+        original time and cost bounds.
+        """
         ...
 
     async def release(self, owner_id: str, lease_id: str) -> InferenceLease:
