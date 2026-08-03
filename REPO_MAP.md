@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 110 tracked files (98 `.py`, 5 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 112 tracked files (100 `.py`, 5 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -88,6 +88,8 @@ Repo entry points and standard project files.
   - `class LLMAdapter`
 - **kestrel_sdk/llm/capabilities.py** — Provider-level LLM capability metadata.
   - `class StructuredOutputMode`; `class ToolStreamingMode`; `class VisionInputMode`; `class ReasoningControlMode`; `class PromptCacheMode`; `class BatchMode`; `class FilesMode`; `class TokenCountMode`; `…`
+- **kestrel_sdk/llm/inference_lease.py** — Provider-neutral contracts for privately leased inference capacity.
+  - `class InferenceLeaseState`; `class InferencePrivacy`; `class InferenceLeaseError`; `class InferenceLeaseConstraintError`; `class InferenceLeaseNotFoundError`; `class InferenceLeaseOwnershipError`; `class InferenceLeaseProviderUnavailableError`; `class InferenceLeaseProvisioningError`; `…`
 - **kestrel_sdk/llm/model_info.py** — Standardized model metadata.
   - `class ModelCategory`; `class ModelInfo`
 - **kestrel_sdk/llm/provider.py** — Provider/route registration record.
@@ -181,6 +183,8 @@ Repo entry points and standard project files.
   - `def test_post_response_narration_fields_present_and_default_to_none()`; `def test_post_response_narration_fields_round_trip_through_to_dict()`; `def test_to_dict_exact_shape_for_post_response_event()`; `def test_positional_args_through_agent_spawn_keep_pre_0_9_meaning()`; `def test_pre_0_9_callers_still_construct_without_narration_fields()`
 - **tests/test_host_feature_contract.py** — Tests for the host-scoped feature contract (issue #46).
   - `class ExampleHostFeature`; `def test_hostfeature_importable_from_sdk_top_level()`; `def test_hostfeature_is_abc_and_distinct_from_feature()`; `def test_hostfeature_has_no_agent_binding()`; `def test_declares_required_contract_methods()`; `def test_name_and_capability_slugs()`; `def test_base_defaults_are_thin()`; `def test_get_router_mounts_at_host_root()`; `…`
+- **tests/test_inference_lease_contract.py** — Contract tests for provider-neutral remote inference leases.
+  - `def make_request()`; `def make_quote()`; `def make_route()`; `def make_lease()`; `def test_entry_point_group_is_stable()`; `def test_request_is_normalized_deeply_immutable_and_public_owner_free()`; `def test_request_rejects_malformed_or_unbounded_values(overrides, message)`; `def test_public_metadata_rejects_secret_like_keys(metadata)`; `…`
 - **tests/test_isolated_feature.py** — Tests for the isolated feature JSON-RPC stdio contract.
   - `class MemoryReader`; `class MemoryWriter`; `def memory_stdio_pair()`; `async def test_service_client_lifecycle_tools_and_events()`; `async def test_unknown_tool_returns_json_rpc_error()`; `def test_protocol_rejects_non_object_tool_schema()`; `async def test_tools_are_gated_until_health_reports_ready()`; `def test_feature_event_notification_round_trip()`; `…`
 - **tests/test_isolated_feature_concurrency.py** — A slow tool handler must not wedge the whole isolated-feature service.
