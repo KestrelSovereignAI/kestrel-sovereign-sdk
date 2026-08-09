@@ -942,6 +942,16 @@ class _ChildRetirement:
     # timeout observer wait for cancellation to finish, nor be forgotten.
     shutdown_task: asyncio.Task[Any] | None = None
     close_task: asyncio.Task[Any] | None = None
+    # Completed phase tasks can retain successful child payloads in ``_result``
+    # and failure arguments in ``_exception``.  Keep only the outcome needed
+    # to preserve one-shot retry semantics once they settle; the task reference
+    # itself is reserved for a still-running phase.
+    shutdown_attempted: bool = False
+    shutdown_settled: bool = False
+    shutdown_succeeded: bool = False
+    close_attempted: bool = False
+    close_settled: bool = False
+    close_succeeded: bool = False
     # Signal intent belongs to this exact process generation.  A delayed reap
     # must not turn a stop retry into another TERM/KILL delivery.
     terminate_requested: bool = False
@@ -958,6 +968,13 @@ class _ChildRetirement:
     # with the detached child until it has actually settled, just like close.
     startup_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
     startup_cancel_requested: set[asyncio.Task[Any]] = field(default_factory=set)
+    # Startup tasks are removed as each one settles, including after a bounded
+    # snapshot has returned.  These counters deliberately record no task
+    # result or exception object, so an unresolved process reap cannot retain
+    # child-controlled startup data indefinitely.
+    startup_attempted: int = 0
+    startup_settled: int = 0
+    startup_succeeded: int = 0
 
 
 @dataclass
@@ -1855,7 +1872,7 @@ class SubprocessIsolatedFeatureClient:
                 or (spawn_task is not None and retirement.spawn_task is spawn_task)
             ):
                 if startup_tasks:
-                    retirement.startup_tasks.update(startup_tasks)
+                    self._adopt_retired_startup_tasks_locked(retirement, startup_tasks)
                     startup_tasks.clear()
                     if startup_cancel_requested:
                         retirement.startup_cancel_requested.update(
@@ -1877,7 +1894,7 @@ class SubprocessIsolatedFeatureClient:
             spawn_cancel_requested=spawn_cancel_requested,
         )
         if startup_tasks:
-            retirement.startup_tasks.update(startup_tasks)
+            self._adopt_retired_startup_tasks_locked(retirement, startup_tasks)
             startup_tasks.clear()
             if startup_cancel_requested:
                 retirement.startup_cancel_requested.update(startup_cancel_requested)
@@ -1886,6 +1903,30 @@ class SubprocessIsolatedFeatureClient:
         self._retain_retirement_task(retirement.task)
         self._retirements.append(retirement)
         return retirement
+
+    def _adopt_retired_startup_tasks_locked(
+        self,
+        retirement: _ChildRetirement,
+        tasks: set[asyncio.Task[Any]],
+    ) -> None:
+        """Transfer startup tasks and arrange autonomous result release.
+
+        The caller holds ``_state_lock`` while moving a live startup set into
+        private ownership.  Registering the callback synchronously closes the
+        gap after a bounded retirement snapshot: a phase that finishes later
+        removes itself even if no caller invokes ``stop()`` again.
+        """
+
+        for task in tasks:
+            if task in retirement.startup_tasks:
+                continue
+            retirement.startup_tasks.add(task)
+            retirement.startup_attempted += 1
+            task.add_done_callback(
+                lambda done, retirement=retirement: self._finish_retired_startup_task(
+                    retirement, done
+                )
+            )
 
     async def _retire_terminal_published_child(
         self, cancellations: list[tuple[Any, ...]]
@@ -2023,15 +2064,30 @@ class SubprocessIsolatedFeatureClient:
         shutdown_settled = True
         if client is not None:
             shutdown_task = retirement.shutdown_task
-            if shutdown_task is None:
+            if not retirement.shutdown_attempted:
                 shutdown_task = asyncio.create_task(client.shutdown())
                 self._retain_retirement_task(shutdown_task)
                 retirement.shutdown_task = shutdown_task
-            # Give the graceful protocol request its own bounded observation
-            # before stream disposal begins. A hostile child cannot block the
-            # TERM/KILL fallback, but it can no longer preempt a graceful
-            # shutdown that would otherwise succeed.
-            shutdown_settled, _ = await self._observe_retirement_task(shutdown_task)
+                retirement.shutdown_attempted = True
+                shutdown_task.add_done_callback(
+                    lambda done, retirement=retirement: (
+                        self._finish_retired_shutdown_task(retirement, done)
+                    )
+                )
+            if shutdown_task is None:
+                shutdown_settled = retirement.shutdown_settled
+            else:
+                # Give the graceful protocol request its own bounded observation
+                # before stream disposal begins. A hostile child cannot block the
+                # TERM/KILL fallback, but it can no longer preempt a graceful
+                # shutdown that would otherwise succeed.
+                shutdown_settled, _ = await self._observe_retirement_task(shutdown_task)
+                if shutdown_settled:
+                    self._finish_retired_shutdown_task(retirement, shutdown_task)
+            # A completed task retains its result or exception arguments. The
+            # record callback reduces that to booleans, and a still-live task
+            # is reloaded below if close() can settle it.
+            shutdown_task = None
 
         process = retirement.process
         process_retired = process is None or await self._wait_for_process(retirement)
@@ -2075,22 +2131,43 @@ class SubprocessIsolatedFeatureClient:
         close_started_this_attempt = False
         if client is not None:
             close_task = retirement.close_task
-            if close_task is None:
+            if not retirement.close_attempted:
                 close_task = asyncio.create_task(client.close())
                 self._retain_retirement_task(close_task)
                 retirement.close_task = close_task
+                retirement.close_attempted = True
                 close_started_this_attempt = True
+                close_task.add_done_callback(
+                    lambda done, retirement=retirement: self._finish_retired_close_task(
+                        retirement, done
+                    )
+                )
 
-            close_settled, close_succeeded = await self._observe_retirement_task(
-                close_task
-            )
+            if close_task is None:
+                close_settled = retirement.close_settled
+                close_succeeded = retirement.close_succeeded
+            else:
+                close_settled, close_succeeded = await self._observe_retirement_task(
+                    close_task
+                )
+                if close_settled:
+                    self._finish_retired_close_task(retirement, close_task)
+                    close_succeeded = retirement.close_succeeded
+            # No later phase needs the close task itself. Avoid retaining
+            # child-controlled results or exception arguments through the
+            # final bounded reap below.
+            close_task = None
             # close() can terminate the reader and thereby settle a shutdown
             # request that had just exhausted its first bounded observation.
             # Re-observe only an already-complete task here: this same stop
             # attempt should release a fully settled child, but must not add an
             # unbounded (or duplicate full-timeout) shutdown wait.
-            if not shutdown_settled and shutdown_task.done():
-                shutdown_settled = True
+            if not shutdown_settled:
+                shutdown_task = retirement.shutdown_task
+                if shutdown_task is not None and shutdown_task.done():
+                    self._finish_retired_shutdown_task(retirement, shutdown_task)
+                shutdown_settled = retirement.shutdown_settled
+                shutdown_task = None
             # Event delivery may be cancellation-resistant.  It retains
             # child-controlled payloads and must remain authoritative until
             # both phases are settled and close has completed successfully,
@@ -2180,19 +2257,67 @@ class SubprocessIsolatedFeatureClient:
             self._cancel_retired_startup_task_once(retirement, task)
         done, _ = await asyncio.wait(tasks, timeout=_SUBPROCESS_STOP_TIMEOUT)
         for task in done:
-            if task.cancelled():
-                continue
-            try:
-                task.result()
-            except BaseException as exc:  # noqa: BLE001 -- callback consumed details
-                IsolatedFeatureClient._discard_exception_traceback(exc)
+            self._finish_retired_startup_task(retirement, task)
         # A phase task can be attached while this bounded observation yields.
-        # Remove only the exact completed snapshot while holding the same lock
-        # used by attachment, so a late task cannot be overwritten or lost.
-        async with self._state_lock:
-            retirement.startup_tasks.difference_update(done)
-            retirement.startup_cancel_requested.difference_update(done)
-            return not retirement.startup_tasks
+        # The done callback above removes only its exact completed task, so a
+        # late attachment remains authoritative and a late completion releases
+        # itself without requiring another stop retry.
+        return not retirement.startup_tasks
+
+    @staticmethod
+    def _completed_retirement_task_succeeded(task: asyncio.Task[Any]) -> bool:
+        """Consume one completed phase outcome without retaining its payload."""
+
+        if task.cancelled():
+            return False
+        try:
+            task.result()
+        except BaseException as exc:  # noqa: BLE001 -- cleanup boundary
+            IsolatedFeatureClient._discard_exception_traceback(exc)
+            return False
+        return True
+
+    def _finish_retired_shutdown_task(
+        self,
+        retirement: _ChildRetirement,
+        task: asyncio.Task[Any],
+    ) -> None:
+        """Replace one completed shutdown task with its sanitized outcome."""
+
+        if retirement.shutdown_task is not task:
+            return
+        retirement.shutdown_succeeded = self._completed_retirement_task_succeeded(task)
+        retirement.shutdown_settled = True
+        retirement.shutdown_task = None
+
+    def _finish_retired_close_task(
+        self,
+        retirement: _ChildRetirement,
+        task: asyncio.Task[Any],
+    ) -> None:
+        """Replace one completed close task with its sanitized outcome."""
+
+        if retirement.close_task is not task:
+            return
+        retirement.close_succeeded = self._completed_retirement_task_succeeded(task)
+        retirement.close_settled = True
+        retirement.close_task = None
+
+    def _finish_retired_startup_task(
+        self,
+        retirement: _ChildRetirement,
+        task: asyncio.Task[Any],
+    ) -> None:
+        """Release one settled startup task while preserving only its outcome."""
+
+        if task not in retirement.startup_tasks:
+            return
+        retirement.startup_succeeded += int(
+            self._completed_retirement_task_succeeded(task)
+        )
+        retirement.startup_settled += 1
+        retirement.startup_tasks.discard(task)
+        retirement.startup_cancel_requested.discard(task)
 
     def _on_spawn_task_done(
         self, spawn_task: asyncio.Task[asyncio.subprocess.Process]

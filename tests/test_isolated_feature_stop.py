@@ -241,6 +241,59 @@ class _CancellationSuppressingClient:
                 self.close_cancellations += 1
 
 
+class _SecretPayload(dict):
+    """Weak-referenceable child data used to prove retirement releases it."""
+
+
+class _PayloadReturningShutdownClient:
+    """A retired client whose shutdown result or error argument is sensitive."""
+
+    def __init__(self, payload: _SecretPayload, *, fail_shutdown: bool) -> None:
+        self._payload: _SecretPayload | None = payload
+        self.fail_shutdown = fail_shutdown
+        self.shutdown_calls = 0
+        self.close_calls = 0
+
+    async def shutdown(self) -> _SecretPayload:
+        self.shutdown_calls += 1
+        payload = self._payload
+        self._payload = None
+        assert payload is not None
+        if self.fail_shutdown:
+            raise RuntimeError(payload)
+        return payload
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+class _HostilePayloadReturningCloseClient:
+    """A close implementation that delays then exposes child-controlled data."""
+
+    def __init__(self, payload: _SecretPayload, *, fail_close: bool) -> None:
+        self._payload: _SecretPayload | None = payload
+        self.fail_close = fail_close
+        self.close_started = asyncio.Event()
+        self.release_close = asyncio.Event()
+        self.shutdown_calls = 0
+        self.close_calls = 0
+
+    async def shutdown(self) -> dict[str, object]:
+        self.shutdown_calls += 1
+        return {}
+
+    async def close(self) -> _SecretPayload:
+        self.close_calls += 1
+        self.close_started.set()
+        await self.release_close.wait()
+        payload = self._payload
+        self._payload = None
+        assert payload is not None
+        if self.fail_close:
+            raise RuntimeError(payload)
+        return payload
+
+
 class _OrderedShutdownClient:
     """Client double that proves close waits for the graceful attempt."""
 
@@ -1494,6 +1547,141 @@ async def test_stop_hard_bounds_cancellation_suppressing_client_phases(monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fail_shutdown", (False, True), ids=("result", "exception"))
+async def test_unreaped_retirement_releases_shutdown_payload_before_stop_returns(
+    monkeypatch,
+    fail_shutdown,
+):
+    """A blocked process reap does not retain a completed shutdown payload."""
+
+    monkeypatch.setattr(client_module, "_SUBPROCESS_STOP_TIMEOUT", 0.05)
+    process = _NeverReapedProcess()
+    payload = _SecretPayload(token="secret")
+    payload_ref = weakref.ref(payload)
+    retained = _PayloadReturningShutdownClient(payload, fail_shutdown=fail_shutdown)
+    wrapper = SubprocessIsolatedFeatureClient(
+        command=["unused"],
+        client=retained,  # type: ignore[arg-type]
+        process=process,
+    )
+
+    stop_task = asyncio.create_task(wrapper.stop())
+    await asyncio.wait_for(process.wait_started.wait(), timeout=1)
+    retirement = wrapper._retirements[0]
+    async with asyncio.timeout(1):
+        while retirement.shutdown_task is not None:
+            await asyncio.sleep(0)
+
+    assert retirement.shutdown_attempted
+    assert retirement.shutdown_settled
+    assert retirement.shutdown_succeeded is not fail_shutdown
+    assert retirement.shutdown_task is None
+    assert retained.shutdown_calls == 1
+    assert not stop_task.done()
+
+    del payload
+    gc.collect()
+    assert payload_ref() is None
+
+    process.finish()
+    await stop_task
+    assert retained.shutdown_calls == 1
+    assert retained.close_calls == 1
+    assert wrapper._retirements == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_close", (False, True), ids=("result", "exception"))
+async def test_unreaped_retirement_releases_hostile_close_payload_before_stop_returns(
+    monkeypatch,
+    fail_close,
+):
+    """The final bounded reap does not retain hostile close data."""
+
+    monkeypatch.setattr(client_module, "_SUBPROCESS_STOP_TIMEOUT", 0.1)
+    final_reap_started = asyncio.Event()
+    primary_final_reap_started = asyncio.Event()
+    sibling_observations = 0
+    primary_observations = 0
+    original_wait_for_process = SubprocessIsolatedFeatureClient._wait_for_process
+    sibling: client_module._ChildRetirement | None = None
+
+    async def observe_wait_for_process(self, current_retirement):
+        nonlocal sibling_observations, primary_observations
+        if current_retirement is sibling:
+            sibling_observations += 1
+            if sibling_observations == 4:
+                final_reap_started.set()
+        elif current_retirement.process is process:
+            primary_observations += 1
+            if primary_observations == 4:
+                primary_final_reap_started.set()
+        return await original_wait_for_process(self, current_retirement)
+
+    monkeypatch.setattr(
+        SubprocessIsolatedFeatureClient,
+        "_wait_for_process",
+        observe_wait_for_process,
+    )
+    process = _NeverReapedProcess()
+    sibling_process = _NeverReapedProcess()
+    payload = _SecretPayload(token="secret")
+    payload_ref = weakref.ref(payload)
+    retained = _HostilePayloadReturningCloseClient(payload, fail_close=fail_close)
+    wrapper = SubprocessIsolatedFeatureClient(
+        command=["unused"],
+        client=retained,  # type: ignore[arg-type]
+        process=process,
+    )
+    async with wrapper._state_lock:
+        sibling = wrapper._claim_retirement_locked(
+            _LegacyCloseClient(),
+            sibling_process,  # type: ignore[arg-type]
+        )
+    assert sibling is not None
+
+    stop_task = asyncio.create_task(wrapper.stop())
+    await asyncio.wait_for(retained.close_started.wait(), timeout=1)
+    primary = next(item for item in wrapper._retirements if item.client is retained)
+    retained.release_close.set()
+    async with asyncio.timeout(1):
+        while primary.close_task is not None:
+            await asyncio.sleep(0)
+    if fail_close:
+        assert primary.task is not None
+        assert not await asyncio.wait_for(asyncio.shield(primary.task), timeout=1)
+    else:
+        await asyncio.wait_for(primary_final_reap_started.wait(), timeout=1)
+    await asyncio.wait_for(final_reap_started.wait(), timeout=1)
+
+    assert primary.close_attempted
+    assert primary.close_settled
+    assert primary.close_succeeded is not fail_close
+    assert primary.close_task is None
+    assert retained.shutdown_calls == 1
+    assert retained.close_calls == 1
+    assert sibling_observations == 4
+    assert not stop_task.done()
+
+    del payload
+    gc.collect()
+    assert payload_ref() is None
+
+    process.finish()
+    sibling_process.finish()
+    if fail_close:
+        with pytest.raises(RuntimeError, match="retirement is unresolved"):
+            await stop_task
+        with pytest.raises(RuntimeError, match="retirement is in progress"):
+            await wrapper.start()
+    else:
+        await stop_task
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert bool(wrapper._retirements) is fail_close
+
+
+@pytest.mark.asyncio
 async def test_stop_retires_uncanceling_operations_and_fences_replacement(monkeypatch):
     """An uncanceling health task cannot outlive a successful stop unnoticed."""
 
@@ -2469,6 +2657,95 @@ async def test_startup_deadline_retains_cancellation_suppressing_phase(monkeypat
     await wrapper.stop()
     assert phase_task.done()
     assert initialize_calls == 1
+    assert wrapper._retirements == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_phase", (False, True), ids=("result", "exception"))
+async def test_late_startup_phase_releases_payload_without_stop_retry(
+    monkeypatch,
+    fail_phase,
+):
+    """A late startup completion drops its task while its process stays fenced."""
+
+    monkeypatch.setattr(client_module, "_SUBPROCESS_STOP_TIMEOUT", 0.01)
+    process = _NeverReapedProcess()
+    reader = _TransportOnlyReader()
+    writer = _CloseTrackingWriter()
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    phase_calls = 0
+    phase_cancellations = 0
+    secret: _SecretPayload | None = _SecretPayload(token="secret")
+    secret_ref = weakref.ref(secret)
+
+    async def spawn(*args, **kwargs):
+        process.stdin = writer
+        process.stdout = reader
+        return process
+
+    async def stubborn_initialize(self, *args, **kwargs):
+        nonlocal phase_calls, phase_cancellations, secret
+        phase_calls += 1
+        payload = secret
+        secret = None
+        assert payload is not None
+        entered.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                phase_cancellations += 1
+        if fail_phase:
+            raise RuntimeError(payload)
+        return payload
+
+    async def successful_shutdown(self):
+        return {}
+
+    monkeypatch.setattr(client_module.asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(
+        client_module.IsolatedFeatureClient, "initialize", stubborn_initialize
+    )
+    monkeypatch.setattr(
+        client_module.IsolatedFeatureClient, "shutdown", successful_shutdown
+    )
+    wrapper = SubprocessIsolatedFeatureClient(command=["unused"], ready_timeout=0.01)
+
+    with pytest.raises(TimeoutError):
+        await wrapper.start()
+    assert entered.is_set()
+    assert phase_calls == 1
+    assert phase_cancellations == 1
+    retirement = wrapper._retirements[0]
+    assert len(retirement.startup_tasks) == 1
+    assert retirement.startup_attempted == 1
+    assert retirement.startup_settled == 0
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+
+    release.set()
+    async with asyncio.timeout(1):
+        while retirement.startup_tasks:
+            await asyncio.sleep(0)
+
+    assert retirement.startup_settled == 1
+    assert retirement.startup_succeeded == int(not fail_phase)
+    assert phase_calls == 1
+    assert phase_cancellations == 1
+    gc.collect()
+    assert secret_ref() is None
+
+    # Completion releases the late phase data but cannot release the exact
+    # process record or admit another generation before its waiter settles.
+    with pytest.raises(RuntimeError, match="retirement is in progress"):
+        await wrapper.start()
+
+    process.finish()
+    await wrapper.stop()
+    assert phase_calls == 1
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
     assert wrapper._retirements == []
 
 
