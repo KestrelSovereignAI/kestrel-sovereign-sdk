@@ -109,6 +109,64 @@ asyncio.run(HangingHealthService().run_stdio())
 """
 
 
+_WINDOWS_STDIO_SUBPROCESS = r"""
+import asyncio
+import json
+import os
+import sys
+
+from kestrel_sdk.isolated_feature import IsolatedFeatureService
+
+
+def record(event, **values):
+    with open(os.environ["ISOLATED_FEATURE_STATE_FILE"], "a", encoding="utf-8") as file:
+        file.write(json.dumps({"event": event, **values}) + "\n")
+        file.flush()
+
+
+class WindowsStdioService(IsolatedFeatureService):
+    def __init__(self):
+        super().__init__(name="windows-stdio", version="1.0.0")
+
+    async def configure(self, config):
+        record("initialize", config=config)
+
+    async def health(self):
+        record("health")
+        return {"status": "ready", "ready": True}
+
+
+async def main():
+    # Exercise the Windows inherited-stdio adapter on every CI host. Replacing
+    # the base methods makes this an assertion about the selected
+    # implementation rather than a platform skip: the legacy pipe setup fails
+    # before initialize. Do this after asyncio.run() has made its native loop;
+    # forcing sys.platform earlier would make a non-Windows interpreter import
+    # Windows-only event-loop modules.
+    sys.platform = "win32"
+
+    original_fdopen = os.fdopen
+
+    def checked_fdopen(fd, *args, **kwargs):
+        record("wire", inheritable=os.get_inheritable(fd))
+        return original_fdopen(fd, *args, **kwargs)
+
+    os.fdopen = checked_fdopen
+
+    def unexpected_proactor_pipe_setup(*args, **kwargs):
+        raise AssertionError(
+            "Windows inherited stdio must not use asyncio pipe transports"
+        )
+
+    asyncio.BaseEventLoop.connect_read_pipe = unexpected_proactor_pipe_setup
+    asyncio.BaseEventLoop.connect_write_pipe = unexpected_proactor_pipe_setup
+    await WindowsStdioService().run_stdio()
+
+
+asyncio.run(main())
+"""
+
+
 @pytest.mark.asyncio
 async def test_legacy_service_does_not_advertise_or_receive_transition_requests():
     """New clients use a conservative replacement fallback for legacy services."""
@@ -701,6 +759,35 @@ async def test_wrapper_stop_interrupts_real_subprocess_with_wedged_startup_healt
         if not start_task.done():
             start_task.cancel()
             await asyncio.gather(start_task, return_exceptions=True)
+        await wrapper.stop()
+
+
+@pytest.mark.asyncio
+async def test_wrapper_uses_windows_inherited_stdio_adapter_without_proactor_pipes(
+    tmp_path,
+):
+    """Windows child stdio stays usable without Proactor pipe ownership."""
+    state_file = tmp_path / "windows-stdio-state.jsonl"
+    config = {"enabled": True}
+    wrapper = SubprocessIsolatedFeatureClient(
+        command=[sys.executable, "-u", "-c", _WINDOWS_STDIO_SUBPROCESS],
+        env={**os.environ, "ISOLATED_FEATURE_STATE_FILE": str(state_file)},
+        config=config,
+    )
+
+    try:
+        await wrapper.start()
+        records = await _wait_for_state_records(state_file, 3)
+        assert records == [
+            {"event": "wire", "inheritable": False},
+            {"event": "initialize", "config": config},
+            {"event": "health"},
+        ]
+        assert await wrapper.health() == {"status": "ready", "ready": True}
+        await asyncio.wait_for(wrapper.stop(), timeout=1)
+        assert wrapper.client is None
+        assert wrapper.process is None
+    finally:
         await wrapper.stop()
 
 
