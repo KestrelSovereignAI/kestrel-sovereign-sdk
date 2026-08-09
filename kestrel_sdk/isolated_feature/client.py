@@ -130,6 +130,11 @@ class IsolatedFeatureClient:
             self._read_task = asyncio.create_task(self._read_loop())
 
     def on_event(self, handler: EventHandler) -> None:
+        # ``close()`` can remain pending in ``writer.wait_closed()`` after it
+        # has released event state. Do not let a direct late registration
+        # reintroduce a retained handler during that shutdown window.
+        if self._shutdown_started:
+            return
         first_handler = not self._event_handlers
         self._event_handlers.append(handler)
         if first_handler and self._pending_notifications and not self._shutdown_started:
@@ -656,20 +661,31 @@ class IsolatedFeatureClient:
             except Exception:  # noqa: BLE001, S110 -- best-effort stream close
                 pass
 
+        event_tasks_settled = False
         try:
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                # The buffer can contain child-provided, potentially secret
+                # event dictionaries. Clear it after coordinated event
+                # shutdown, before a potentially non-settling writer close.
+                # This cannot race a draining task because all owned event and
+                # read tasks have already settled.
+                if all(task.done() for task in tasks):
+                    async with self._event_lock:
+                        self._pending_notifications.clear()
+                        self._event_handlers.clear()
+                    event_tasks_settled = True
+
             wait_closed = getattr(self.writer, "wait_closed", None)
             if wait_closed is not None:
                 await self._wait_writer_closed_owned(wait_closed)
         finally:
             # The buffer can contain child-provided, potentially secret event
-            # dictionaries.  Clear it only after coordinated event shutdown so
-            # a draining task never races a disposal-time mutation.
-            if all(task.done() for task in tasks):
-                async with self._event_lock:
-                    self._pending_notifications.clear()
-                    self._event_handlers.clear()
+            # dictionaries. Event data is released above before writer close;
+            # the remaining terminal state waits for the close owner itself.
+            if event_tasks_settled:
                 if read_task is self._read_task:
                     self._read_task = None
                 # Replace the terminal classification with the coordinated-close
@@ -2004,6 +2020,7 @@ class SubprocessIsolatedFeatureClient:
         startup_retired = await self._retire_startup_tasks(retirement)
         client = retirement.client
         client_retired = spawn_retired and startup_retired
+        shutdown_settled = True
         if client is not None:
             shutdown_task = retirement.shutdown_task
             if shutdown_task is None:
@@ -2011,15 +2028,58 @@ class SubprocessIsolatedFeatureClient:
                 self._retain_retirement_task(shutdown_task)
                 retirement.shutdown_task = shutdown_task
             # Give the graceful protocol request its own bounded observation
-            # before stream close begins. Close still follows after a timeout
-            # so a hostile child cannot block TERM/KILL, but it can no longer
-            # preempt a graceful shutdown that would otherwise succeed.
+            # before stream disposal begins. A hostile child cannot block the
+            # TERM/KILL fallback, but it can no longer preempt a graceful
+            # shutdown that would otherwise succeed.
             shutdown_settled, _ = await self._observe_retirement_task(shutdown_task)
+
+        process = retirement.process
+        process_retired = process is None or await self._wait_for_process(retirement)
+        if process is not None and not process_retired:
+            terminate_sent = False
+            if process.returncode is None and not retirement.terminate_requested:
+                # On Windows the Proactor owns an outstanding stdout pipe read
+                # until the child exits. Closing that reader transport first can
+                # invalidate its handle while the subprocess transport is still
+                # observing it. Signal, then observe that exact waiter before
+                # disposing streams; the bounded wait remains the authoritative
+                # reap proof.
+                retirement.terminate_requested = True
+                terminate_sent = True
+                try:
+                    process.terminate()
+                except (ProcessLookupError, OSError):
+                    pass
+            # A Process-compatible implementation may publish returncode from
+            # terminate() before its retained wait task has joined the
+            # subprocess transport. The post-signal observation is still
+            # required before a real reader transport can be closed.
+            if terminate_sent:
+                process_retired = await self._wait_for_process(retirement)
+
+            kill_sent = False
+            if (
+                not process_retired
+                and process.returncode is None
+                and not retirement.kill_requested
+            ):
+                retirement.kill_requested = True
+                kill_sent = True
+                try:
+                    process.kill()
+                except (ProcessLookupError, OSError):
+                    pass
+            if not process_retired and kill_sent:
+                process_retired = await self._wait_for_process(retirement)
+
+        close_started_this_attempt = False
+        if client is not None:
             close_task = retirement.close_task
             if close_task is None:
                 close_task = asyncio.create_task(client.close())
                 self._retain_retirement_task(close_task)
                 retirement.close_task = close_task
+                close_started_this_attempt = True
 
             close_settled, close_succeeded = await self._observe_retirement_task(
                 close_task
@@ -2049,42 +2109,25 @@ class SubprocessIsolatedFeatureClient:
                         client_retired = False
                     else:
                         retirement.client = None
+            # Starting client stream disposal can release a subprocess transport
+            # waiter. That earns one final bounded process observation in this
+            # attempt only; a later retry cannot gain another window merely by
+            # re-observing an already-complete close task.
 
-        process = retirement.process
         if process is None:
             return client_retired
-        if await self._wait_for_process(retirement):
+        if process_retired:
             return client_retired
-        # A process-compatible implementation can publish ``returncode`` just
-        # before its retained wait task settles.  Do not signal that exited
-        # child again, but do fail closed until the single waiter has observed
-        # the reap.
-        if process.returncode is not None:
-            return False
-
-        if not retirement.terminate_requested and process.returncode is None:
-            # Mark before signalling: Process-compatible implementations may
-            # raise after accepting the intent, and retries must never deliver
-            # a duplicate signal to this generation.
-            retirement.terminate_requested = True
-            try:
-                process.terminate()
-            except (ProcessLookupError, OSError):
-                pass
-        if await self._wait_for_process(retirement):
-            return client_retired
-        if process.returncode is not None:
-            return False
-
-        if not retirement.kill_requested and process.returncode is None:
-            retirement.kill_requested = True
-            try:
-                process.kill()
-            except (ProcessLookupError, OSError):
-                pass
-        # The post-SIGKILL reap is bounded too.  A timeout is not success: the
-        # exact process remains in ``_retirements`` for a later stop to retry.
-        return client_retired and await self._wait_for_process(retirement)
+        if close_started_this_attempt:
+            # This check follows close only because stream disposal can unblock
+            # the retained waiter. It deliberately does not run for a
+            # process-only retirement or a later close-task retry: TERM and
+            # KILL already received their authoritative bounded observations.
+            return client_retired and await self._wait_for_process(retirement)
+        # Every signal has already received its own bounded reap observation.
+        # If the retained waiter still has not settled, preserve this exact
+        # record for a retry without adding a fourth timeout window.
+        return False
 
     async def _retire_spawn_task(self, retirement: _ChildRetirement) -> bool:
         """Cancel/observe one owned spawn and adopt a late Process exactly once."""

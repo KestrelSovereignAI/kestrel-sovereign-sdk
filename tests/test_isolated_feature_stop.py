@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import re
 import signal
 import subprocess
 import sys
+import weakref
 from pathlib import Path
 
 import pytest
@@ -266,6 +268,18 @@ class _CloseTrackingTransport:
         self.close_calls += 1
 
 
+class _OrderedCloseTrackingTransport(_CloseTrackingTransport):
+    """Transport double that records the Proactor-sensitive release order."""
+
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self._events = events
+
+    def close(self) -> None:
+        self._events.append("stdout-close")
+        super().close()
+
+
 class _TransportOnlyReader:
     """Reader double that deliberately offers only asyncio's transport hook."""
 
@@ -296,6 +310,19 @@ class _IndependentlyCancelledCloseWriter(_CloseTrackingWriter):
 
     async def wait_closed(self) -> None:
         await self._waiter
+
+
+class _NonSettlingCloseWriter(_CloseTrackingWriter):
+    """Writer double whose close remains pending until the test releases it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.wait_started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def wait_closed(self) -> None:
+        self.wait_started.set()
+        await self.release.wait()
 
 
 class _SilentRequestWriter(_CloseTrackingWriter):
@@ -424,6 +451,30 @@ class _TransitionClient:
         return object()
 
 
+async def _kill_and_reap_paused_subprocess(
+    process: asyncio.subprocess.Process,
+    retained: client_module.IsolatedFeatureClient,
+) -> None:
+    """Best-effort failed-test cleanup that cannot block on paused stdout."""
+
+    if process.returncode is not None:
+        return
+    try:
+        process.kill()
+    except (ProcessLookupError, OSError):
+        pass
+    # ``Process.wait()`` can remain blocked after kill while an asyncio
+    # StreamReader has paused its pipe transport. Release and clear that stream
+    # first, then bound reaping so teardown never replaces the test failure.
+    retained._close_reader_transport()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=1)
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "failed to reap a killed paused-output subprocess", exc_info=exc
+        )
+
+
 @pytest.mark.asyncio
 async def test_cancelled_stop_retains_detached_child_and_delivers_first_cancellation(
     monkeypatch,
@@ -463,6 +514,161 @@ async def test_cancelled_stop_retains_detached_child_and_delivers_first_cancella
     # releases the private handle.
     process.finish()
     await wrapper.stop()
+    assert wrapper._retirements == []
+
+
+@pytest.mark.asyncio
+async def test_stop_never_reaped_process_uses_only_signal_phase_observations(
+    monkeypatch,
+):
+    """A process-only retry observes once after both signal intents are recorded."""
+
+    monkeypatch.setattr(client_module, "_SUBPROCESS_STOP_TIMEOUT", 0.01)
+    process = _NeverReapedProcess()
+    wrapper = SubprocessIsolatedFeatureClient(command=["unused"], process=process)
+    observations = 0
+    original_wait_for_process = wrapper._wait_for_process
+
+    async def count_wait_observation(retirement):
+        nonlocal observations
+        observations += 1
+        return await original_wait_for_process(retirement)
+
+    monkeypatch.setattr(wrapper, "_wait_for_process", count_wait_observation)
+
+    with pytest.raises(RuntimeError, match="retirement is unresolved"):
+        await wrapper.stop()
+
+    # Initial reap, post-TERM reap, and post-KILL reap are the complete
+    # bounded sequence. Process.wait() itself remains a single retained task.
+    assert observations == 3
+    assert process.wait_calls == 1
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert process.returncode is None
+    assert len(wrapper._retirements) == 1
+    assert wrapper._retirements[0].terminate_requested
+    assert wrapper._retirements[0].kill_requested
+
+    with pytest.raises(RuntimeError, match="retirement is unresolved"):
+        await wrapper.stop()
+
+    # The retry makes one fresh observation. Both signal intents are already
+    # recorded, so it sends neither signal and does not repeat either
+    # post-signal reap timeout.
+    assert observations == 4
+    assert process.wait_calls == 1
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+
+    process.finish()
+    await wrapper.stop()
+    # Final settlement needs only the next initial observation.
+    assert observations == 5
+    assert wrapper._retirements == []
+
+
+@pytest.mark.asyncio
+async def test_stop_does_not_reobserve_process_after_prior_close_task(monkeypatch):
+    """A completed close from an earlier stop earns no new reap window."""
+
+    monkeypatch.setattr(client_module, "_SUBPROCESS_STOP_TIMEOUT", 0.01)
+    process = _NeverReapedProcess()
+
+    class ShutdownCompletesLater:
+        def __init__(self) -> None:
+            self.release_shutdown = asyncio.Event()
+            self.close_calls = 0
+
+        async def shutdown(self) -> dict[str, object]:
+            await self.release_shutdown.wait()
+            return {}
+
+        async def close(self) -> None:
+            self.close_calls += 1
+
+    client = ShutdownCompletesLater()
+    wrapper = SubprocessIsolatedFeatureClient(
+        command=["unused"],
+        client=client,  # type: ignore[arg-type]
+        process=process,
+    )
+    observations = 0
+    original_wait_for_process = wrapper._wait_for_process
+
+    async def count_wait_observation(retirement):
+        nonlocal observations
+        observations += 1
+        return await original_wait_for_process(retirement)
+
+    monkeypatch.setattr(wrapper, "_wait_for_process", count_wait_observation)
+
+    with pytest.raises(RuntimeError, match="retirement is unresolved"):
+        await wrapper.stop()
+
+    # Initial reap plus one observation after each signal. The client close is
+    # already complete, but its graceful shutdown remains pending.
+    assert observations == 3
+    assert client.close_calls == 1
+
+    client.release_shutdown.set()
+    with pytest.raises(RuntimeError, match="retirement is unresolved"):
+        await wrapper.stop()
+
+    # The retry observes the process once at entry. It must not gain another
+    # timeout merely for observing the close task completed above.
+    assert observations == 4
+    assert client.close_calls == 1
+
+    process.finish()
+    await wrapper.stop()
+    assert observations == 5
+    assert wrapper._retirements == []
+
+
+@pytest.mark.asyncio
+async def test_stop_reobserves_process_after_client_close_can_unblock_waiter(
+    monkeypatch,
+):
+    """A client close earns the one final reap observation it can unblock."""
+
+    monkeypatch.setattr(client_module, "_SUBPROCESS_STOP_TIMEOUT", 0.01)
+    process = _NeverReapedProcess()
+
+    class CloseUnblocksWaiter:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        async def shutdown(self) -> dict[str, object]:
+            return {}
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            process.finish()
+
+    client = CloseUnblocksWaiter()
+    wrapper = SubprocessIsolatedFeatureClient(
+        command=["unused"],
+        client=client,  # type: ignore[arg-type]
+        process=process,
+    )
+    observations = 0
+    original_wait_for_process = wrapper._wait_for_process
+
+    async def count_wait_observation(retirement):
+        nonlocal observations
+        observations += 1
+        return await original_wait_for_process(retirement)
+
+    monkeypatch.setattr(wrapper, "_wait_for_process", count_wait_observation)
+
+    await wrapper.stop()
+
+    assert observations == 4
+    assert client.close_calls == 1
+    assert process.wait_calls == 1
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
     assert wrapper._retirements == []
 
 
@@ -1190,6 +1396,61 @@ async def test_stop_closes_stdout_transport_held_by_external_client_reference():
 
 
 @pytest.mark.asyncio
+async def test_stop_signals_live_child_before_closing_retained_stdout_transport(
+    monkeypatch,
+):
+    """Proactor-safe retirement does not invalidate a live stdout pipe handle."""
+
+    monkeypatch.setattr(client_module, "_SUBPROCESS_STOP_TIMEOUT", 0.03)
+    events: list[str] = []
+    reader = _TransportOnlyReader()
+    reader._transport = _OrderedCloseTrackingTransport(events)
+    writer = _CloseTrackingWriter()
+    retained = client_module.IsolatedFeatureClient(reader, writer)
+    release_wait = asyncio.Event()
+
+    class Process:
+        def __init__(self) -> None:
+            self.returncode: int | None = None
+
+        async def wait(self) -> int:
+            events.append("wait-started")
+            await release_wait.wait()
+            events.append("wait-finished")
+            return self.returncode
+
+        def terminate(self) -> None:
+            events.append("terminate")
+            # A real subprocess transport can publish this before its retained
+            # waiter has completed its own cleanup.
+            self.returncode = 0
+            release_wait.set()
+
+        def kill(self) -> None:
+            raise AssertionError("terminate must allow the bounded reap")
+
+    async def successful_shutdown() -> dict[str, object]:
+        events.append("shutdown")
+        return {}
+
+    retained.shutdown = successful_shutdown  # type: ignore[method-assign]
+    process = Process()
+    wrapper = SubprocessIsolatedFeatureClient(
+        command=["unused"],
+        client=retained,
+        process=process,  # type: ignore[arg-type]
+    )
+
+    await wrapper.stop()
+
+    assert events.index("terminate") < events.index("wait-finished")
+    assert events.index("wait-finished") < events.index("stdout-close")
+    assert reader._transport.close_calls == 1
+    assert writer.close_calls == 1
+    assert wrapper._retirements == []
+
+
+@pytest.mark.asyncio
 async def test_stop_hard_bounds_cancellation_suppressing_client_phases(monkeypatch):
     """A deadline never waits for shutdown/close cancellation to finish."""
 
@@ -1524,6 +1785,112 @@ async def test_successful_close_clears_buffered_child_event_payloads():
 
 
 @pytest.mark.asyncio
+async def test_stop_releases_event_data_while_writer_close_remains_pending(
+    monkeypatch,
+):
+    """A wedged writer close retains the fence, not child event data."""
+
+    monkeypatch.setattr(client_module, "_SUBPROCESS_STOP_TIMEOUT", 0.03)
+    reader = _QueuedReader()
+    writer = _NonSettlingCloseWriter()
+    retained = client_module.IsolatedFeatureClient(reader, writer)
+    await retained.start()
+
+    class SecretPayload(dict):
+        pass
+
+    class Handler:
+        def __call__(self, params):
+            return None
+
+    payload = SecretPayload(token="event-secret-not-retained-by-pending-close")
+    handler = Handler()
+    payload_ref = weakref.ref(payload)
+    handler_ref = weakref.ref(handler)
+    retained._pending_notifications.append({"payload": payload})
+    # Seed retained state directly so registering the handler cannot schedule a
+    # buffered drain that releases the payload before close begins.
+    retained._event_handlers.append(handler)
+    del payload
+    del handler
+
+    async def successful_shutdown() -> dict[str, object]:
+        return {}
+
+    retained.shutdown = successful_shutdown  # type: ignore[method-assign]
+    wrapper = SubprocessIsolatedFeatureClient(
+        command=["unused"], client=retained, process=_ExitedProcess()
+    )
+
+    with pytest.raises(RuntimeError, match="retirement is unresolved"):
+        await wrapper.stop()
+    await asyncio.wait_for(writer.wait_started.wait(), timeout=1)
+
+    assert retained._close_task is not None and not retained._close_task.done()
+    assert not retained._pending_notifications
+    assert retained._event_handlers == []
+
+    # The direct inner-client API can still be reached through an external
+    # reference while the writer close is pending. It must not retain a handler
+    # offered after close has started.
+    late_handler = Handler()
+    late_handler_ref = weakref.ref(late_handler)
+    retained.on_event(late_handler)
+    del late_handler
+    gc.collect()
+    assert payload_ref() is None
+    assert handler_ref() is None
+    assert late_handler_ref() is None
+    assert retained._event_handlers == []
+
+    # Wrapper registrations remain durable for the next generation even
+    # though this retired inner client ignores its direct registration.
+    future_handler = Handler()
+    wrapper.on_event(future_handler)
+    assert wrapper._handlers == [future_handler]
+    with pytest.raises(RuntimeError, match="retirement is in progress"):
+        await wrapper.start()
+
+    writer.release.set()
+    await wrapper.stop()
+    assert wrapper._retirements == []
+
+    replacement_process = _GracefulProcess()
+    replacement_reader = _QueuedReader()
+    replacement_writer = _CloseTrackingWriter()
+
+    async def spawn(*args, **kwargs):
+        replacement_process.stdin = replacement_writer
+        replacement_process.stdout = replacement_reader
+        return replacement_process
+
+    async def initialize(self, *args, **kwargs):
+        return {}
+
+    async def health(self):
+        return {"ready": True}
+
+    async def list_tools(self):
+        return []
+
+    async def shutdown(self):
+        return {}
+
+    monkeypatch.setattr(client_module.asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(client_module.IsolatedFeatureClient, "initialize", initialize)
+    monkeypatch.setattr(client_module.IsolatedFeatureClient, "health", health)
+    monkeypatch.setattr(client_module.IsolatedFeatureClient, "list_tools", list_tools)
+    monkeypatch.setattr(client_module.IsolatedFeatureClient, "shutdown", shutdown)
+
+    try:
+        await wrapper.start()
+        assert wrapper.client is not None
+        assert wrapper.client._event_handlers == [future_handler]
+    finally:
+        await wrapper.stop()
+
+
+@pytest.mark.asyncio
 async def test_close_propagates_same_turn_read_completion_cancellation():
     """A read done callback cannot make close swallow its caller cancellation."""
 
@@ -1696,8 +2063,7 @@ async def test_stop_closes_paused_stdout_pipe_held_by_retained_client(monkeypatc
         assert wrapper._retirements == []
     finally:
         if process.returncode is None:
-            process.kill()
-            await process.wait()
+            await _kill_and_reap_paused_subprocess(process, retained)
 
 
 @pytest.mark.asyncio
@@ -1716,7 +2082,10 @@ async def test_windows_real_subprocess_is_terminated_and_reaped(monkeypatch):
         stdout=asyncio.subprocess.PIPE,
     )
     assert process.stdout is not None
-    assert await asyncio.wait_for(process.stdout.readline(), timeout=1) == b"ready\n"
+    assert await asyncio.wait_for(process.stdout.readline(), timeout=1) in (
+        b"ready\n",
+        b"ready\r\n",
+    )
     wrapper = SubprocessIsolatedFeatureClient(command=["unused"], process=process)
 
     try:
@@ -1767,8 +2136,7 @@ async def test_windows_retained_stdout_buffer_is_disposed_before_reap(monkeypatc
         assert wrapper._retirements == []
     finally:
         if process.returncode is None:
-            process.kill()
-            await process.wait()
+            await _kill_and_reap_paused_subprocess(process, retained)
 
 
 @pytest.mark.asyncio
