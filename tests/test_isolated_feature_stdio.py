@@ -395,7 +395,10 @@ async def test_windows_reader_cancelled_asyncio_run_exits_without_waiting_for_wo
     stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=1)
 
     assert process.returncode == 0, stderr.decode()
-    assert stdout == b"bounded-daemon-reader-exit\n"
+    assert stdout in (
+        b"bounded-daemon-reader-exit\n",
+        b"bounded-daemon-reader-exit\r\n",
+    )
     assert stderr == b""
 
 
@@ -536,7 +539,10 @@ async def test_windows_writer_success_releases_references_while_open_and_idle():
     stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=1)
 
     assert process.returncode == 0, stderr.decode()
-    assert stdout == b"writer-success-references-released\n"
+    assert stdout in (
+        b"writer-success-references-released\n",
+        b"writer-success-references-released\r\n",
+    )
     assert stderr == b""
 
 
@@ -643,7 +649,10 @@ async def test_windows_writer_terminal_failure_releases_queued_references():
     stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=1)
 
     assert process.returncode == 0, stderr.decode()
-    assert stdout == b"writer-terminal-references-released\n"
+    assert stdout in (
+        b"writer-terminal-references-released\n",
+        b"writer-terminal-references-released\r\n",
+    )
     assert stderr == b""
 
 
@@ -724,7 +733,10 @@ async def test_windows_reader_close_releases_references_while_read_stays_blocked
     stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=1)
 
     assert process.returncode == 0, stderr.decode()
-    assert stdout == b"reader-blocked-references-released\n"
+    assert stdout in (
+        b"reader-blocked-references-released\n",
+        b"reader-blocked-references-released\r\n",
+    )
     assert stderr == b""
 
 
