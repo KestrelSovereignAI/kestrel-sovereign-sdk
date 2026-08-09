@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.35.1 — 2026-08-09
+
+### Fixed
+
+- Made isolated-feature startup and shutdown retain authoritative ownership of
+  child processes, process waits, client cleanup, event delivery, and hostile
+  cancellation paths until they settle or are safely fenced for a retry.
+- Ensured TERM/KILL escalation is bounded and one-time, stream disposal follows
+  process observation on Windows, and unresolved retirement cannot admit a
+  replacement or retain decoded event payloads and handler secrets.
+- Hardened SDK CI and PyPI publishing with Python 3.11–3.14 Linux/Windows
+  coverage, exact artifact tests, immutable tag/SHA validation, pinned actions
+  and build tooling, and a final non-OIDC release revalidation gate.
+
 ## 0.35.0 — 2026-08-03
 
 ### Added
@@ -43,7 +57,6 @@ All notable changes to this project are documented in this file.
   cannot enter agent-facing serialization.
 - The `kestrel_sovereign.inference_lease_providers` entry-point group constant
   and runtime-checkable provider protocol for external infrastructure packages.
-
 ## 0.33.0 — 2026-07-26
 
 ### Added

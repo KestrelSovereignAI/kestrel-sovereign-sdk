@@ -389,8 +389,14 @@ async def test_genuine_host_ingress_request_task_cancellation_still_propagates()
 @pytest.mark.parametrize(
     "result",
     [
-        {"secret": "override-result-secret", "invalid": float("nan")},
-        "override-result-secret" + "x" * MAX_HOST_INGRESS_PAYLOAD_BYTES,
+        pytest.param(
+            {"secret": "override-result-secret", "invalid": float("nan")},
+            id="non-json-object",
+        ),
+        pytest.param(
+            "override-result-secret" + "x" * MAX_HOST_INGRESS_PAYLOAD_BYTES,
+            id="oversized-string",
+        ),
     ],
 )
 async def test_host_ingress_override_results_are_validated_and_redacted(result):

@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import queue
 import sys
+import threading
+import weakref
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from functools import partial
 from inspect import isawaitable, iscoroutinefunction
-from typing import Any
+from typing import Any, BinaryIO
 
 from .context import _active_tool_execution_context, _ToolExecutionContextScope
 from .protocol import (
@@ -50,6 +55,384 @@ HostIngressHandler = Callable[
 ]
 
 
+class _ThreadedStdioReader:
+    """Async line reader for Windows inherited standard-input handles.
+
+    ``asyncio.create_subprocess_exec(..., stdin=PIPE, stdout=PIPE)`` gives a
+    Windows child regular inherited anonymous-pipe handles. They are valid for
+    synchronous file I/O, but are not guaranteed to be overlapped handles, so
+    Proactor ``connect_read_pipe`` rejects them with ``WinError 6``.
+
+    The one daemon worker is deliberately not asyncio's default executor. A
+    cancelled ``readline`` cannot interrupt a synchronous pipe read, and
+    ``asyncio.run`` waits for default-executor workers during teardown. Keeping
+    this owned worker daemonized means cancellation and process exit remain
+    bounded even if the parent leaves stdin open forever.
+    """
+
+    def __init__(self, stream: BinaryIO) -> None:
+        self._stream = stream
+        self._requests: queue.Queue[
+            tuple[
+                weakref.ReferenceType[asyncio.AbstractEventLoop],
+                weakref.ReferenceType[asyncio.Future[bytes]],
+            ]
+            | None
+        ] = queue.Queue()
+        self._state_lock = threading.Lock()
+        self._pending: dict[asyncio.Future[bytes], asyncio.AbstractEventLoop] = {}
+        self._thread: threading.Thread | None = None
+        self._closed = False
+
+    async def readline(self) -> bytes:
+        loop = asyncio.get_running_loop()
+        completion: asyncio.Future[bytes] = loop.create_future()
+        completion.add_done_callback(
+            partial(_forget_reader_completion, weakref.ref(self))
+        )
+
+        with self._state_lock:
+            if self._closed:
+                return b""
+            self._pending[completion] = loop
+            self._requests.put((weakref.ref(loop), weakref.ref(completion)))
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=_threaded_stdio_read_loop,
+                    args=(self._stream, self._requests),
+                    name="isolated-feature-stdio-reader",
+                    daemon=True,
+                )
+                self._thread.start()
+
+        # Do not let caller cancellation cancel the owned read completion. The
+        # worker remains its sole producer and can safely finish after this task
+        # has gone away.
+        return await asyncio.shield(completion)
+
+    def close(self) -> None:
+        """Stop accepting reads without closing a stream under an active read."""
+
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+            pending = tuple(self._pending.items())
+            self._pending.clear()
+            while True:
+                try:
+                    self._requests.get_nowait()
+                except queue.Empty:
+                    break
+            self._requests.put(None)
+        for completion, loop in pending:
+            self._resolve_result(loop, completion, b"")
+
+    def _forget_completion(self, completion: asyncio.Future[bytes]) -> None:
+        with self._state_lock:
+            self._pending.pop(completion, None)
+
+    @staticmethod
+    def _resolve_result(
+        loop: asyncio.AbstractEventLoop,
+        completion: asyncio.Future[bytes],
+        result: bytes,
+    ) -> None:
+        try:
+            loop.call_soon_threadsafe(_set_future_result, completion, result)
+        except RuntimeError:
+            # A daemon worker may finish only after asyncio.run() has closed
+            # its loop. There is then no remaining reader to notify.
+            return
+
+    @staticmethod
+    def _resolve_exception(
+        loop: asyncio.AbstractEventLoop,
+        completion: asyncio.Future[bytes],
+        error: BaseException,
+    ) -> None:
+        try:
+            loop.call_soon_threadsafe(_set_future_exception, completion, error)
+        except RuntimeError:
+            return
+
+
+class _ThreadedStdioWriter:
+    """StreamWriter-compatible serialized output for Windows inherited stdout.
+
+    Every drain owns a queued frame and its completion future. The daemon worker
+    is the only code that writes or closes ``stream``. In particular, a caller
+    cancelled while awaiting ``drain`` cannot release the service write lock and
+    let a later worker overlap or overtake its still-running write.
+
+    A write or flush error is terminal: even if the synchronous stream accepted
+    some bytes first, the JSON-RPC line framing can no longer be trusted. The
+    worker fences all queued drains under ``_state_lock`` before it reports the
+    error, so a concurrent sender either joins that failed set or observes the
+    terminal state before it can enqueue another frame.
+    """
+
+    def __init__(self, stream: BinaryIO) -> None:
+        self._stream = stream
+        self._pending = bytearray()
+        self._state_lock = threading.Lock()
+        self._jobs: queue.Queue[
+            tuple[
+                bytes,
+                asyncio.AbstractEventLoop | None,
+                asyncio.Future[None] | None,
+            ]
+            | None
+        ] = queue.Queue()
+        self._drains: dict[asyncio.Future[None], asyncio.AbstractEventLoop] = {}
+        self._closing = False
+        # A terminal wire is a classification, not an exception cache: a caught
+        # stream error can contain sensitive payloads and traceback references.
+        self._terminal_failure = False
+        self._thread = threading.Thread(
+            target=self._write_loop,
+            name="isolated-feature-stdio-writer",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def write(self, data: bytes) -> None:
+        with self._state_lock:
+            if self._terminal_failure:
+                raise _stdio_writer_terminal_error()
+            if self._closing:
+                raise ConnectionError("isolated feature stdio writer is closed")
+            self._pending.extend(data)
+
+    async def drain(self) -> None:
+        loop = asyncio.get_running_loop()
+        with self._state_lock:
+            if self._terminal_failure:
+                raise _stdio_writer_terminal_error()
+            if self._closing:
+                raise ConnectionError("isolated feature stdio writer is closed")
+            data = bytes(self._pending)
+            self._pending.clear()
+            if not data:
+                return
+            completion: asyncio.Future[None] = loop.create_future()
+            completion.add_done_callback(_consume_future_exception)
+            self._drains[completion] = loop
+            self._jobs.put((data, loop, completion))
+
+        # Shield the worker-owned completion from cancellation. A cancelled
+        # sender may stop awaiting it, but the queued frame remains ordered and
+        # the next drain is queued strictly behind it.
+        await asyncio.shield(completion)
+
+    def close(self) -> None:
+        """Queue a nonblocking close after every owned frame has finished."""
+
+        with self._state_lock:
+            if self._terminal_failure:
+                return
+            if self._closing:
+                return
+            self._closing = True
+            data = bytes(self._pending)
+            self._pending.clear()
+            if data:
+                # A StreamWriter caller normally drains after each write, but
+                # close must not silently discard an already accepted frame.
+                self._jobs.put((data, None, None))
+            self._jobs.put(None)
+
+    def _write_loop(self) -> None:
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                break
+            data, loop, completion = job
+            try:
+                self._write_and_flush(data)
+            except BaseException:  # noqa: BLE001 -- report I/O failures
+                failed_drains = self._latch_terminal_failure()
+                for failed_completion, failed_loop in failed_drains:
+                    _set_future_exception_threadsafe(
+                        failed_loop,
+                        failed_completion,
+                        _stdio_writer_terminal_error(),
+                    )
+                # The failed job can contain a partially framed RPC payload.
+                # Do not retain it while the worker closes the stream.
+                job = None
+                data = b""
+                loop = None
+                completion = None
+                failed_drains = ()
+                failed_completion = None
+                failed_loop = None
+                break
+            else:
+                if loop is not None and completion is not None:
+                    with self._state_lock:
+                        self._drains.pop(completion, None)
+                    _set_future_result_threadsafe(loop, completion)
+                # Queue.get() can block forever while the writer remains open.
+                # Do not let this worker frame pin a successfully completed
+                # drain or its payload for that idle lifetime.
+                job = None
+                data = b""
+                loop = None
+                completion = None
+        try:
+            self._stream.close()
+        except BaseException:  # noqa: BLE001 -- daemon teardown has no retry owner
+            # Closing is a best-effort teardown operation. There is no waiting
+            # caller at this point, and propagating from a daemon thread is only
+            # noisy; the stream has no safer owner left to retry it.
+            return
+
+    def _latch_terminal_failure(
+        self,
+    ) -> tuple[tuple[asyncio.Future[None], asyncio.AbstractEventLoop], ...]:
+        """Fence queued frames and return every drain that must fail."""
+
+        with self._state_lock:
+            self._terminal_failure = True
+            self._pending.clear()
+            failed_drains = tuple(self._drains.items())
+            self._drains.clear()
+            while True:
+                try:
+                    self._jobs.get_nowait()
+                except queue.Empty:
+                    break
+            return failed_drains
+
+    def _write_and_flush(self, data: bytes) -> None:
+        view = memoryview(data)
+        while view:
+            written = self._stream.write(view)
+            if written is None:
+                raise BlockingIOError("isolated feature stdio writer would block")
+            if written == 0:
+                raise BrokenPipeError("isolated feature stdio writer closed")
+            view = view[written:]
+        self._stream.flush()
+
+
+def _set_future_result(future: asyncio.Future[Any], result: Any) -> None:
+    if not future.done():
+        future.set_result(result)
+
+
+def _set_future_exception(future: asyncio.Future[Any], error: BaseException) -> None:
+    if not future.done():
+        future.set_exception(error)
+
+
+def _set_future_result_threadsafe(
+    loop: asyncio.AbstractEventLoop, completion: asyncio.Future[None]
+) -> None:
+    try:
+        loop.call_soon_threadsafe(_set_future_result, completion, None)
+    except RuntimeError:
+        return
+
+
+def _set_future_exception_threadsafe(
+    loop: asyncio.AbstractEventLoop,
+    completion: asyncio.Future[None],
+    error: BaseException,
+) -> None:
+    try:
+        loop.call_soon_threadsafe(_set_future_exception, completion, error)
+    except RuntimeError:
+        return
+
+
+def _consume_future_exception(completion: asyncio.Future[Any]) -> None:
+    """Mark an abandoned worker failure observed without changing await semantics."""
+
+    if completion.cancelled():
+        return
+    completion.exception()
+
+
+def _stdio_writer_terminal_error() -> ConnectionError:
+    """Return a fresh, payload-free error for a permanently unusable wire."""
+
+    return ConnectionError("isolated feature stdio writer has a terminal I/O failure")
+
+
+def _forget_reader_completion(
+    reader_ref: weakref.ReferenceType[_ThreadedStdioReader],
+    completion: asyncio.Future[bytes],
+) -> None:
+    """Drop a finished read without a future callback retaining its reader."""
+
+    reader = reader_ref()
+    if reader is not None:
+        reader._forget_completion(completion)
+
+
+def _threaded_stdio_read_loop(
+    stream: BinaryIO,
+    requests: queue.Queue[
+        tuple[
+            weakref.ReferenceType[asyncio.AbstractEventLoop],
+            weakref.ReferenceType[asyncio.Future[bytes]],
+        ]
+        | None
+    ],
+) -> None:
+    """Read in a daemon without retaining a reader, loop, or completion."""
+
+    while (request := requests.get()) is not None:
+        loop_ref, completion_ref = request
+        try:
+            # Keep only weak refs while this potentially permanent read blocks.
+            line = stream.readline()
+        except BaseException as error:  # noqa: BLE001 -- surface stream failures
+            _resolve_weak_reader_exception(loop_ref, completion_ref, error)
+        else:
+            _resolve_weak_reader_result(loop_ref, completion_ref, line)
+        line = b""
+
+
+def _resolve_weak_reader_result(
+    loop_ref: weakref.ReferenceType[asyncio.AbstractEventLoop],
+    completion_ref: weakref.ReferenceType[asyncio.Future[bytes]],
+    result: bytes,
+) -> None:
+    loop = loop_ref()
+    completion = completion_ref()
+    if loop is not None and completion is not None:
+        _ThreadedStdioReader._resolve_result(loop, completion, result)
+
+
+def _resolve_weak_reader_exception(
+    loop_ref: weakref.ReferenceType[asyncio.AbstractEventLoop],
+    completion_ref: weakref.ReferenceType[asyncio.Future[bytes]],
+    error: BaseException,
+) -> None:
+    loop = loop_ref()
+    completion = completion_ref()
+    if loop is not None and completion is not None:
+        _ThreadedStdioReader._resolve_exception(loop, completion, error)
+
+
+def _open_private_wire() -> BinaryIO:
+    """Duplicate stdout for RPC framing without leaking it into descendants."""
+
+    wire_fd = os.dup(1)
+    try:
+        # ``os.dup`` is inheritable on Windows. The wire is a private service
+        # resource, never an input for a feature-launched descendant.
+        os.set_inheritable(wire_fd, False)
+        return os.fdopen(wire_fd, "wb", buffering=0)
+    except BaseException:
+        with suppress(OSError):
+            os.close(wire_fd)
+        raise
+
+
 def _is_async_callable(handler: ToolHandler) -> bool:
     """True if calling ``handler`` returns a coroutine to await.
 
@@ -61,8 +444,7 @@ def _is_async_callable(handler: ToolHandler) -> bool:
 
     if iscoroutinefunction(handler):
         return True
-    call = getattr(handler, "__call__", None)
-    return call is not None and iscoroutinefunction(call)
+    return callable(handler) and iscoroutinefunction(handler.__call__)
 
 
 class IsolatedFeatureService:
@@ -380,26 +762,54 @@ class IsolatedFeatureService:
     async def run_stdio(self) -> None:
         """Run the service on process stdin/stdout."""
 
-        reader = asyncio.StreamReader()
-        loop = asyncio.get_running_loop()
-        protocol = asyncio.StreamReaderProtocol(reader)
-        await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
         # Claim a PRIVATE duplicate of the real stdout fd for the JSON-RPC wire,
         # then repoint the process's stdout (fd 1 and sys.stdout) at stderr.
         # After this, a stray print(), C-extension banner, or dependency
         # deprecation notice written to stdout lands on the inherited stderr as
         # a harmless log line instead of corrupting protocol framing and killing
         # the connection. The protocol owns a fd nothing else can reach.
-        wire_fd = os.dup(1)
-        wire = os.fdopen(wire_fd, "wb", buffering=0)
-        os.dup2(2, 1)
-        sys.stdout = sys.stderr
-        write_transport, write_protocol = await loop.connect_write_pipe(
-            asyncio.streams.FlowControlMixin,
-            wire,
-        )
-        writer = asyncio.StreamWriter(write_transport, write_protocol, reader, loop)
-        await self.serve(reader, writer)
+        wire = _open_private_wire()
+        writer: Any | None = None
+        reader: Any | None = None
+        try:
+            os.dup2(2, 1)
+            sys.stdout = sys.stderr
+            if sys.platform == "win32":
+                # See _ThreadedStdioReader: inherited child pipe handles are
+                # not Proactor-ready. The duplicate remains private to the RPC
+                # wire, and is closed below after the service has stopped.
+                reader = _ThreadedStdioReader(sys.stdin.buffer)
+                writer = _ThreadedStdioWriter(wire)
+            else:
+                reader = asyncio.StreamReader()
+                loop = asyncio.get_running_loop()
+                protocol = asyncio.StreamReaderProtocol(reader)
+                await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
+                write_transport, write_protocol = await loop.connect_write_pipe(
+                    asyncio.streams.FlowControlMixin,
+                    wire,
+                )
+                writer = asyncio.StreamWriter(
+                    write_transport, write_protocol, reader, loop
+                )
+            await self.serve(reader, writer)
+        finally:
+            # ``wait_closed`` is intentionally not awaited: a parent that has
+            # stopped consuming output must not make child shutdown unbounded.
+            # Closing the private duplicate releases the descriptor in either
+            # branch, including a setup failure before a StreamWriter exists.
+            if isinstance(reader, _ThreadedStdioReader):
+                reader.close()
+            close = getattr(writer, "close", None)
+            try:
+                if close is not None:
+                    close()
+            finally:
+                # The Windows writer owns ``wire`` until its daemon worker has
+                # flushed every queued frame and closed it. POSIX transports do
+                # not use that worker and retain the original eager cleanup.
+                if not isinstance(writer, _ThreadedStdioWriter) and not wire.closed:
+                    wire.close()
 
     async def _handle_request(self, request: JsonRpcRequest) -> None:
         try:
@@ -432,7 +842,7 @@ class IsolatedFeatureService:
                     error=JsonRpcError(code=-32602, message="host ingress failed"),
                 )
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- serialize handler failures
             await self._send(
                 JsonRpcResponse(
                     id=request.id,
