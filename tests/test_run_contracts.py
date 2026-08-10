@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 
 from kestrel_sdk.operator import (
+    ARTIFACT_READ_ACTION,
     ArtifactAuthorizationAction,
     ArtifactRecord,
     ExecutionTargetReference,
@@ -15,8 +16,12 @@ from kestrel_sdk.operator import (
     OperatorAuthorizationError,
     OperatorContext,
     RUN_ATTACH_ACTION,
+    RUN_CANCEL_ACTION,
     RUN_LAUNCH_ACTION,
+    RUN_PAUSE_ACTION,
     RUN_READ_ACTION,
+    RUN_RESUME_ACTION,
+    RUN_RETRY_ACTION,
     RunAttempt,
     RunConflictError,
     RunControl,
@@ -41,11 +46,11 @@ def _context(**overrides: object) -> OperatorContext:
         "principal_id": "principal-1",
         "tenant_id": "tenant-1",
         "granted_actions": {
-            "run.launch",
-            "run.read",
-            "run.attach",
-            "run.pause",
-            "artifact.read",
+            RUN_LAUNCH_ACTION,
+            RUN_READ_ACTION,
+            RUN_ATTACH_ACTION,
+            RUN_PAUSE_ACTION,
+            ARTIFACT_READ_ACTION,
         },
         "granted_capabilities": {"build.execute"},
         "permitted_boundary_ids": {"workspace-1"},
@@ -118,7 +123,7 @@ def test_launch_authorization_binds_all_trusted_authority() -> None:
     ).authorize(_context(acting_agent_id="agent-7"), at=NOW)
 
     failures = [
-        (_launch(), _context(granted_actions={"run.read"})),
+        (_launch(), _context(granted_actions={RUN_READ_ACTION})),
         (_launch(tenant_id="tenant-2"), _context()),
         (_launch(target=_target(boundary_id="workspace-2")), _context()),
         (_launch(target=_target(capability="deploy.execute")), _context()),
@@ -177,6 +182,43 @@ def test_run_models_are_frozen_and_correlate_attempt_and_external_job() -> None:
         RunRecord(launch, RunState.RUNNING, NOW, sequence=-1)
 
 
+def test_resolved_run_authorization_rechecks_durable_launch_scope() -> None:
+    record = RunRecord(_launch(), RunState.RUNNING, NOW)
+
+    record.authorize(_context(), RUN_READ_ACTION, at=NOW)
+    failures = (
+        _context(granted_actions={RUN_ATTACH_ACTION}),
+        _context(permitted_boundary_ids={"workspace-2"}),
+        _context(granted_capabilities={"deploy.execute"}),
+    )
+    for context in failures:
+        with pytest.raises(OperatorAuthorizationError):
+            record.authorize(context, RUN_READ_ACTION, at=NOW)
+
+    cross_tenant_with_other_denials = _context(
+        tenant_id="tenant-2",
+        granted_actions=frozenset(),
+        granted_capabilities=frozenset(),
+        permitted_boundary_ids=frozenset(),
+        expires_at=NOW,
+    )
+    with pytest.raises(RunNotFoundError, match="run not found"):
+        record.authorize(cross_tenant_with_other_denials, RUN_READ_ACTION, at=NOW)
+
+
+def test_resolved_run_tenant_mismatch_matches_tenant_scoped_absence() -> None:
+    record = RunRecord(_launch(), RunState.RUNNING, NOW)
+
+    with pytest.raises(RunNotFoundError) as direct_error:
+        record.authorize(
+            _context(tenant_id="tenant-2"), RUN_READ_ACTION, at=NOW
+        )
+
+    absence_error = RunNotFoundError("run not found")
+    assert type(direct_error.value) is type(absence_error)
+    assert str(direct_error.value) == str(absence_error)
+
+
 def test_terminal_state_and_separate_control_and_artifact_actions() -> None:
     assert {state for state in RunState if state.is_terminal()} == {
         RunState.SUCCEEDED,
@@ -190,29 +232,34 @@ def test_terminal_state_and_separate_control_and_artifact_actions() -> None:
         RunControlAction.RETRY,
     }
     assert set(ArtifactAuthorizationAction) == {ArtifactAuthorizationAction.READ}
+    assert ArtifactAuthorizationAction.READ.value == ARTIFACT_READ_ACTION
     assert RUN_ATTACH_ACTION == "run.attach"
+    assert RUN_CANCEL_ACTION == "run.cancel"
     assert RUN_LAUNCH_ACTION == "run.launch"
+    assert RUN_PAUSE_ACTION == "run.pause"
     assert RUN_READ_ACTION == "run.read"
+    assert RUN_RESUME_ACTION == "run.resume"
+    assert RUN_RETRY_ACTION == "run.retry"
     assert {
         action: action.required_action for action in RunControlAction
     } == {
-        RunControlAction.PAUSE: "run.pause",
-        RunControlAction.RESUME: "run.resume",
-        RunControlAction.CANCEL: "run.cancel",
-        RunControlAction.RETRY: "run.retry",
+        RunControlAction.PAUSE: RUN_PAUSE_ACTION,
+        RunControlAction.RESUME: RUN_RESUME_ACTION,
+        RunControlAction.CANCEL: RUN_CANCEL_ACTION,
+        RunControlAction.RETRY: RUN_RETRY_ACTION,
     }
     control = RunControl("run-1", RunControlAction.PAUSE, "pause-request-1")
     assert control.idempotency_key == "pause-request-1"
     assert control.idempotency_scope("tenant-1") == (
         "tenant-1",
         "run-1",
-        "run.pause",
+        RUN_PAUSE_ACTION,
         None,
         "pause-request-1",
     )
     assert _launch().idempotency_scope("tenant-1") == (
         "tenant-1",
-        "run.launch",
+        RUN_LAUNCH_ACTION,
         "launch-request-1",
     )
     with pytest.raises(ValueError):
@@ -231,7 +278,7 @@ def test_control_expected_sequence_is_validated_and_outside_key_scope() -> None:
     assert control.idempotency_scope("tenant-1") == (
         "tenant-1",
         "run-1",
-        "run.pause",
+        RUN_PAUSE_ACTION,
         None,
         "pause-request-1",
     )
@@ -258,16 +305,16 @@ def test_retry_requires_stage_and_control_authorization_is_exact() -> None:
     assert retry.idempotency_scope("tenant-1") == (
         "tenant-1",
         "run-1",
-        "run.retry",
+        RUN_RETRY_ACTION,
         "compile",
         "retry-request-1",
     )
-    retry.authorize(_context(granted_actions={"run.retry"}), at=NOW)
+    retry.authorize(_context(granted_actions={RUN_RETRY_ACTION}), at=NOW)
     with pytest.raises(OperatorAuthorizationError):
-        retry.authorize(_context(granted_actions={"run.pause"}), at=NOW)
+        retry.authorize(_context(granted_actions={RUN_PAUSE_ACTION}), at=NOW)
     with pytest.raises(OperatorAuthorizationError, match="fresh"):
         retry.authorize(
-            _context(granted_actions={"run.retry"}),
+            _context(granted_actions={RUN_RETRY_ACTION}),
             at=datetime(2026, 8, 10, 12, 15, tzinfo=UTC),
         )
     with pytest.raises(ValueError, match="required"):
@@ -275,6 +322,20 @@ def test_retry_requires_stage_and_control_authorization_is_exact() -> None:
     with pytest.raises(ValueError, match="only for retry"):
         RunControl(
             "run-1", RunControlAction.PAUSE, "pause-request-2", stage_id="compile"
+        )
+
+
+def test_control_authorize_is_only_the_pre_resolution_gate() -> None:
+    control = RunControl("run-1", RunControlAction.PAUSE, "pause-request-1")
+    wrong_boundary = _context(
+        granted_actions={RUN_PAUSE_ACTION},
+        permitted_boundary_ids={"workspace-2"},
+    )
+
+    control.authorize(wrong_boundary, at=NOW)
+    with pytest.raises(OperatorAuthorizationError, match="boundary"):
+        RunRecord(_launch(), RunState.RUNNING, NOW).authorize(
+            wrong_boundary, control.action.required_action, at=NOW
         )
 
 
@@ -288,6 +349,11 @@ def test_run_query_and_page_are_bounded_and_cursor_based() -> None:
     assert query.states == frozenset({RunState.RUNNING})
     assert query.kinds == frozenset({"build"})
     assert page.records == (record,)
+    with pytest.raises(ValueError, match="duplicate run_id"):
+        RunPage((record, record))
+    divergent = RunRecord(_launch(), RunState.SUCCEEDED, NOW, sequence=1)
+    with pytest.raises(ValueError, match="duplicate run_id"):
+        RunPage((record, divergent))
     with pytest.raises(ValueError, match="between"):
         RunQuery(limit=101)
     with pytest.raises(ValueError, match="cursor"):
@@ -359,6 +425,19 @@ def test_artifact_copies_and_deeply_freezes_json_metadata() -> None:
         _artifact(metadata={"bad": object()})
 
 
+def test_artifact_with_nested_metadata_is_hashable_by_value() -> None:
+    artifact = _artifact(
+        metadata={"nested": {"items": [1, {"passed": True}]}, "label": "ok"}
+    )
+    equal = _artifact(
+        metadata={"label": "ok", "nested": {"items": [1, {"passed": True}]}}
+    )
+
+    assert artifact == equal
+    assert hash(artifact) == hash(equal)
+    assert {artifact, equal} == {artifact}
+
+
 @pytest.mark.parametrize(
     "metadata",
     [
@@ -404,21 +483,18 @@ class _FixtureRunService:
         self.attempts: dict[tuple[str, str, str], tuple[RunAttempt, ...]] = {}
         self.artifacts: dict[tuple[str, str], ArtifactRecord] = {}
 
-    @staticmethod
-    def _authorize_read(context: OperatorContext) -> None:
-        context.require_fresh(NOW)
-        context.require_action(RUN_READ_ACTION)
-
-    @staticmethod
-    def _authorize_attach(context: OperatorContext) -> None:
-        context.require_fresh(NOW)
-        context.require_action(RUN_ATTACH_ACTION)
-
     def _get_visible_run(self, run_id: str, context: OperatorContext) -> RunRecord:
         try:
             return self.runs[(context.tenant_id, run_id)]
         except KeyError as error:
             raise RunNotFoundError("run not found") from error
+
+    def _get_authorized_run(
+        self, run_id: str, context: OperatorContext, action: str
+    ) -> RunRecord:
+        record = self._get_visible_run(run_id, context)
+        record.authorize(context, action, at=NOW)
+        return record
 
     async def launch_run(
         self, launch: RunLaunch, context: OperatorContext
@@ -440,18 +516,23 @@ class _FixtureRunService:
         return record
 
     async def get_run(self, run_id: str, context: OperatorContext) -> RunRecord:
-        self._authorize_read(context)
-        return self._get_visible_run(run_id, context)
+        return self._get_authorized_run(run_id, context, RUN_READ_ACTION)
 
     async def list_runs(
         self, query: RunQuery, context: OperatorContext
     ) -> RunPage:
-        self._authorize_read(context)
-        visible = tuple(
-            record
-            for (tenant_id, _), record in self.runs.items()
-            if tenant_id == context.tenant_id
-        )[: query.limit]
+        context.require_fresh(NOW)
+        context.require_action(RUN_READ_ACTION)
+        visible_records: list[RunRecord] = []
+        for (tenant_id, _), record in self.runs.items():
+            if tenant_id != context.tenant_id:
+                continue
+            try:
+                record.authorize(context, RUN_READ_ACTION, at=NOW)
+            except OperatorAuthorizationError:
+                continue
+            visible_records.append(record)
+        visible = tuple(visible_records[: query.limit])
         return RunPage(visible)
 
     async def list_stages(
@@ -461,10 +542,9 @@ class _FixtureRunService:
         *,
         limit: int = 100,
     ) -> tuple[RunStage, ...]:
-        self._authorize_read(context)
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
-        await self.get_run(run_id, context)
+        self._get_authorized_run(run_id, context, RUN_READ_ACTION)
         stages = self.stages.get((context.tenant_id, run_id), ())
         return tuple(sorted(stages, key=lambda stage: stage.stage_id))[:limit]
 
@@ -476,10 +556,9 @@ class _FixtureRunService:
         *,
         limit: int = 100,
     ) -> tuple[RunAttempt, ...]:
-        self._authorize_read(context)
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
-        await self.get_run(run_id, context)
+        self._get_authorized_run(run_id, context, RUN_READ_ACTION)
         attempts = self.attempts.get((context.tenant_id, run_id, stage_id), ())
         return tuple(sorted(attempts, key=lambda attempt: attempt.attempt))[:limit]
 
@@ -487,7 +566,9 @@ class _FixtureRunService:
         self, control: RunControl, context: OperatorContext
     ) -> RunRecord:
         control.authorize(context, at=NOW)
-        record = self._get_visible_run(control.run_id, context)
+        record = self._get_authorized_run(
+            control.run_id, context, control.action.required_action
+        )
         if (
             control.expected_sequence is not None
             and control.expected_sequence != record.sequence
@@ -498,27 +579,27 @@ class _FixtureRunService:
     async def attach_external_job(
         self, link: ExternalEngineJobLink, context: OperatorContext
     ) -> ExternalEngineJobLink:
-        self._authorize_attach(context)
-        self._get_visible_run(link.run_id, context)
+        self._get_authorized_run(link.run_id, context, RUN_ATTACH_ACTION)
         return link
 
     async def attach_artifact(
         self, artifact: ArtifactRecord, context: OperatorContext
     ) -> ArtifactRecord:
-        self._authorize_attach(context)
-        self._get_visible_run(artifact.run_id, context)
+        self._get_authorized_run(artifact.run_id, context, RUN_ATTACH_ACTION)
         self.artifacts[(context.tenant_id, artifact.artifact_id)] = artifact
         return artifact
 
     async def get_artifact(
         self, artifact_id: str, context: OperatorContext
     ) -> ArtifactRecord:
-        context.require_fresh(NOW)
-        context.require_action(ArtifactAuthorizationAction.READ.value)
         try:
-            return self.artifacts[(context.tenant_id, artifact_id)]
+            artifact = self.artifacts[(context.tenant_id, artifact_id)]
         except KeyError as error:
             raise RunNotFoundError("artifact not found") from error
+        self._get_authorized_run(
+            artifact.run_id, context, ARTIFACT_READ_ACTION
+        )
+        return artifact
 
 
 @pytest.mark.asyncio
@@ -565,7 +646,7 @@ async def test_run_service_fixture_enforces_freshness_and_each_action() -> None:
     )
     assert await service.apply_control(
         RunControl("run-1", RunControlAction.PAUSE, "pause-1"),
-        _context(granted_actions={"run.pause"}),
+        _context(granted_actions={RUN_PAUSE_ACTION}),
     ) == await service.get_run("run-1", context)
     assert await service.apply_control(
         RunControl(
@@ -574,7 +655,7 @@ async def test_run_service_fixture_enforces_freshness_and_each_action() -> None:
             "pause-2",
             expected_sequence=0,
         ),
-        _context(granted_actions={"run.pause"}),
+        _context(granted_actions={RUN_PAUSE_ACTION}),
     ) == await service.get_run("run-1", context)
     with pytest.raises(RunConflictError, match="sequence"):
         await service.apply_control(
@@ -584,7 +665,7 @@ async def test_run_service_fixture_enforces_freshness_and_each_action() -> None:
                 "pause-3",
                 expected_sequence=1,
             ),
-            _context(granted_actions={"run.pause"}),
+            _context(granted_actions={RUN_PAUSE_ACTION}),
         )
     with pytest.raises(ValueError, match="between"):
         await service.list_attempts("run-1", "compile", context, limit=101)
@@ -664,3 +745,64 @@ async def test_missing_and_cross_tenant_runs_share_typed_not_found_error() -> No
         await service.get_run("missing", _context())
     with pytest.raises(RunNotFoundError, match="run not found"):
         await service.get_run("run-1", _context(tenant_id="tenant-2"))
+    control_context = _context(granted_actions={RUN_PAUSE_ACTION})
+    with pytest.raises(RunNotFoundError, match="run not found"):
+        await service.apply_control(
+            RunControl("missing", RunControlAction.PAUSE, "pause-missing"),
+            control_context,
+        )
+    with pytest.raises(RunNotFoundError, match="run not found"):
+        await service.apply_control(
+            RunControl("run-1", RunControlAction.PAUSE, "pause-cross-tenant"),
+            _context(
+                tenant_id="tenant-2", granted_actions={RUN_PAUSE_ACTION}
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_post_launch_operations_deny_same_tenant_cross_boundary() -> None:
+    service = _FixtureRunService()
+    authorized = _context()
+    await service.launch_run(_launch(), authorized)
+    service.stages[("tenant-1", "run-1")] = (
+        RunStage("run-1", "compile", "command"),
+    )
+    service.attempts[("tenant-1", "run-1", "compile")] = (
+        RunAttempt("run-1", "compile", "attempt-1", 1),
+    )
+    artifact = _artifact()
+    await service.attach_artifact(artifact, authorized)
+    denied = _context(permitted_boundary_ids={"workspace-2"})
+
+    assert (await service.list_runs(RunQuery(), denied)).records == ()
+    operations = (
+        service.get_run("run-1", denied),
+        service.list_stages("run-1", denied),
+        service.list_attempts("run-1", "compile", denied),
+        service.apply_control(
+            RunControl("run-1", RunControlAction.PAUSE, "pause-boundary"),
+            denied,
+        ),
+        service.attach_external_job(
+            ExternalEngineJobLink(
+                "run-1",
+                "compile",
+                "attempt-1",
+                "generic-runner",
+                "job-1",
+            ),
+            denied,
+        ),
+        service.attach_artifact(
+            _artifact(
+                artifact_id="artifact-2",
+                href="/authorized/artifacts/artifact-2",
+            ),
+            denied,
+        ),
+        service.get_artifact("artifact-1", denied),
+    )
+    for operation in operations:
+        with pytest.raises(OperatorAuthorizationError, match="boundary"):
+            await operation

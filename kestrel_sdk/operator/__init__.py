@@ -20,14 +20,19 @@ from .targets import (
     ExecutionTargetResolver,
 )
 from .runs import (
+    ARTIFACT_READ_ACTION,
     ArtifactAuthorizationAction,
     ArtifactRecord,
     ExternalEngineJobLink,
     ImmutableJSON,
     JSONScalar,
     RUN_ATTACH_ACTION,
+    RUN_CANCEL_ACTION,
     RUN_LAUNCH_ACTION,
+    RUN_PAUSE_ACTION,
     RUN_READ_ACTION,
+    RUN_RESUME_ACTION,
+    RUN_RETRY_ACTION,
     RunAttempt,
     RunConflictError,
     RunControl,
@@ -44,6 +49,7 @@ from .runs import (
 )
 
 __all__ = [
+    "ARTIFACT_READ_ACTION",
     "CapabilityDescriptor",
     "ArtifactAuthorizationAction",
     "ArtifactRecord",
@@ -54,8 +60,12 @@ __all__ = [
     "ImmutableJSON",
     "JSONScalar",
     "RUN_ATTACH_ACTION",
+    "RUN_CANCEL_ACTION",
     "RUN_LAUNCH_ACTION",
+    "RUN_PAUSE_ACTION",
     "RUN_READ_ACTION",
+    "RUN_RESUME_ACTION",
+    "RUN_RETRY_ACTION",
     "MAX_OPERATOR_CONTEXT_LIFETIME",
     "OperatorAuthorizationError",
     "OperatorContext",

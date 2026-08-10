@@ -29,6 +29,7 @@ _CONTRIBUTION_EXPORTS = frozenset(
         "await_contribution_result",
         "normalize_setup_flow",
         "order_setup_step_registrations",
+        "validate_contribution_owner_uniqueness",
         "validate_feature_contributions",
     }
 )
@@ -55,6 +56,7 @@ if TYPE_CHECKING:  # pragma: no cover - static analysis only
         await_contribution_result,
         normalize_setup_flow,
         order_setup_step_registrations,
+        validate_contribution_owner_uniqueness,
         validate_feature_contributions,
     )
 
@@ -97,5 +99,6 @@ __all__ = [
     "await_contribution_result",
     "normalize_setup_flow",
     "order_setup_step_registrations",
+    "validate_contribution_owner_uniqueness",
     "validate_feature_contributions",
 ]

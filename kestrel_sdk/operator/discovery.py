@@ -137,9 +137,10 @@ class ServiceRegistration:
 
     Agent-scoped registrations require ``agent_id``. Host-scoped registrations
     reject one, preventing an accidental fallback between the two namespaces.
-    ``owner`` is the contributing feature's registered lifecycle identity;
-    Sovereign validates it before activation and retains this exact object for
-    teardown. The SDK neither owns nor starts/stops ``service``.
+    ``owner`` must equal the contributing feature's canonical
+    ``contribution_owner``; Sovereign validates it before activation and
+    retains that exact identity and this exact object for teardown. The SDK
+    neither owns nor starts/stops ``service``.
     """
 
     descriptor: ServiceDescriptor

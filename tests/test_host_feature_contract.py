@@ -11,6 +11,7 @@ import pytest
 
 from kestrel_sdk import HostContext, HostFeature, UIContributions
 from kestrel_sdk.features.base import Feature
+from kestrel_sdk.features import validate_feature_contributions
 from kestrel_sdk.storage.database import (
     DatabaseBackend,
     EngineTarget,
@@ -192,7 +193,9 @@ def test_declares_required_contract_methods():
 def test_name_and_capability_slugs():
     feature = ExampleHostFeature()
     assert feature.name == "fleet-observability"
-    assert feature.owner == "fleet-observability"
+    assert feature.contribution_owner == (
+        f"{ExampleHostFeature.__module__}:{ExampleHostFeature.__qualname__}"
+    )
     assert feature.capability == "fleet.observe"
     # Base defaults are sane / ungated.
     assert HostFeature.name == "host-feature"
@@ -213,6 +216,55 @@ def test_base_defaults_are_thin():
     assert bare.get_workflow_registrations() == ()
     assert bare.get_feature_permission_defaults() is None
     assert bare.get_setup_step_registrations() == ()
+    assert "Bare" in bare.contribution_owner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "legacy_owner",
+    ["Legacy Host Display Name", None, pytest.param(object(), id="object")],
+)
+async def test_host_contribution_owner_does_not_claim_legacy_owner(
+    legacy_owner: object,
+):
+    class OtherBare(HostFeature):
+        pass
+
+    class LegacyOwnerHost(HostFeature):
+        name = "Fleet Operations Display"
+
+        def __init__(self):
+            self.owner = legacy_owner
+
+        async def on_host_start(self, ctx: HostContext) -> None:
+            self.name = "later-valid-name"
+
+    bare = type("BareHost", (HostFeature,), {})()
+    other = OtherBare()
+    before_read = LegacyOwnerHost()
+    after_read = LegacyOwnerHost()
+    canonical = before_read.contribution_owner
+    await before_read.on_host_start(object())  # type: ignore[arg-type]
+    await after_read.on_host_start(object())  # type: ignore[arg-type]
+
+    assert "owner" not in HostFeature.__dict__
+    assert "BareHost" in bare.contribution_owner
+    assert "OtherBare" in other.contribution_owner
+    assert bare.contribution_owner != other.contribution_owner
+    assert before_read.owner is legacy_owner
+    assert after_read.owner is legacy_owner
+    assert "LegacyOwnerHost" in canonical
+    assert before_read.contribution_owner == canonical
+    assert after_read.contribution_owner == canonical
+    validate_feature_contributions(
+        canonical,
+        tool_names=(),
+        services=(),
+        wait_providers=(),
+        workflows=(),
+        permission_defaults=None,
+        setup_steps=(),
+    )
 
 
 def test_get_router_mounts_at_host_root():

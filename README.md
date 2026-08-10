@@ -127,6 +127,7 @@ from kestrel_sdk.features import (
     WaitProviderRegistration,
     WorkflowRegistration,
     normalize_setup_flow,
+    validate_contribution_owner_uniqueness,
     validate_feature_contributions,
 )
 ```
@@ -137,14 +138,29 @@ Agent features expose these through `get_service_registrations()`,
 `get_setup_step_registrations()`. Host features use the same methods, tied to
 host start/stop instead of agent enable/disable. Sovereign calls each method
 exactly once per enable or host-start transition, validates every collection
-and element with `validate_feature_contributions(feature.owner, tool_names=...)`,
-using the names from that feature's actual tools, and retains the exact
-returned registrations, identities, callables, and implementation objects for
-disable or host-stop teardown. A feature must therefore construct contributed
-objects once per instance and return instance-stable objects. It must declare
-the same lifecycle `owner` as the canonical validated `feature.owner`; a type
-mismatch, duplicate identity, or owner mismatch raises
-`ContributionContractError` and the transition fails without partial activation.
+and element with
+`validate_feature_contributions(feature.contribution_owner, tool_names=...)`,
+using the names from that feature's actual tools. The canonical
+`contribution_owner` defaults deterministically to the implementation class's
+module-qualified name, never to the mutable or inherited feature `name`. This
+distinguishes equal class names from independent packages and `_Foo` from
+`Foo`; unusual, nested, or overlong names receive a deterministic hash suffix
+and remain bounded stable tokens. A feature that needs an identity independent
+of code location may explicitly override the property with a stable token.
+Before registering anything, the runtime must collect the exact owners for the
+complete prospective set of simultaneously active agent and host features and
+call `validate_contribution_owner_uniqueness(...)`; any duplicate rejects the
+whole transition. It then retains those exact validated identities plus the
+exact returned registrations, callables, and implementation objects for the
+whole active lifecycle and uses them for disable or host-stop teardown. A
+feature must therefore construct contributed objects once per instance and
+return instance-stable objects. Every registration must declare the same
+lifecycle `owner` as `feature.contribution_owner`; a type mismatch, duplicate
+identity, duplicate active owner, or owner mismatch raises
+`ContributionContractError` and the transition fails without partial
+activation. The base classes do not define or intercept `owner`: existing
+subclasses may continue assigning any legacy value to `self.owner`, including
+display text, objects, or `None`, without affecting contribution identity.
 
 `ServiceRegistration`, `WaitProviderRegistration`, `WorkflowRegistration`,
 and `SetupStepRegistration` all carry that lifecycle owner. A workflow
@@ -215,11 +231,16 @@ transitions, and state races raise a typed conflict. Durable external-job and
 artifact attachments require `run.attach`; `run.read` authorizes only run,
 stage, and attempt reads, while artifact retrieval separately requires
 `artifact.read`. Retry preserves the durable run ID and creates (or replays) a
-stage attempt. Run discovery uses bounded `RunQuery`/`RunPage` cursors, and
-unavailable or unauthorized run IDs produce the same typed not-found result to
-avoid a cross-tenant existence oracle. Stage and attempt tuple listings are
-deterministically ordered and return only the first requested bounded result
-set; unlike run discovery, they currently expose no continuation cursor.
+stage attempt. Run discovery uses bounded `RunQuery`/`RunPage` cursors.
+`RunPage` stores at most 100 records and rejects every duplicate `run_id`, even
+when the repeated records are exactly equal. `RunRecord.authorize()` itself
+turns a tenant mismatch into the same typed `RunNotFoundError` used for
+tenant-scoped absence, so globally resolved IDs cannot create a cross-tenant
+existence oracle. For a tenant-visible record, freshness, action, boundary,
+and capability denials remain `OperatorAuthorizationError`. Stage and attempt
+tuple listings are deterministically ordered and return only the first
+requested bounded result set; unlike run discovery, they currently expose no
+continuation cursor.
 
 ## Host features (host/fleet scope)
 

@@ -24,7 +24,6 @@ from kestrel_sdk._validation import (
     frozen_tokens,
     non_empty_text,
     stable_token,
-    unique_tuple,
 )
 from .context import OperatorAuthorizationError, OperatorContext
 from .targets import ExecutionTargetReference
@@ -33,6 +32,11 @@ from .targets import ExecutionTargetReference
 RUN_LAUNCH_ACTION = "run.launch"
 RUN_READ_ACTION = "run.read"
 RUN_ATTACH_ACTION = "run.attach"
+RUN_PAUSE_ACTION = "run.pause"
+RUN_RESUME_ACTION = "run.resume"
+RUN_CANCEL_ACTION = "run.cancel"
+RUN_RETRY_ACTION = "run.retry"
+ARTIFACT_READ_ACTION = "artifact.read"
 
 
 class RunConflictError(RuntimeError):
@@ -86,13 +90,24 @@ class RunControlAction(str, Enum):
     def required_action(self) -> str:
         """Return the exact authorization action governing this control."""
 
-        return f"run.{self.value}"
+        return _RUN_CONTROL_AUTHORIZATION_ACTIONS[self]
 
 
 class ArtifactAuthorizationAction(str, Enum):
-    """Authorization actions for artifacts, separate from run controls."""
+    """Compatibility enum for artifact authorization actions.
 
-    READ = "artifact.read"
+    New code should use the canonical :data:`ARTIFACT_READ_ACTION` string.
+    """
+
+    READ = ARTIFACT_READ_ACTION
+
+
+_RUN_CONTROL_AUTHORIZATION_ACTIONS = {
+    RunControlAction.PAUSE: RUN_PAUSE_ACTION,
+    RunControlAction.RESUME: RUN_RESUME_ACTION,
+    RunControlAction.CANCEL: RUN_CANCEL_ACTION,
+    RunControlAction.RETRY: RUN_RETRY_ACTION,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +240,34 @@ class RunRecord:
 
         return self.launch.run_id
 
+    def authorize(
+        self,
+        context: OperatorContext,
+        action: str,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        """Authorize an operation against this resolved durable run.
+
+        Runtimes call this after lookup and before returning or mutating the
+        record or any related history, attachment, or artifact. A tenant
+        mismatch raises the same :class:`RunNotFoundError` used for
+        tenant-scoped absence, making the no-existence-oracle rule safe even
+        when a runtime resolves by globally unique ID. For a visible record,
+        freshness, action, boundary, and capability denials remain
+        :class:`OperatorAuthorizationError`.
+        """
+
+        if not isinstance(context, OperatorContext):
+            raise TypeError("context must be an OperatorContext")
+        stable_token(action, "action")
+        if not context.matches_tenant(self.launch.tenant_id):
+            raise RunNotFoundError("run not found")
+        context.require_fresh(at)
+        context.require_action(action)
+        context.require_boundary(self.launch.target.boundary_id)
+        context.require_capability(self.launch.target.capability)
+
 
 @dataclass(frozen=True, slots=True)
 class RunStage:
@@ -341,7 +384,15 @@ class RunControl:
     def authorize(
         self, context: OperatorContext, *, at: datetime | None = None
     ) -> None:
-        """Require a fresh context granting this exact control action."""
+        """Perform only the pre-resolution freshness and action check.
+
+        This is not complete run authorization. ``RunService.apply_control``
+        must call it before lookup, then resolve ``run_id`` in the trusted
+        tenant scope so missing and cross-tenant IDs share
+        :class:`RunNotFoundError`, and finally call
+        ``record.authorize(context, control.action.required_action)`` on the
+        resolved :class:`RunRecord` before reading or mutating run state.
+        """
 
         if not isinstance(context, OperatorContext):
             raise TypeError("context must be an OperatorContext")
@@ -377,7 +428,12 @@ class RunQuery:
 
 @dataclass(frozen=True, slots=True)
 class RunPage:
-    """One bounded page of authorized run records."""
+    """One bounded page of authorized records with unique ``run_id`` values.
+
+    ``records`` is stored as the exact normalized tuple and is limited to 100
+    entries. Any repeated ``run_id`` is invalid, including an exact duplicate
+    of the same record; pages never silently deduplicate runtime output.
+    """
 
     records: tuple[RunRecord, ...]
     next_cursor: str | None = None
@@ -395,8 +451,14 @@ class RunPage:
             raise ValueError("a run page must contain at most 100 records")
         if not all(isinstance(record, RunRecord) for record in normalized):
             raise TypeError("records must contain RunRecord values")
-        records = unique_tuple(normalized, "records")
-        object.__setattr__(self, "records", records)
+        run_ids: set[str] = set()
+        for record in normalized:
+            if record.run_id in run_ids:
+                raise ValueError(
+                    "records must not contain duplicate run_id values"
+                )
+            run_ids.add(record.run_id)
+        object.__setattr__(self, "records", normalized)
         if self.next_cursor is not None:
             if not isinstance(self.next_cursor, str):
                 raise TypeError("next_cursor must be a string or None")
@@ -460,19 +522,36 @@ class ArtifactRecord:
         _authorized_artifact_href(self.href, self.artifact_id)
         object.__setattr__(self, "metadata", _freeze_metadata(self.metadata))
 
+    def __hash__(self) -> int:
+        """Hash this immutable value model, including nested metadata."""
+
+        return hash(
+            (
+                self.artifact_id,
+                self.run_id,
+                self.type,
+                self.label,
+                self.media_type,
+                self.href,
+                _hashable_json(self.metadata),
+            )
+        )
+
 
 @runtime_checkable
 class RunService(Protocol):
     """Authorized asynchronous service for the durable operator run plane.
 
-    Every method must first validate context freshness and its explicit action
-    before reading or mutating durable state. ``launch_run`` calls
-    :meth:`RunLaunch.authorize`; run reads require :data:`RUN_READ_ACTION`;
-    ``attach_external_job`` and
-    ``attach_artifact`` require :data:`RUN_ATTACH_ACTION`; ``apply_control``
-    calls :meth:`RunControl.authorize`; and ``get_artifact`` requires
-    ``artifact.read``. Authorization is rechecked on every call and is never
-    inferred from possession of an opaque ID.
+    ``launch_run`` calls :meth:`RunLaunch.authorize`. Every post-launch method
+    resolves the record, then calls :meth:`RunRecord.authorize` with its exact
+    action before returning or mutating the run or related state. That helper
+    converts tenant mismatch to the same typed not-found result as
+    tenant-scoped absence. Run reads use :data:`RUN_READ_ACTION`,
+    attachments use :data:`RUN_ATTACH_ACTION`, controls use the relevant
+    ``RUN_*_ACTION`` constant, and artifact retrieval uses
+    :data:`ARTIFACT_READ_ACTION`. This rechecks freshness and the durable run's
+    tenant, boundary, and capability on every call; authority is never inferred
+    from possession of an opaque ID.
 
     Launch idempotency scope is ``(context.tenant_id, RUN_LAUNCH_ACTION,
     idempotency_key)``. Exact semantic replay returns the original record
@@ -483,9 +562,10 @@ class RunService(Protocol):
     A control's optional ``expected_sequence`` compare-and-set precondition is
     checked against current durable state for a new request and is excluded
     from its idempotency scope. Illegal controls and optimistic-concurrency
-    races raise :class:`RunConflictError`. Every absent or unauthorized run or
+    races raise :class:`RunConflictError`. Every absent or cross-tenant run or
     artifact raises the same :class:`RunNotFoundError` without exposing another
-    tenant's resource existence.
+    tenant's resource existence; other authorization denials retain their
+    explicit :class:`OperatorAuthorizationError` type.
 
     Durable workflow state, never telemetry, supplies run and stage state.
     Every state mutation advances ``RunRecord.sequence`` monotonically and
@@ -543,25 +623,31 @@ class RunService(Protocol):
     async def apply_control(
         self, control: RunControl, context: OperatorContext
     ) -> RunRecord:
-        """Apply an authorized idempotent compare-and-set control."""
+        """Authorize, tenant-resolve, record-authorize, and apply a control.
+
+        Call :meth:`RunControl.authorize` first, resolve in trusted tenant
+        scope with the no-oracle not-found behavior, then call
+        ``record.authorize(context, control.action.required_action)`` before
+        applying the idempotent compare-and-set transition.
+        """
         ...
 
     async def attach_external_job(
         self, link: ExternalEngineJobLink, context: OperatorContext
     ) -> ExternalEngineJobLink:
-        """Require ``run.attach`` and attach typed external correlation."""
+        """Require :data:`RUN_ATTACH_ACTION` and attach typed correlation."""
         ...
 
     async def attach_artifact(
         self, artifact: ArtifactRecord, context: OperatorContext
     ) -> ArtifactRecord:
-        """Require ``run.attach`` and attach immutable artifact metadata."""
+        """Require :data:`RUN_ATTACH_ACTION` and attach artifact metadata."""
         ...
 
     async def get_artifact(
         self, artifact_id: str, context: OperatorContext
     ) -> ArtifactRecord:
-        """Retrieve metadata after separate artifact-read authorization."""
+        """Retrieve metadata after :data:`ARTIFACT_READ_ACTION` authorization."""
         ...
 
 
@@ -689,6 +775,18 @@ def _freeze_metadata(value: Mapping[str, object]) -> Mapping[str, ImmutableJSON]
     return MappingProxyType(frozen)
 
 
+def _hashable_json(value: ImmutableJSON) -> object:
+    """Return an equality-consistent hashable representation of frozen JSON."""
+
+    if isinstance(value, Mapping):
+        return frozenset(
+            (key, _hashable_json(item)) for key, item in value.items()
+        )
+    if isinstance(value, tuple):
+        return tuple(_hashable_json(item) for item in value)
+    return value
+
+
 def _freeze_json(
     value: object, *, depth: int, budget: _MetadataBudget
 ) -> ImmutableJSON:
@@ -737,14 +835,19 @@ def _metadata_key(value: object, budget: _MetadataBudget) -> None:
 
 
 __all__ = [
+    "ARTIFACT_READ_ACTION",
     "ArtifactAuthorizationAction",
     "ArtifactRecord",
     "ExternalEngineJobLink",
     "ImmutableJSON",
     "JSONScalar",
     "RUN_ATTACH_ACTION",
+    "RUN_CANCEL_ACTION",
     "RUN_LAUNCH_ACTION",
+    "RUN_PAUSE_ACTION",
     "RUN_READ_ACTION",
+    "RUN_RESUME_ACTION",
+    "RUN_RETRY_ACTION",
     "RunAttempt",
     "RunConflictError",
     "RunControl",

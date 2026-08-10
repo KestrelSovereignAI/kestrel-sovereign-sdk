@@ -37,6 +37,7 @@ from kestrel_sdk.features.host_base import HostContext, HostFeature
 from kestrel_sdk.features.ui import UIContributions
 from kestrel_sdk.extensions import AppExtension
 from kestrel_sdk.operator import (
+    ARTIFACT_READ_ACTION,
     ArtifactAuthorizationAction,
     ArtifactRecord,
     CapabilityDescriptor,
@@ -50,8 +51,12 @@ from kestrel_sdk.operator import (
     OperatorAuthorizationError,
     OperatorContext,
     RUN_ATTACH_ACTION,
+    RUN_CANCEL_ACTION,
     RUN_LAUNCH_ACTION,
+    RUN_PAUSE_ACTION,
     RUN_READ_ACTION,
+    RUN_RESUME_ACTION,
+    RUN_RETRY_ACTION,
     RunAttempt,
     RunConflictError,
     RunControl,
@@ -75,6 +80,7 @@ from kestrel_sdk.operator import (
 
 __all__ = [
     "__version__",
+    "ARTIFACT_READ_ACTION",
     "TimelineProtocol",
     "EventProtocol",
     "PersonProtocol",
@@ -98,8 +104,12 @@ __all__ = [
     "OperatorAuthorizationError",
     "OperatorContext",
     "RUN_ATTACH_ACTION",
+    "RUN_CANCEL_ACTION",
     "RUN_LAUNCH_ACTION",
+    "RUN_PAUSE_ACTION",
     "RUN_READ_ACTION",
+    "RUN_RESUME_ACTION",
+    "RUN_RETRY_ACTION",
     "RunAttempt",
     "RunConflictError",
     "RunControl",

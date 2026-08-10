@@ -23,6 +23,7 @@ from kestrel_sdk.features import (
     await_contribution_result,
     normalize_setup_flow,
     order_setup_step_registrations,
+    validate_contribution_owner_uniqueness,
     validate_feature_contributions,
 )
 from kestrel_sdk.operator import (
@@ -88,6 +89,10 @@ _SECOND_SOURCE = SourceRegistration(
 class ExternalFixtureFeature(Feature):
     """Out-of-tree-style fixture importing no Sovereign implementation."""
 
+    @property
+    def contribution_owner(self) -> str:
+        return "fixture-feature"
+
     def __init__(self, agent: _Agent) -> None:
         super().__init__(agent)
         self.name = "fixture-feature"
@@ -98,16 +103,18 @@ class ExternalFixtureFeature(Feature):
                     "fixture.operator", "1.0.0", ServiceScope.AGENT
                 ),
                 self,
-                self.owner,
+                self.contribution_owner,
                 agent_id=self.agent.id,
             ),
         )
         self._wait_providers = (
-            WaitProviderRegistration(self.owner, provider.kind, provider),
+            WaitProviderRegistration(
+                self.contribution_owner, provider.kind, provider
+            ),
         )
         self._workflows = (
             WorkflowRegistration(
-                self.owner,
+                self.contribution_owner,
                 "fixture.workflow",
                 _workflow_actor,
                 (_SOURCE, _SECOND_SOURCE),
@@ -121,7 +128,7 @@ class ExternalFixtureFeature(Feature):
         )
         self._setup_steps = (
             SetupStepRegistration(
-                owner=self.owner,
+                owner=self.contribution_owner,
                 name="fixture",
                 step=_setup_step,
                 classification=SetupStepClassification.OPTIONAL,
@@ -173,20 +180,20 @@ def test_external_feature_can_expose_every_row_one_seam_via_sdk() -> None:
     permissions = feature.get_feature_permission_defaults()
 
     assert service.reference.agent_id == "agent-fixture"
-    assert service.owner == feature.owner
+    assert service.owner == feature.contribution_owner
     assert service.identity == (
-        feature.owner,
+        feature.contribution_owner,
         "fixture.operator",
         "1.0.0",
         "agent",
         "agent-fixture",
     )
     assert isinstance(wait.provider, Waitable)
-    assert wait.identity == (feature.owner, "fixture-run")
-    assert workflow.identity == (feature.owner, "fixture.workflow")
+    assert wait.identity == (feature.contribution_owner, "fixture-run")
+    assert workflow.identity == (feature.contribution_owner, "fixture.workflow")
     assert workflow.actor is _workflow_actor
     assert workflow.sources == (_SOURCE, _SECOND_SOURCE)
-    assert setup.identity == (feature.owner, "fixture")
+    assert setup.identity == (feature.contribution_owner, "fixture")
     assert setup.name == "fixture"
     assert setup.after == ("integrations",)
     assert permissions is not None
@@ -233,7 +240,7 @@ def test_owned_identity_supports_exact_deterministic_teardown() -> None:
     owned[other_owner.identity] = other_owner
 
     for identity in tuple(owned):
-        if identity[0] == feature.owner:
+        if identity[0] == feature.contribution_owner:
             del owned[identity]
 
     assert owned == {other_owner.identity: other_owner}
@@ -364,7 +371,7 @@ def test_setup_ordering_enforces_constraints_and_deterministic_ties() -> None:
 def test_runtime_validation_checks_types_owners_and_duplicate_identities() -> None:
     feature = ExternalFixtureFeature(_Agent())
     validated = validate_feature_contributions(
-        feature.owner,
+        feature.contribution_owner,
         tool_names=("fixture_status", "fixture_launch"),
         services=feature.get_service_registrations(),
         wait_providers=feature.get_wait_provider_registrations(),
@@ -377,7 +384,7 @@ def test_runtime_validation_checks_types_owners_and_duplicate_identities() -> No
     assert validated.services[0].service is feature
     with pytest.raises(ContributionContractError, match="must be returned as a tuple"):
         validate_feature_contributions(
-            feature.owner,
+            feature.contribution_owner,
             tool_names=(),
             services=list(feature.get_service_registrations()),
             wait_providers=(),
@@ -388,7 +395,7 @@ def test_runtime_validation_checks_types_owners_and_duplicate_identities() -> No
     wrong_owner = SetupStepRegistration("other-feature", "step", _setup_step)
     with pytest.raises(ContributionContractError, match="expected 'fixture-feature'"):
         validate_feature_contributions(
-            feature.owner,
+            feature.contribution_owner,
             tool_names=(),
             services=(),
             wait_providers=(),
@@ -399,7 +406,7 @@ def test_runtime_validation_checks_types_owners_and_duplicate_identities() -> No
     workflow = feature.get_workflow_registrations()[0]
     with pytest.raises(ContributionContractError, match="duplicate identity"):
         validate_feature_contributions(
-            feature.owner,
+            feature.contribution_owner,
             tool_names=(),
             services=(),
             wait_providers=(),
@@ -407,6 +414,20 @@ def test_runtime_validation_checks_types_owners_and_duplicate_identities() -> No
             permission_defaults=None,
             setup_steps=(),
         )
+
+
+def test_runtime_rejects_duplicate_owners_across_active_feature_set() -> None:
+    owners = ("package-a:Feature", "package-b:Feature", "explicit-owner")
+
+    assert validate_contribution_owner_uniqueness(owners) is owners
+    with pytest.raises(ContributionContractError, match="duplicate active feature"):
+        validate_contribution_owner_uniqueness(
+            ("package-a:Feature", "package-b:Other", "package-a:Feature")
+        )
+    with pytest.raises(ContributionContractError, match="iterable"):
+        validate_contribution_owner_uniqueness("one-owner")
+    with pytest.raises(ContributionContractError, match="stable token"):
+        validate_contribution_owner_uniqueness(("valid", "not valid"))
 
 
 @pytest.mark.parametrize(
@@ -433,7 +454,9 @@ def test_runtime_validation_rejects_every_bad_contribution_type(
     values[field] = bad_value
 
     with pytest.raises(ContributionContractError):
-        validate_feature_contributions("feature-owner", **values)
+        validate_feature_contributions(
+            contribution_owner="feature-owner", **values
+        )
 
 
 def test_validation_rejects_cross_workflow_source_name_collisions() -> None:
@@ -488,9 +511,90 @@ def test_base_feature_defaults_preserve_existing_subclasses() -> None:
             return "bare"
 
     feature = BareFeature(_Agent())
-    assert feature.owner == "BareFeature"
+    assert "BareFeature" in feature.contribution_owner
+    assert len(feature.contribution_owner) <= 256
     assert feature.get_service_registrations() == ()
     assert feature.get_wait_provider_registrations() == ()
     assert feature.get_workflow_registrations() == ()
     assert feature.get_feature_permission_defaults() is None
     assert feature.get_setup_step_registrations() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "legacy_owner",
+    ["Legacy Feature Display Name", None, pytest.param(object(), id="object")],
+)
+async def test_feature_contribution_owner_does_not_claim_legacy_owner(
+    legacy_owner: object,
+) -> None:
+    class LegacyOwnerFeature(Feature):
+        def __init__(self, agent: object) -> None:
+            super().__init__(agent)
+            self.owner = legacy_owner
+            self.name = "Legacy Feature Display Name"
+
+        async def initialize(self) -> None:
+            self.name = "later-valid-name"
+
+        @property
+        def tool_description(self) -> str:
+            return "legacy"
+
+    before_read = LegacyOwnerFeature(_Agent())
+    after_read = LegacyOwnerFeature(_Agent())
+    canonical = before_read.contribution_owner
+    await before_read.initialize()
+    await after_read.initialize()
+
+    assert "owner" not in Feature.__dict__
+    assert before_read.owner is legacy_owner
+    assert after_read.owner is legacy_owner
+    assert "LegacyOwnerFeature" in canonical
+    assert before_read.contribution_owner == canonical
+    assert after_read.contribution_owner == canonical
+    validate_feature_contributions(
+        canonical,
+        tool_names=(),
+        services=(),
+        wait_providers=(),
+        workflows=(),
+        permission_defaults=None,
+        setup_steps=(),
+    )
+
+
+def test_default_contribution_owner_is_module_qualified_and_collision_resistant(
+) -> None:
+    async def initialize(self) -> None:
+        pass
+
+    def tool_description(self) -> str:
+        return "fixture"
+
+    namespace = {
+        "initialize": initialize,
+        "tool_description": property(tool_description),
+    }
+    package_a_foo = type("Foo", (Feature,), {**namespace, "__module__": "package_a"})
+    package_b_foo = type("Foo", (Feature,), {**namespace, "__module__": "package_b"})
+    package_a_private_foo = type(
+        "_Foo", (Feature,), {**namespace, "__module__": "package_a"}
+    )
+    long_feature = type(
+        f"Feature{'x' * 300}",
+        (Feature,),
+        {**namespace, "__module__": "package_a"},
+    )
+
+    owners = (
+        package_a_foo(_Agent()).contribution_owner,
+        package_b_foo(_Agent()).contribution_owner,
+        package_a_private_foo(_Agent()).contribution_owner,
+        long_feature(_Agent()).contribution_owner,
+    )
+
+    assert owners[:3] == ("package_a:Foo", "package_b:Foo", "package_a:_Foo")
+    assert len(owners[3]) <= 256
+    assert "@" in owners[3]
+    assert validate_contribution_owner_uniqueness(owners) == owners

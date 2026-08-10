@@ -404,8 +404,45 @@ class FeatureContributionSet:
     setup_steps: tuple[SetupStepRegistration, ...]
 
 
+def validate_contribution_owner_uniqueness(
+    contribution_owners: object,
+) -> tuple[str, ...]:
+    """Validate the owners for one prospective simultaneously active set.
+
+    Row 2 must collect the exact ``contribution_owner`` from every agent and
+    host feature that would be active after a lifecycle transition, call this
+    helper before registering any contribution, and retain the returned tuple
+    with the active lifecycle state. Duplicate owners reject the complete
+    transition even when the feature classes or their contributions differ.
+    """
+
+    if isinstance(contribution_owners, (str, bytes)):
+        raise ContributionContractError(
+            "contribution owners must be an iterable of stable tokens"
+        )
+    try:
+        owners = tuple(contribution_owners)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise ContributionContractError(
+            "contribution owners must be an iterable of stable tokens"
+        ) from exc
+
+    seen: set[str] = set()
+    for owner in owners:
+        try:
+            stable_token(owner, "feature contribution_owner")
+        except (TypeError, ValueError) as exc:
+            raise ContributionContractError(str(exc)) from exc
+        if owner in seen:
+            raise ContributionContractError(
+                f"duplicate active feature contribution_owner: {owner!r}"
+            )
+        seen.add(owner)
+    return owners
+
+
 def validate_feature_contributions(
-    owner: str,
+    contribution_owner: str,
     *,
     tool_names: object,
     services: object,
@@ -418,15 +455,16 @@ def validate_feature_contributions(
 
     Row-2 calls each contribution method once per enable or host-start
     transition, passes the exact results here, and retains the returned
-    registrations plus implementation objects until teardown. Every declared
-    owner must equal the contributing feature's canonical ``feature.owner``
-    identity. Row 2 must supply the feature's actual tool names so permission
-    overrides cannot silently name nonexistent tools. Type, owner, and
-    duplicate failures raise :class:`ContributionContractError`.
+    canonical contribution identity, registrations, and implementation objects
+    until teardown. Every registration ``owner`` must equal the contributing
+    feature's exact, canonical ``feature.contribution_owner`` value. Row 2 must
+    supply the feature's actual tool names so permission overrides cannot
+    silently name nonexistent tools. Type, owner, and duplicate failures raise
+    :class:`ContributionContractError`.
     """
 
     try:
-        stable_token(owner, "contributing feature owner")
+        stable_token(contribution_owner, "feature contribution_owner")
     except (TypeError, ValueError) as exc:
         raise ContributionContractError(str(exc)) from exc
     try:
@@ -464,10 +502,10 @@ def validate_feature_contributions(
     ):
         identities: set[object] = set()
         for registration in registrations:
-            if registration.owner != owner:
+            if registration.owner != contribution_owner:
                 raise ContributionContractError(
                     f"{method_name} declared owner {registration.owner!r}; "
-                    f"expected {owner!r}"
+                    f"expected {contribution_owner!r}"
                 )
             if registration.identity in identities:
                 raise ContributionContractError(
@@ -529,5 +567,6 @@ __all__ = [
     "await_contribution_result",
     "normalize_setup_flow",
     "order_setup_step_registrations",
+    "validate_contribution_owner_uniqueness",
     "validate_feature_contributions",
 ]

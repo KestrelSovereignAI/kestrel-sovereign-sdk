@@ -34,7 +34,10 @@ from typing import (
 from kestrel_sdk.tools.base import ToolSchema, ToolParameter, ToolCategory, AgentTool
 from kestrel_sdk.a2a.agent_card import AgentCard, AgentSkill, AgentCapabilities
 from kestrel_sdk.a2a.types import Task, TaskState, TaskStatus, Artifact, DataPart, Message, TextPart
-from kestrel_sdk._validation import stable_token
+from kestrel_sdk.features._contribution_support import (
+    contribution_annotation as _contribution_annotation,
+    implementation_contribution_owner,
+)
 from kestrel_sdk.features.ui import UIContributions
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -193,6 +196,12 @@ class Feature(ABC):
     A Feature encapsulates a specific domain of functionality (e.g., Sovereignty, MCP, Models).
     It can expose methods as Tools to the agent, and can be called AS a tool by the orchestrator
     with its own LLM context (A2A pattern).
+
+    Before registering a prospective active feature set, Sovereign must reject
+    duplicate :attr:`contribution_owner` values with
+    ``validate_contribution_owner_uniqueness``. The base default is
+    module-qualified, but an explicit override remains responsible for being
+    unique among every simultaneously active agent and host feature.
     """
 
     # Node type used for persisting feature config in the knowledge graph.
@@ -204,13 +213,24 @@ class Feature(ABC):
         self.disabled_skills: set = set()
 
     @property
-    def owner(self) -> str:
-        """Return the canonical validated lifecycle contribution owner."""
+    def contribution_owner(self) -> str:
+        """Return the canonical validated lifecycle contribution owner.
 
-        candidate = self.name
-        if candidate == self.__class__.__name__:
-            candidate = candidate.strip("_")
-        return stable_token(candidate, "feature owner")
+        The default is derived from the implementation class's module and
+        qualified name, so independently developed packages and classes such
+        as ``Foo`` and ``_Foo`` do not collide. Unusual or overlong qualified
+        names receive a deterministic hash suffix while remaining a bounded
+        stable token. Subclasses that need a permanent identity independent of
+        code location may override this property and return a stable token.
+        Sovereign validates the value once per lifecycle transition and
+        retains that exact value with the exact returned contribution objects
+        through teardown.
+
+        ``owner`` is intentionally unrelated: it was historically an
+        unrestricted feature attribute and remains entirely subclass-owned.
+        """
+
+        return implementation_contribution_owner(self.__class__)
 
     # =========================================================================
     # Lifecycle Methods
@@ -269,16 +289,21 @@ class Feature(ABC):
         """
         return None
 
-    def get_service_registrations(self) -> ServiceContributions:
+    def get_service_registrations(
+        self,
+    ) -> _contribution_annotation("ServiceContributions"):
         """Return this feature's instance-stable service registrations.
 
         Sovereign calls this once per enable transition, validates every return
-        value and owner against this feature's registered identity, and retains
-        the exact registrations and service objects for disable teardown.
+        value and registration owner against this feature's exact
+        :attr:`contribution_owner`, and retains that identity plus the exact
+        registrations and service objects for disable teardown.
         """
         return ()
 
-    def get_wait_provider_registrations(self) -> WaitProviderContributions:
+    def get_wait_provider_registrations(
+        self,
+    ) -> _contribution_annotation("WaitProviderContributions"):
         """Return this feature's instance-stable wait-provider registrations.
 
         The runtime collects once per enable transition and retains the exact
@@ -286,7 +311,9 @@ class Feature(ABC):
         """
         return ()
 
-    def get_workflow_registrations(self) -> WorkflowContributions:
+    def get_workflow_registrations(
+        self,
+    ) -> _contribution_annotation("WorkflowContributions"):
         """Return this feature's instance-stable workflow registrations.
 
         The runtime collects once per enable transition and retains the exact
@@ -296,7 +323,7 @@ class Feature(ABC):
 
     def get_feature_permission_defaults(
         self,
-    ) -> Optional[FeaturePermissionDefaults]:
+    ) -> Optional[_contribution_annotation("FeaturePermissionDefaults")]:
         """Return this feature's permission defaults, or ``None``.
 
         Sovereign reads this once per enable transition and validates the
@@ -305,7 +332,9 @@ class Feature(ABC):
         """
         return None
 
-    def get_setup_step_registrations(self) -> SetupStepContributions:
+    def get_setup_step_registrations(
+        self,
+    ) -> _contribution_annotation("SetupStepContributions"):
         """Return this feature's instance-stable setup-step registrations.
 
         The runtime collects once per enable transition, validates declared

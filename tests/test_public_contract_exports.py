@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import subprocess
 import sys
 from typing import get_type_hints
@@ -15,6 +16,7 @@ from kestrel_sdk.features import Feature, HostFeature
 
 
 OPERATOR_EXPORTS = {
+    "ARTIFACT_READ_ACTION",
     "ArtifactAuthorizationAction",
     "ArtifactRecord",
     "CapabilityDescriptor",
@@ -28,8 +30,12 @@ OPERATOR_EXPORTS = {
     "OperatorAuthorizationError",
     "OperatorContext",
     "RUN_ATTACH_ACTION",
+    "RUN_CANCEL_ACTION",
     "RUN_LAUNCH_ACTION",
+    "RUN_PAUSE_ACTION",
     "RUN_READ_ACTION",
+    "RUN_RESUME_ACTION",
+    "RUN_RETRY_ACTION",
     "RunAttempt",
     "RunConflictError",
     "RunControl",
@@ -74,6 +80,7 @@ FEATURE_CONTRIBUTION_EXPORTS = {
     "await_contribution_result",
     "normalize_setup_flow",
     "order_setup_step_registrations",
+    "validate_contribution_owner_uniqueness",
     "validate_feature_contributions",
 }
 
@@ -139,8 +146,27 @@ class BlockFrameworkImports(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, BlockFrameworkImports())
 import kestrel_sdk
 import kestrel_sdk.features
-import kestrel_sdk.features.contributions
 import kestrel_sdk.operator
+assert blocked.isdisjoint(sys.modules)
+assert 'kestrel_sdk.features.contributions' not in sys.modules
+
+import inspect
+from typing import get_type_hints
+from kestrel_sdk.features import Feature, HostFeature
+
+methods = (
+    'get_service_registrations',
+    'get_wait_provider_registrations',
+    'get_workflow_registrations',
+    'get_feature_permission_defaults',
+    'get_setup_step_registrations',
+)
+for cls in (Feature, HostFeature):
+    for name in methods:
+        method = getattr(cls, name)
+        assert get_type_hints(method)['return'] is not None
+        assert inspect.signature(method, eval_str=True).return_annotation is not None
+assert 'kestrel_sdk.features.contributions' in sys.modules
 assert blocked.isdisjoint(sys.modules)
 """
 
@@ -179,6 +205,29 @@ def test_historic_base_module_ui_annotation_resolves_at_runtime() -> None:
     assert get_type_hints(HostFeature.get_ui_contributions)["return"] == (
         feature_contracts.UIContributions | None
     )
+
+
+def test_all_contribution_method_annotations_resolve_without_extra_globals() -> None:
+    expected = {
+        "get_service_registrations": feature_contracts.ServiceContributions,
+        "get_wait_provider_registrations": (
+            feature_contracts.WaitProviderContributions
+        ),
+        "get_workflow_registrations": feature_contracts.WorkflowContributions,
+        "get_feature_permission_defaults": (
+            feature_contracts.FeaturePermissionDefaults | None
+        ),
+        "get_setup_step_registrations": feature_contracts.SetupStepContributions,
+    }
+
+    for feature_class in (Feature, HostFeature):
+        for method_name, expected_return in expected.items():
+            method = getattr(feature_class, method_name)
+            assert get_type_hints(method)["return"] == expected_return
+            assert (
+                inspect.signature(method, eval_str=True).return_annotation
+                == expected_return
+            )
 
 
 class _LegacyFeature(Feature):
