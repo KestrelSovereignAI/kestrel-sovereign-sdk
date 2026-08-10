@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 112 tracked files (100 `.py`, 5 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 114 tracked files (102 `.py`, 5 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -197,6 +197,10 @@ Repo entry points and standard project files.
   - `def test_host_ingress_protocol_capability_and_boundary_validation()`; `async def test_non_ascii_host_ingress_names_fail_closed(name)`; `async def test_registered_ingress_is_capability_negotiated_and_tool_invisible()`; `async def test_sync_and_async_host_ingress_handlers_are_supported()`; `async def test_legacy_malformed_and_unknown_ingress_capabilities_fail_closed()`; `async def test_client_and_service_reject_malformed_or_oversized_payloads_safely()`; `async def test_host_ingress_errors_do_not_reflect_handler_or_payload_secrets(caplog)`; `async def test_cancelled_host_ingress_child_returns_generic_error_without_hanging(implementation)`; `…`
 - **tests/test_isolated_feature_robustness.py** — Robustness regressions for the isolated-feature runtime (review Wave 1).
   - `async def test_blocking_sync_handler_does_not_wedge_health()`; `async def test_read_loop_death_fails_inflight_requests()`; `async def test_request_after_read_loop_death_fails_fast()`; `async def test_close_during_inflight_request_does_not_hang()`; `async def test_wrapper_reattaches_event_handlers_after_restart()`
+- **tests/test_isolated_feature_stdio.py** — Adversarial regression tests for the isolated-feature stdio adapters.
+  - `async def test_cancelled_send_keeps_windows_frames_ordered_and_lossless()`; `async def test_windows_writer_close_waits_for_active_write_without_blocking()`; `async def test_windows_writer_handles_partial_writes_and_reports_terminal_failures()`; `async def test_windows_writer_partial_frame_failure_fences_queued_and_later_drains()`; `async def test_windows_reader_cancellation_never_uses_default_executor(monkeypatch)`; `async def test_windows_reader_cancelled_asyncio_run_exits_without_waiting_for_worker()`; `async def test_windows_writer_success_releases_references_while_open_and_idle()`; `async def test_windows_writer_terminal_failure_releases_queued_references()`; `…`
+- **tests/test_isolated_feature_stop.py** — Bounded, cancellation-safe subprocess retirement regressions (issue #66).
+  - `async def test_cancelled_stop_retains_detached_child_and_delivers_first_cancellation(monkeypatch)`; `async def test_stop_never_reaped_process_uses_only_signal_phase_observations(monkeypatch)`; `async def test_stop_does_not_reobserve_process_after_prior_close_task(monkeypatch)`; `async def test_stop_reobserves_process_after_client_close_can_unblock_waiter(monkeypatch)`; `async def test_stop_timeout_does_not_fence_start_that_settles_before_timeout_update(monkeypatch)`; `async def test_stop_preserves_nested_timeout_cancellation_counts(monkeypatch)`; `async def test_stop_nested_timeout_and_external_cancels_continue_after_catch(monkeypatch)`; `async def test_start_rejects_while_a_detached_child_has_unresolved_retirement(monkeypatch)`; `…`
 - **tests/test_llm_contract.py** — Tests for the LLM provider contract.
   - `class TestContractVersion`; `class TestToolCall`; `class TestLLMResponse`; `class TestModelCategory`; `class TestModelInfo`; `class TestProviderInfo`; `class TestProviderCapabilities`; `class TestBackendType`; `…`
 - **tests/test_payer_policy.py** — Tests for kestrel_sdk.payer_policy.
