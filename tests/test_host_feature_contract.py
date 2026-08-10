@@ -175,6 +175,11 @@ def test_declares_required_contract_methods():
         "on_host_stop",
         "resolve_host_engine_target",
         "get_ui_contributions",
+        "get_service_registrations",
+        "get_wait_provider_registrations",
+        "get_workflow_registrations",
+        "get_feature_permission_defaults",
+        "get_setup_step_registrations",
     ):
         assert hasattr(HostFeature, name), f"missing contract method: {name}"
 
@@ -187,6 +192,7 @@ def test_declares_required_contract_methods():
 def test_name_and_capability_slugs():
     feature = ExampleHostFeature()
     assert feature.name == "fleet-observability"
+    assert feature.owner == "fleet-observability"
     assert feature.capability == "fleet.observe"
     # Base defaults are sane / ungated.
     assert HostFeature.name == "host-feature"
@@ -202,6 +208,11 @@ def test_base_defaults_are_thin():
     bare = Bare()
     assert bare.get_router() is None
     assert bare.get_ui_contributions() is None
+    assert bare.get_service_registrations() == ()
+    assert bare.get_wait_provider_registrations() == ()
+    assert bare.get_workflow_registrations() == ()
+    assert bare.get_feature_permission_defaults() is None
+    assert bare.get_setup_step_registrations() == ()
 
 
 def test_get_router_mounts_at_host_root():

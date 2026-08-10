@@ -9,6 +9,8 @@ Feature packages should import from here:
     from kestrel_sdk.features.base import Feature, tool, parse_docstring_params
 """
 
+from __future__ import annotations
+
 import inspect
 import logging
 import re
@@ -32,7 +34,17 @@ from typing import (
 from kestrel_sdk.tools.base import ToolSchema, ToolParameter, ToolCategory, AgentTool
 from kestrel_sdk.a2a.agent_card import AgentCard, AgentSkill, AgentCapabilities
 from kestrel_sdk.a2a.types import Task, TaskState, TaskStatus, Artifact, DataPart, Message, TextPart
+from kestrel_sdk._validation import stable_token
 from kestrel_sdk.features.ui import UIContributions
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from kestrel_sdk.features.contributions import (
+        FeaturePermissionDefaults,
+        ServiceContributions,
+        SetupStepContributions,
+        WaitProviderContributions,
+        WorkflowContributions,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +203,15 @@ class Feature(ABC):
         self.name = self.__class__.__name__
         self.disabled_skills: set = set()
 
+    @property
+    def owner(self) -> str:
+        """Return the canonical validated lifecycle contribution owner."""
+
+        candidate = self.name
+        if candidate == self.__class__.__name__:
+            candidate = candidate.strip("_")
+        return stable_token(candidate, "feature owner")
+
     # =========================================================================
     # Lifecycle Methods
     # =========================================================================
@@ -247,6 +268,51 @@ class Feature(ABC):
         ``css`` through its enabled-feature UI manifest.
         """
         return None
+
+    def get_service_registrations(self) -> ServiceContributions:
+        """Return this feature's instance-stable service registrations.
+
+        Sovereign calls this once per enable transition, validates every return
+        value and owner against this feature's registered identity, and retains
+        the exact registrations and service objects for disable teardown.
+        """
+        return ()
+
+    def get_wait_provider_registrations(self) -> WaitProviderContributions:
+        """Return this feature's instance-stable wait-provider registrations.
+
+        The runtime collects once per enable transition and retains the exact
+        identities and provider objects for disable teardown.
+        """
+        return ()
+
+    def get_workflow_registrations(self) -> WorkflowContributions:
+        """Return this feature's instance-stable workflow registrations.
+
+        The runtime collects once per enable transition and retains the exact
+        actor identities, actor objects, and source objects for teardown.
+        """
+        return ()
+
+    def get_feature_permission_defaults(
+        self,
+    ) -> Optional[FeaturePermissionDefaults]:
+        """Return this feature's permission defaults, or ``None``.
+
+        Sovereign reads this once per enable transition and validates the
+        result before applying it. The feature-prefixed name avoids colliding
+        with pre-existing feature methods named ``get_permission_defaults``.
+        """
+        return None
+
+    def get_setup_step_registrations(self) -> SetupStepContributions:
+        """Return this feature's instance-stable setup-step registrations.
+
+        The runtime collects once per enable transition, validates declared
+        owners against the registered feature identity, and retains the exact
+        callables and identities for teardown.
+        """
+        return ()
 
     async def post_all_features_loaded(self, agent):
         """Called after ALL features are discovered and initialized."""

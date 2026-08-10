@@ -45,6 +45,7 @@ from typing import (
     runtime_checkable,
 )
 
+from kestrel_sdk._validation import stable_token
 from kestrel_sdk.features.ui import UIContributions
 from kestrel_sdk.storage.database import (
     DatabaseBackend,
@@ -55,6 +56,13 @@ from kestrel_sdk.storage.database import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastapi import APIRouter
+    from kestrel_sdk.features.contributions import (
+        FeaturePermissionDefaults,
+        ServiceContributions,
+        SetupStepContributions,
+        WaitProviderContributions,
+        WorkflowContributions,
+    )
 
 
 @runtime_checkable
@@ -131,6 +139,12 @@ class HostFeature(ABC):
     #: Optional capability slug used to gate access to this host feature's
     #: router and UI. ``None`` means ungated.
     capability: Optional[str] = None
+
+    @property
+    def owner(self) -> str:
+        """Return the canonical validated lifecycle contribution owner."""
+
+        return stable_token(self.name, "host feature owner")
 
     # =========================================================================
     # Routing
@@ -215,6 +229,52 @@ class HostFeature(ABC):
         means the feature contributes no UI.
         """
         return None
+
+    # =========================================================================
+    # Declarative host lifecycle contributions
+    # =========================================================================
+
+    def get_service_registrations(self) -> ServiceContributions:
+        """Return this host feature's instance-stable service registrations.
+
+        Sovereign collects once per host-start transition, validates every
+        return value and owner against the registered host-feature identity,
+        and retains the exact registrations and services for stop teardown.
+        """
+        return ()
+
+    def get_wait_provider_registrations(self) -> WaitProviderContributions:
+        """Return instance-stable wait providers for one host lifecycle.
+
+        The runtime collects once at host start and retains exact provider
+        objects and identities until host stop.
+        """
+        return ()
+
+    def get_workflow_registrations(self) -> WorkflowContributions:
+        """Return instance-stable workflow registrations for this host.
+
+        The runtime collects once at host start and retains exact actor and
+        source objects and identities until host stop.
+        """
+        return ()
+
+    def get_feature_permission_defaults(
+        self,
+    ) -> Optional[FeaturePermissionDefaults]:
+        """Return host-feature permission defaults, or ``None``.
+
+        Sovereign reads and validates this once per host-start transition.
+        """
+        return None
+
+    def get_setup_step_registrations(self) -> SetupStepContributions:
+        """Return instance-stable lifecycle-owned setup-step registrations.
+
+        Sovereign collects and validates these once at host start and retains
+        exact callable objects and identities until host stop.
+        """
+        return ()
 
 
 __all__ = ["HostFeature", "HostContext"]

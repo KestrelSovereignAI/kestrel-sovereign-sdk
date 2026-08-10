@@ -78,6 +78,149 @@ class MyFeature(Feature):
         return [Tool(name="my-tool", description="Does something", handler=self.handle)]
 ```
 
+## Operator execution contracts
+
+`kestrel_sdk.operator` is the public contract surface for feature-owned
+operator execution. It provides immutable data models and structural
+protocols for:
+
+- exact and stable SemVer-compatible service discovery with explicit host or
+  agent scope;
+- authenticated, tenant-bound, time-bounded `OperatorContext` authorization
+  facts;
+- browser-safe execution-target discovery and authorized target resolution;
+- durable run, stage, attempt, control, and external-engine-job correlation;
+- authorized artifact metadata whose `href` is the canonical same-origin
+  authorization endpoint or a signed HTTPS URL, never a filesystem location;
+- the asynchronous `RunService` implemented against the durable workflow
+  state machine.
+
+The canonical contracts most applications need are also available from the
+top-level package:
+
+```python
+from kestrel_sdk import (
+    ArtifactRecord,
+    ExecutionTargetReference,
+    OperatorContext,
+    RunControl,
+    RunLaunch,
+    RunQuery,
+    RunService,
+    ServiceReference,
+    ServiceRequirement,
+)
+```
+
+Feature packages publish integration seams through the discoverable
+`kestrel_sdk.features` surface. Both `Feature` and `HostFeature` expose
+conservative no-op defaults, so existing feature subclasses do not need to
+change:
+
+```python
+from kestrel_sdk.features import (
+    ContributionContractError,
+    FeaturePermissionDefaults,
+    ServiceContributions,
+    SetupFlow,
+    SetupStepRegistration,
+    WaitProviderRegistration,
+    WorkflowRegistration,
+    normalize_setup_flow,
+    validate_feature_contributions,
+)
+```
+
+Agent features expose these through `get_service_registrations()`,
+`get_wait_provider_registrations()`, `get_workflow_registrations()`,
+`get_feature_permission_defaults()`, and
+`get_setup_step_registrations()`. Host features use the same methods, tied to
+host start/stop instead of agent enable/disable. Sovereign calls each method
+exactly once per enable or host-start transition, validates every collection
+and element with `validate_feature_contributions(feature.owner, tool_names=...)`,
+using the names from that feature's actual tools, and retains the exact
+returned registrations, identities, callables, and implementation objects for
+disable or host-stop teardown. A feature must therefore construct contributed
+objects once per instance and return instance-stable objects. It must declare
+the same lifecycle `owner` as the canonical validated `feature.owner`; a type
+mismatch, duplicate identity, or owner mismatch raises
+`ContributionContractError` and the transition fails without partial activation.
+
+`ServiceRegistration`, `WaitProviderRegistration`, `WorkflowRegistration`,
+and `SetupStepRegistration` all carry that lifecycle owner. A workflow
+registration represents one actor identity and an immutable tuple containing
+zero or more `SourceRegistration` values. Sovereign registers the actor once,
+then registers each source without duplicating the actor. Source names must be
+unique across all workflow registrations returned by one feature.
+
+Setup-step `before` and `after` values are hard topological constraints across
+the complete active step set. Unknown references and cycles reject the whole
+transition with `ContributionContractError`; among steps currently eligible to
+run, `(order, name)` is the deterministic tie-break. `SetupFlow` defines the
+stable `setup` and `check` values. `normalize_setup_flow()` also accepts the
+existing Sovereign `Flow` enum (including an `Enum` that does not inherit from
+`str`) or its string value.
+
+Workflow actors and setup steps may return a value directly or an awaitable.
+The runtime must inspect every result and await awaitables (the SDK helper is
+`await_contribution_result()`); silently dropping a coroutine is a contribution
+contract violation.
+
+Permission defaults are subordinate to authentication, capability, tenancy,
+privacy, and other non-overridable policy gates. At the feature-permission
+layer, `deny` rejects without prompting; `always_ask` prompts every invocation;
+`ask` prompts unless a durable applicable decision exists; `session` may reuse
+approval only in the current authenticated session; `allow` runs under an
+explicit applicable grant; and `auto` uses Sovereign's automatic-policy path.
+Sovereign must keep a parity gate covering the exact six SDK values and every
+enforcement branch, rejecting unknown or incompletely mapped values.
+
+These contracts establish permanent ownership boundaries:
+
+| owner | responsibility |
+| ----- | -------------- |
+| SDK | Data models, protocols, validation, and declarative contribution shapes only. It owns no registry, persistence, authentication service, engine adapter, or lifecycle manager. |
+| Sovereign (row 2) | Active registries, authentication and authorization enforcement, entitlement and target resolution, contribution registration/teardown, and feature lifecycle. |
+| Workflows | Durable run state, idempotency records, stage/attempt history, controls, external-job links, and artifact records. Telemetry is not authoritative workflow state. |
+| Feature packages | Execution engines, service implementations, workflow actors, setup steps, wait providers, and console panels. |
+
+The browser receives opaque target IDs, bounded descriptors, capability names,
+and authorized artifact links. Browser requests must never supply or
+recover host filesystem paths, executable commands, environment variables,
+credentials, or secrets. Sovereign resolves an authorized opaque target
+server-side and feature-owned engines decide how that target is executed.
+
+The canonical artifact URL is
+`/authorized/artifacts/<opaque-artifact-id>`. The ID is an authorization lookup
+key, not a filename: the endpoint rechecks the caller's tenant and artifact-read
+authority on every request. Absolute artifact URLs are accepted only in the
+validated signed-HTTPS form; the runtime must also enforce an explicit origin
+allowlist and render external links with a safe browser policy that prevents
+opener, credential, and referrer leakage. Service consumers must resolve an
+exact `ServiceReference` or compatible `ServiceRequirement` for each immediate
+operation and must not cache the returned implementation across feature
+lifecycle changes.
+
+Run launches bind tenant, source identity, boundary, target, and capability to
+the trusted operator context. An agent-mediated request must use agent source
+provenance; it cannot claim to be manual. The runtime assigns
+`RunRecord.accepted_at` and advances `state_changed_at` plus the monotonic
+`sequence` concurrency token; it does not accept a caller-created timestamp.
+Every service method rechecks context freshness and its exact action. Launch
+idempotency uses trusted tenant/action/key scope, while controls additionally
+scope run and optional retry stage. A control may require an `expected_sequence`
+compare-and-set precondition without adding that precondition to its idempotency
+scope. Exact replay returns the original outcome; conflicting keys, illegal
+transitions, and state races raise a typed conflict. Durable external-job and
+artifact attachments require `run.attach`; `run.read` authorizes only run,
+stage, and attempt reads, while artifact retrieval separately requires
+`artifact.read`. Retry preserves the durable run ID and creates (or replays) a
+stage attempt. Run discovery uses bounded `RunQuery`/`RunPage` cursors, and
+unavailable or unauthorized run IDs produce the same typed not-found result to
+avoid a cross-tenant existence oracle. Stage and attempt tuple listings are
+deterministically ordered and return only the first requested bounded result
+set; unlike run discovery, they currently expose no continuation cursor.
+
 ## Host features (host/fleet scope)
 
 `Feature` **is a subagent** — each instance is bound to one agent (`self.agent`),
