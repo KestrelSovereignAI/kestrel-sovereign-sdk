@@ -2,6 +2,46 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.36.0 — 2026-08-10
+
+### Added
+
+- Added exact, versioned service discovery contracts and trusted operator
+  context, execution-target discovery, and server-side target authorization.
+- Added durable run, control, stage, attempt, external-job, and authorized
+  artifact protocols for feature-owned operator execution.
+- Added `Feature` and `HostFeature` contribution methods
+  (`get_service_registrations()`, `get_wait_provider_registrations()`,
+  `get_workflow_registrations()`, `get_feature_permission_defaults()`, and
+  `get_setup_step_registrations()`) with canonical validated
+  `contribution_owner` identities. The module-qualified implementation default
+  is deterministic, independent of mutable feature names, distinguishes equal
+  class names in separate packages and `_Foo` from `Foo`, and uses a bounded
+  hash fallback for unusual names. The public active-set validator requires
+  runtimes to reject duplicate owners before registration. The base classes do
+  not claim or intercept the historic `owner` attribute, so existing
+  subclasses may continue assigning it any value. Runtimes validate
+  registration owner fields against the exact canonical identity and retain
+  that identity and the exact returned objects for the active lifecycle.
+- Defined browser security boundaries: clients provide opaque identifiers, not
+  filesystem paths, commands, environment variables, credentials, or arbitrary
+  secrets.
+- These additions are SDK contracts only. Sovereign remains responsible for
+  runtime registries, authorization, and lifecycle; Workflows owns durable
+  state; and feature packages own execution engines and console panels.
+
+### Fixed
+
+- Made direct `RunRecord` authorization return the same typed not-found error
+  for tenant mismatch as tenant-scoped absence, while preserving explicit
+  authorization errors for visible-record freshness, action, boundary, and
+  capability denials.
+- Made `RunPage` reject exact and divergent duplicate run IDs without silently
+  changing its records, while preserving the 100-record stored-tuple bound.
+- Restored runtime-resolvable return annotations on all Feature and HostFeature
+  contribution methods without importing contribution models during base
+  module import.
+
 ## 0.35.1 — 2026-08-09
 
 ### Fixed
