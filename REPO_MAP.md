@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 114 tracked files (102 `.py`, 5 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 126 tracked files (114 `.py`, 5 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -36,6 +36,8 @@ Repo entry points and standard project files.
 ## `kestrel_sdk/`
 
 - **kestrel_sdk/__init__.py** — Kestrel Sovereign SDK — lightweight interfaces for feature packages.
+- **kestrel_sdk/_validation.py** — Validation helpers shared by public SDK contract modules.
+  - `def stable_token(value, field_name)`; `def non_empty_text(value, field_name)`; `def browser_safe_string(value, field_name)`; `def semantic_version(value, field_name)`; `def semantic_version_parts(value)`; `def frozen_tokens(values, field_name)`; `def unique_tuple(values, field_name)`
 - **kestrel_sdk/a2a/__init__.py** — Kestrel SDK — A2A Protocol interfaces.
 - **kestrel_sdk/a2a/agent_card.py** — Agent Card Types for A2A Protocol.
   - `class AgentProvider`; `class AgentCapabilities`; `class AgentAuthentication`; `class AgentSkill`; `class AgentCard`
@@ -65,8 +67,12 @@ Repo entry points and standard project files.
 - **kestrel_sdk/extensions/app_extension.py** — Application-specific agent extension contract.
   - `class AppExtension`
 - **kestrel_sdk/features/__init__.py** — Kestrel SDK — Feature interfaces.
+- **kestrel_sdk/features/_contribution_support.py** — Lightweight helpers shared by the feature base contracts.
+  - `def contribution_annotation(name)`; `def implementation_contribution_owner(implementation)`
 - **kestrel_sdk/features/base.py** — Base class for Kestrel Features — SDK interface.
   - `class TaskHandler`; `def parse_docstring_params(docstring)`; `class Feature`; `def tool(name, description, category, command_prefix)`
+- **kestrel_sdk/features/contributions.py** — Declarative feature contribution contracts.
+  - `class PermissionLevel`; `class FeaturePermissionDefaults`; `class ContributionContractError`; `class WaitProviderRegistration`; `class WorkflowRegistration`; `class SetupStepContext`; `class SetupFlow`; `def normalize_setup_flow(value)`; `…`
 - **kestrel_sdk/features/host_base.py** — Host-scoped feature contract — SDK interface.
   - `class HostContext`; `class HostFeature`
 - **kestrel_sdk/features/ui.py** — SDK-owned UI contribution shape.
@@ -100,6 +106,15 @@ Repo entry points and standard project files.
   - `class BackendType`
 - **kestrel_sdk/metrics.py** — Kestrel Prometheus Metrics — shared metric definitions for the Kestrel ecosystem.
   - `def generate_metrics()`; `def get_content_type()`
+- **kestrel_sdk/operator/__init__.py** — Contracts for feature-owned, authorized operator execution.
+- **kestrel_sdk/operator/context.py** — Authenticated, fail-closed context for operator execution.
+  - `class OperatorAuthorizationError`; `class OperatorContext`
+- **kestrel_sdk/operator/discovery.py** — Versioned service discovery contracts for feature-owned operators.
+  - `class ServiceScope`; `class CapabilityDescriptor`; `class ServiceDescriptor`; `class ServiceReference`; `class ServiceRequirement`; `class ServiceRegistration`; `class ServiceResolver`
+- **kestrel_sdk/operator/runs.py** — Immutable contracts for the feature-owned operator run plane.
+  - `class RunConflictError`; `class RunNotFoundError`; `class RunSource`; `class RunState`; `class RunControlAction`; `class ArtifactAuthorizationAction`; `class RunLaunch`; `class RunRecord`; `…`
+- **kestrel_sdk/operator/targets.py** — Browser-safe execution-target discovery and resolution contracts.
+  - `class ExecutionTargetDescriptor`; `class ExecutionTargetReference`; `class ExecutionTargetResolver`
 - **kestrel_sdk/outputs/__init__.py** — Output event contracts shared by workflows, channels, and delivery.
 - **kestrel_sdk/outputs/models.py** — Provider-neutral output event envelopes.
   - `class OutputKind`; `class OutputDestination`; `class OutputEvent`
@@ -179,10 +194,12 @@ Repo entry points and standard project files.
   - `def feature()`; `class TestToolResultPassThrough`; `class TestLegacyShapeDuringMigration`; `def parts_feature()`; `class TestEnvelopeParts`
 - **tests/test_extension_contracts.py** — Contract tests shared by agent UI and application extensions.
   - `def test_agent_feature_ui_contract_is_sdk_owned()`; `def test_ui_contributions_preserves_0292_positional_order()`; `def test_app_extension_defaults_are_safe_noops()`
+- **tests/test_feature_contribution_contracts.py** — Contract tests for external feature-owned declarative contributions.
+  - `class ExternalFixtureFeature`; `def test_external_feature_can_expose_every_row_one_seam_via_sdk()`; `def test_contribution_methods_return_instance_stable_objects()`; `def test_owned_identity_supports_exact_deterministic_teardown()`; `def test_permission_vocabulary_is_closed_conservative_and_immutable()`; `def test_registration_validation_prevents_ambiguous_identity()`; `def test_workflow_registration_supports_empty_and_plural_sources()`; `def test_setup_flow_normalizes_real_non_string_enum()`; `…`
 - **tests/test_hook_input.py** — SDK 0.9 — HookInput narration-check fields (kestrel-sovereign #1048 Wave 5D).
   - `def test_post_response_narration_fields_present_and_default_to_none()`; `def test_post_response_narration_fields_round_trip_through_to_dict()`; `def test_to_dict_exact_shape_for_post_response_event()`; `def test_positional_args_through_agent_spawn_keep_pre_0_9_meaning()`; `def test_pre_0_9_callers_still_construct_without_narration_fields()`
 - **tests/test_host_feature_contract.py** — Tests for the host-scoped feature contract (issue #46).
-  - `class ExampleHostFeature`; `def test_hostfeature_importable_from_sdk_top_level()`; `def test_hostfeature_is_abc_and_distinct_from_feature()`; `def test_hostfeature_has_no_agent_binding()`; `def test_declares_required_contract_methods()`; `def test_name_and_capability_slugs()`; `def test_base_defaults_are_thin()`; `def test_get_router_mounts_at_host_root()`; `…`
+  - `class ExampleHostFeature`; `def test_hostfeature_importable_from_sdk_top_level()`; `def test_hostfeature_is_abc_and_distinct_from_feature()`; `def test_hostfeature_has_no_agent_binding()`; `def test_declares_required_contract_methods()`; `def test_name_and_capability_slugs()`; `def test_base_defaults_are_thin()`; `async def test_host_contribution_owner_does_not_claim_legacy_owner(legacy_owner)`; `…`
 - **tests/test_inference_lease_contract.py** — Contract tests for provider-neutral remote inference leases.
   - `def make_request()`; `def make_quote()`; `def make_route()`; `def make_lease()`; `def test_entry_point_group_is_stable()`; `def test_request_is_normalized_deeply_immutable_and_public_owner_free()`; `def test_request_rejects_malformed_or_unbounded_values(overrides, message)`; `def test_public_metadata_rejects_secret_like_keys(metadata)`; `…`
 - **tests/test_isolated_feature.py** — Tests for the isolated feature JSON-RPC stdio contract.
@@ -203,8 +220,14 @@ Repo entry points and standard project files.
   - `async def test_cancelled_stop_retains_detached_child_and_delivers_first_cancellation(monkeypatch)`; `async def test_stop_never_reaped_process_uses_only_signal_phase_observations(monkeypatch)`; `async def test_stop_does_not_reobserve_process_after_prior_close_task(monkeypatch)`; `async def test_stop_reobserves_process_after_client_close_can_unblock_waiter(monkeypatch)`; `async def test_stop_timeout_does_not_fence_start_that_settles_before_timeout_update(monkeypatch)`; `async def test_stop_preserves_nested_timeout_cancellation_counts(monkeypatch)`; `async def test_stop_nested_timeout_and_external_cancels_continue_after_catch(monkeypatch)`; `async def test_start_rejects_while_a_detached_child_has_unresolved_retirement(monkeypatch)`; `…`
 - **tests/test_llm_contract.py** — Tests for the LLM provider contract.
   - `class TestContractVersion`; `class TestToolCall`; `class TestLLMResponse`; `class TestModelCategory`; `class TestModelInfo`; `class TestProviderInfo`; `class TestProviderCapabilities`; `class TestBackendType`; `…`
+- **tests/test_operator_contracts.py** — Focused tests for feature-owned operator SDK contracts.
+  - `def test_operator_context_rejects_invalid_or_missing_tenant(tenant_id)`; `def test_operator_context_requires_tenant_field()`; `def test_operator_context_normalizes_collections_and_is_frozen()`; `def test_operator_context_helpers_fail_closed_for_unknown_values()`; `def test_operator_context_has_bounded_freshness_and_agent_attribution()`; `def test_service_descriptors_are_versioned_and_scope_is_explicit()`; `def test_stable_service_requirement_uses_compatible_major_and_minimum()`; `def test_service_requirement_rejects_non_stable_versions(version)`; `…`
 - **tests/test_payer_policy.py** — Tests for kestrel_sdk.payer_policy.
   - `class TestEnums`; `class TestSupportMatrix`; `class TestPayerSpec`; `class TestPayerPolicy`; `class TestTOMLRoundTrip`; `class TestResolvedResource`
+- **tests/test_public_contract_exports.py** — Public import and compatibility guarantees for row-1 SDK contracts.
+  - `def test_operator_package_exports_complete_contract_surface()`; `def test_top_level_selectively_reexports_canonical_operator_contracts()`; `def test_feature_package_exports_contribution_contracts()`; `def test_run_contract_surface_has_one_canonical_name_per_model()`; `def test_sdk_contract_imports_have_no_runtime_framework_dependency()`; `def test_feature_base_modules_do_not_runtime_import_contribution_models()`; `def test_historic_base_module_ui_annotation_resolves_at_runtime()`; `def test_all_contribution_method_annotations_resolve_without_extra_globals()`; `…`
+- **tests/test_run_contracts.py** — Focused tests for durable operator run-plane contracts.
+  - `def test_launch_contains_only_semantic_input_and_record_owns_runtime_clock()`; `def test_launch_authorization_binds_all_trusted_authority()`; `def test_manual_and_agent_launch_shape_invariants()`; `def test_run_models_are_frozen_and_correlate_attempt_and_external_job()`; `def test_resolved_run_authorization_rechecks_durable_launch_scope()`; `def test_resolved_run_tenant_mismatch_matches_tenant_scoped_absence()`; `def test_terminal_state_and_separate_control_and_artifact_actions()`; `def test_control_expected_sequence_is_validated_and_outside_key_scope()`; `…`
 - **tests/test_security_encryption.py** — Tests for SDK encryption key derivation and migration behavior.
   - `def key_shape(request, monkeypatch, tmp_path)`; `def clear_master_key_cache()`; `def test_passphrase_master_key_uses_salted_pbkdf2_600k(monkeypatch, tmp_path)`; `def test_env_passphrase_without_salt_warns_once_and_uses_legacy(monkeypatch, caplog, tmp_path)`; `def test_same_passphrase_and_env_salt_yield_same_key_across_derivations(monkeypatch)`; `def test_key_file_passphrase_persists_salt_next_to_key(monkeypatch, tmp_path)`; `def test_key_file_passphrase_salt_write_failure_falls_back_to_legacy(monkeypatch, caplog, tmp_path)`; `def test_passphrase_master_key_is_cached_for_encrypt_decrypt(monkeypatch)`; `…`
 - **tests/test_timeline_protocol.py** — Tests for timeline protocols.
