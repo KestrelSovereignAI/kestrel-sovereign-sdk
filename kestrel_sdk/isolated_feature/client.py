@@ -18,6 +18,7 @@ from .protocol import (
     HEALTH,
     HOST_INGRESS,
     HOST_INGRESS_CAPABILITY,
+    INBOUND_PRODUCER_CAPABILITY,
     INITIALIZE,
     PROTOCOL_VERSION,
     SHUTDOWN,
@@ -408,6 +409,19 @@ class IsolatedFeatureClient:
             return False
         capabilities = self.host_ingress_capabilities
         return capabilities is not None and capabilities.supports(validated_name)
+
+    @property
+    def inbound_producer_declaration(self) -> bool | None:
+        """Return the exact declaration, or ``None`` when absent or malformed."""
+
+        declaration = self.capabilities.get(INBOUND_PRODUCER_CAPABILITY)
+        return declaration if type(declaration) is bool else None
+
+    @property
+    def idle_retirement_is_declared_safe(self) -> bool:
+        """Whether the child explicitly declared idle retirement safe."""
+
+        return self.inbound_producer_declaration is False
 
     @property
     def replacement_required(self) -> bool:
@@ -1423,6 +1437,20 @@ class SubprocessIsolatedFeatureClient:
         """Whether the running child advertises private host ingress."""
 
         return self.client is not None and self.client.supports_host_ingress
+
+    @property
+    def inbound_producer_declaration(self) -> bool | None:
+        """Return the running child's exact inbound-producer declaration."""
+
+        if self.client is None:
+            return None
+        return self.client.inbound_producer_declaration
+
+    @property
+    def idle_retirement_is_declared_safe(self) -> bool:
+        """Whether the running child explicitly permits idle retirement."""
+
+        return self.client is not None and self.client.idle_retirement_is_declared_safe
 
     @property
     def replacement_required(self) -> bool:

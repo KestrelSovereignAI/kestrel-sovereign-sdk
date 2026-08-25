@@ -454,6 +454,37 @@ concurrency. Ingress is rejected once shutdown or restart-required lifecycle
 fencing begins, and public errors never reflect handler exceptions or payload
 values.
 
+## Idle retirement and inbound producers
+
+An isolated service that may be retired by an idle-runtime policy must declare
+whether it owns an unmanaged inbound producer. A producer polls, listens, or
+otherwise receives work without a host tool call or private host-ingress call.
+
+```python
+from kestrel_sdk.isolated_feature import IsolatedFeatureService
+
+service = IsolatedFeatureService(name="utility", version="1.0.0")
+service.advertise_inbound_producer(False)  # Safe for host idle retirement.
+
+# Host side, after initialize. This is true only for an exact False declaration.
+assert client.idle_retirement_is_declared_safe
+```
+
+Use `True` for services with an independent poller or listener. Services that
+omit the declaration remain ambiguous so compatible hosts keep them resident
+unless an operator explicitly opts that named feature into retirement. Hosts
+can inspect `client.inbound_producer_declaration`, which is `None` for missing
+or malformed child metadata and therefore never authorizes retirement.
+
+Declare producer ownership before `initialize`. If it derives from host config,
+call `advertise_inbound_producer()` from the service's `configure()` hook; that
+hook runs inside the initialize handshake before capabilities are assembled.
+The value is frozen after the successful handshake because the host caches
+negotiated capabilities. If a configuration transition would change whether
+the service owns a producer, return `ConfigTransitionResult.restart_required()`
+so the replacement child re-advertises its current value. Do not live-apply
+that transition.
+
 ## Isolated tool execution context
 
 Hosts can attach trusted, versioned invocation metadata to an isolated

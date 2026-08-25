@@ -24,6 +24,7 @@ from .protocol import (
     HEALTH,
     HOST_INGRESS,
     HOST_INGRESS_CAPABILITY,
+    INBOUND_PRODUCER_CAPABILITY,
     INITIALIZE,
     PROTOCOL_VERSION,
     SHUTDOWN,
@@ -483,6 +484,8 @@ class IsolatedFeatureService:
         # point it is populated and ``configure()`` runs.
         self.host_config: dict[str, Any] = {}
         self._channel_capability: dict[str, Any] | None = None
+        self._has_inbound_producer: bool | None = None
+        self._inbound_producer_declaration_frozen = False
         # Unset by default. A service must explicitly opt in before the host may
         # send the config lifecycle request.
         self._config_transition_capabilities: ConfigTransitionCapabilities | None = None
@@ -518,6 +521,32 @@ class IsolatedFeatureService:
         if status_tool is not None:
             capability["status_tool"] = status_tool
         self._channel_capability = capability
+
+    def advertise_inbound_producer(self, has_producer: bool) -> None:
+        """Declare whether this service owns an unmanaged inbound producer.
+
+        A producer polls, listens, or otherwise receives work independently of
+        host tool calls or private host ingress. Hosts use this exact boolean
+        declaration when deciding whether an idle child can be retired safely.
+        Services that do not call this method remain deliberately ambiguous so
+        current hosts fail resident rather than silently dropping inbound work.
+        Call this before ``initialize``. When ownership derives from host
+        config, call it from :meth:`configure`; that hook runs inside the
+        initialize handshake before capabilities are assembled. The negotiated
+        value is frozen after a successful handshake. A config transition that
+        would change ownership must require child restart and re-negotiation.
+        """
+
+        if type(has_producer) is not bool:
+            raise TypeError("has_producer must be a bool")
+        if (
+            self._inbound_producer_declaration_frozen
+            and has_producer is not self._has_inbound_producer
+        ):
+            raise RuntimeError(
+                "inbound producer declaration is negotiated at initialize"
+            )
+        self._has_inbound_producer = has_producer
 
     def advertise_config_transition(self, *, supports_live_apply: bool = False) -> None:
         """Opt into host config-transition lifecycle requests.
@@ -589,6 +618,8 @@ class IsolatedFeatureService:
         capabilities: dict[str, Any] = {"tools": True, "events": True}
         if self._channel_capability is not None:
             capabilities["channel"] = dict(self._channel_capability)
+        if self._has_inbound_producer is not None:
+            capabilities[INBOUND_PRODUCER_CAPABILITY] = self._has_inbound_producer
         if self._config_transition_capabilities is not None:
             capabilities[CONFIG_TRANSITION_CAPABILITY] = (
                 self._config_transition_capabilities.to_dict()
@@ -601,11 +632,13 @@ class IsolatedFeatureService:
             capabilities[HOST_INGRESS_CAPABILITY] = HostIngressCapabilities(
                 names=tuple(self._host_ingress_handlers)
             ).to_dict()
-        return {
+        result = {
             "protocolVersion": self.protocol_version,
             "serverInfo": {"name": self.name, "version": self.version},
             "capabilities": capabilities,
         }
+        self._inbound_producer_declaration_frozen = True
+        return result
 
     async def configure(self, config: dict[str, Any]) -> None:
         """Apply host-provided configuration from the initialize handshake.

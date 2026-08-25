@@ -7,16 +7,27 @@ import asyncio
 import pytest
 
 from kestrel_sdk.isolated_feature import (
+    ConfigTransitionResult,
     FEATURE_EVENT,
+    INBOUND_PRODUCER_CAPABILITY,
     PROTOCOL_VERSION,
     IsolatedFeatureClient,
     IsolatedFeatureService,
     JsonRpcNotification,
     ProtocolError,
+    SubprocessIsolatedFeatureClient,
     ToolMetadata,
     decode_message,
     encode_message,
 )
+
+
+@pytest.mark.parametrize("invalid", [None, 0, 1, "false", object()])
+def test_service_rejects_non_boolean_inbound_producer_declaration(invalid):
+    service = IsolatedFeatureService(name="invalid", version="1.0.0")
+
+    with pytest.raises(TypeError, match="has_producer must be a bool"):
+        service.advertise_inbound_producer(invalid)
 
 
 class MemoryReader:
@@ -59,6 +70,170 @@ def memory_stdio_pair() -> tuple[MemoryReader, MemoryWriter, MemoryReader, Memor
     host_writer = MemoryWriter(service_reader)
     service_writer = MemoryWriter(host_reader)
     return host_reader, host_writer, service_reader, service_writer
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_producer", [False, True, None])
+async def test_inbound_producer_declaration_crosses_initialize_boundary(
+    has_producer: bool | None,
+):
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = IsolatedFeatureService(name="producer", version="1.0.0")
+    if has_producer is not None:
+        service.advertise_inbound_producer(has_producer)
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(host_reader, host_writer)
+
+    try:
+        await client.initialize()
+        assert client.inbound_producer_declaration is has_producer
+        assert client.idle_retirement_is_declared_safe is (has_producer is False)
+        if has_producer is None:
+            assert INBOUND_PRODUCER_CAPABILITY not in client.capabilities
+        else:
+            assert client.capabilities[INBOUND_PRODUCER_CAPABILITY] is has_producer
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("hostile", [None, 0, 1, "false", []])
+def test_inbound_producer_accessor_fails_resident_for_malformed_metadata(hostile):
+    host_reader, host_writer, _service_reader, _service_writer = memory_stdio_pair()
+    client = IsolatedFeatureClient(host_reader, host_writer)
+    client.capabilities[INBOUND_PRODUCER_CAPABILITY] = hostile
+
+    assert client.inbound_producer_declaration is None
+    assert client.idle_retirement_is_declared_safe is False
+
+
+@pytest.mark.parametrize("has_producer", [False, True, None])
+def test_subprocess_wrapper_agrees_with_direct_client(has_producer: bool | None):
+    wrapper = SubprocessIsolatedFeatureClient(command=["unused"])
+    assert wrapper.inbound_producer_declaration is None
+    assert wrapper.idle_retirement_is_declared_safe is False
+
+    host_reader, host_writer, _service_reader, _service_writer = memory_stdio_pair()
+    inner = IsolatedFeatureClient(host_reader, host_writer)
+    if has_producer is not None:
+        inner.capabilities[INBOUND_PRODUCER_CAPABILITY] = has_producer
+    wrapper.client = inner
+
+    assert wrapper.inbound_producer_declaration is inner.inbound_producer_declaration
+    assert wrapper.idle_retirement_is_declared_safe is (has_producer is False)
+
+
+def test_subprocess_wrapper_fails_resident_for_hostile_metadata():
+    wrapper = SubprocessIsolatedFeatureClient(command=["unused"])
+    host_reader, host_writer, _service_reader, _service_writer = memory_stdio_pair()
+    wrapper.client = IsolatedFeatureClient(host_reader, host_writer)
+    wrapper.client.capabilities[INBOUND_PRODUCER_CAPABILITY] = 1
+
+    assert wrapper.inbound_producer_declaration is None
+    assert wrapper.idle_retirement_is_declared_safe is False
+
+
+@pytest.mark.asyncio
+async def test_inbound_producer_declaration_is_frozen_after_initialize():
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = IsolatedFeatureService(name="producer", version="1.0.0")
+    service.advertise_inbound_producer(False)
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(host_reader, host_writer)
+
+    try:
+        await client.initialize()
+        service.advertise_inbound_producer(False)
+        with pytest.raises(RuntimeError, match="negotiated at initialize"):
+            service.advertise_inbound_producer(True)
+        assert client.idle_retirement_is_declared_safe is True
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_producer_state_config_change_requires_restart_renegotiation():
+    class ConfiguredProducer(IsolatedFeatureService):
+        def __init__(self):
+            super().__init__(name="configured-producer", version="1.0.0")
+            self.has_producer = False
+            self.advertise_inbound_producer(False)
+            self.advertise_config_transition(supports_live_apply=True)
+
+        async def on_config_transition(self, next_config):
+            next_has_producer = bool(next_config.get("poll"))
+            if next_has_producer is not self.has_producer:
+                return ConfigTransitionResult.restart_required()
+            return ConfigTransitionResult.applied()
+
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = ConfiguredProducer()
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(host_reader, host_writer)
+
+    try:
+        await client.initialize(config={"poll": False})
+        result = await client.prepare_config_transition({"poll": True})
+        assert result.action == "restart"
+        assert client.inbound_producer_declaration is False
+        assert client.replacement_required is True
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("poll", [False, True])
+async def test_configure_declares_config_derived_producer_before_freeze(poll: bool):
+    class ConfigDerivedProducer(IsolatedFeatureService):
+        async def configure(self, config):
+            self.advertise_inbound_producer(config["poll"])
+
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = ConfigDerivedProducer(name="config-derived", version="1.0.0")
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(host_reader, host_writer)
+
+    try:
+        await client.initialize(config={"poll": poll})
+        assert client.capabilities[INBOUND_PRODUCER_CAPABILITY] is poll
+        assert client.inbound_producer_declaration is poll
+        assert client.idle_retirement_is_declared_safe is (poll is False)
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_initialize_does_not_freeze_producer_declaration():
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = IsolatedFeatureService(name="retry-initialize", version="1.0.0")
+    service.advertise_inbound_producer(False)
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(
+        host_reader, host_writer, protocol_version="unsupported-version"
+    )
+
+    try:
+        with pytest.raises(ProtocolError):
+            await client.initialize()
+        assert client.capabilities == {}
+        assert client.idle_retirement_is_declared_safe is False
+
+        service.advertise_inbound_producer(True)
+        client.protocol_version = PROTOCOL_VERSION
+        await client.initialize()
+        assert client.inbound_producer_declaration is True
+        assert client.idle_retirement_is_declared_safe is False
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio

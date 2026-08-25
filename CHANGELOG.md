@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.37.0 — 2026-08-25
+
+### Added
+
+- Added the public `INBOUND_PRODUCER_CAPABILITY` contract and
+  `IsolatedFeatureService.advertise_inbound_producer()` so services can declare
+  explicitly whether host idle retirement would remove an unmanaged poller or
+  listener. Omitted declarations remain ambiguous for backward-compatible,
+  fail-resident host policy.
+- Added typed client accessors that normalize absent or malformed declarations
+  to the fail-resident state and authorize idle retirement only for exact
+  `False`.
+- Froze producer ownership after successful initialize negotiation so a live
+  config change cannot leave a stale retirement-safe declaration on the host;
+  producer-state changes require restart and re-negotiation.
+
 ## 0.36.0 — 2026-08-10
 
 ### Added
