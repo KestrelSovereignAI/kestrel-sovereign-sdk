@@ -530,9 +530,11 @@ class IsolatedFeatureService:
         declaration when deciding whether an idle child can be retired safely.
         Services that do not call this method remain deliberately ambiguous so
         current hosts fail resident rather than silently dropping inbound work.
-        Call this before ``initialize``. The negotiated value is frozen after a
-        successful handshake; a config transition that would change producer
-        ownership must require child restart and re-negotiation.
+        Call this before ``initialize``. When ownership derives from host
+        config, call it from :meth:`configure`; that hook runs inside the
+        initialize handshake before capabilities are assembled. The negotiated
+        value is frozen after a successful handshake. A config transition that
+        would change ownership must require child restart and re-negotiation.
         """
 
         if type(has_producer) is not bool:

@@ -187,6 +187,56 @@ async def test_producer_state_config_change_requires_restart_renegotiation():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("poll", [False, True])
+async def test_configure_declares_config_derived_producer_before_freeze(poll: bool):
+    class ConfigDerivedProducer(IsolatedFeatureService):
+        async def configure(self, config):
+            self.advertise_inbound_producer(config["poll"])
+
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = ConfigDerivedProducer(name="config-derived", version="1.0.0")
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(host_reader, host_writer)
+
+    try:
+        await client.initialize(config={"poll": poll})
+        assert client.capabilities[INBOUND_PRODUCER_CAPABILITY] is poll
+        assert client.inbound_producer_declaration is poll
+        assert client.idle_retirement_is_declared_safe is (poll is False)
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_initialize_does_not_freeze_producer_declaration():
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = IsolatedFeatureService(name="retry-initialize", version="1.0.0")
+    service.advertise_inbound_producer(False)
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(
+        host_reader, host_writer, protocol_version="unsupported-version"
+    )
+
+    try:
+        with pytest.raises(ProtocolError):
+            await client.initialize()
+        assert client.capabilities == {}
+        assert client.idle_retirement_is_declared_safe is False
+
+        service.advertise_inbound_producer(True)
+        client.protocol_version = PROTOCOL_VERSION
+        await client.initialize()
+        assert client.inbound_producer_declaration is True
+        assert client.idle_retirement_is_declared_safe is False
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_service_client_lifecycle_tools_and_events():
     host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
     service = IsolatedFeatureService(name="fake-feature", version="1.0.0")

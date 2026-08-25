@@ -476,11 +476,14 @@ unless an operator explicitly opts that named feature into retirement. Hosts
 can inspect `client.inbound_producer_declaration`, which is `None` for missing
 or malformed child metadata and therefore never authorizes retirement.
 
-Declare producer ownership before `initialize`; the value is frozen after the
-successful handshake because the host caches negotiated capabilities. If a
-configuration transition would change whether the service owns a producer,
-return `ConfigTransitionResult.restart_required()` so the replacement child
-re-advertises its current value. Do not live-apply that transition.
+Declare producer ownership before `initialize`. If it derives from host config,
+call `advertise_inbound_producer()` from the service's `configure()` hook; that
+hook runs inside the initialize handshake before capabilities are assembled.
+The value is frozen after the successful handshake because the host caches
+negotiated capabilities. If a configuration transition would change whether
+the service owns a producer, return `ConfigTransitionResult.restart_required()`
+so the replacement child re-advertises its current value. Do not live-apply
+that transition.
 
 ## Isolated tool execution context
 
