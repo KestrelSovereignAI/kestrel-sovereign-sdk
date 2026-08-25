@@ -20,32 +20,6 @@ from kestrel_sdk.isolated_feature import (
 )
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("has_producer", [False, True])
-async def test_service_advertises_explicit_inbound_producer_capability(
-    has_producer: bool,
-):
-    service = IsolatedFeatureService(name="producer", version="1.0.0")
-    service.advertise_inbound_producer(has_producer)
-
-    initialized = await service.on_initialize(
-        {"protocolVersion": PROTOCOL_VERSION, "config": {}}
-    )
-
-    assert initialized["capabilities"][INBOUND_PRODUCER_CAPABILITY] is has_producer
-
-
-@pytest.mark.asyncio
-async def test_service_omits_ambiguous_inbound_producer_capability():
-    service = IsolatedFeatureService(name="legacy", version="1.0.0")
-
-    initialized = await service.on_initialize(
-        {"protocolVersion": PROTOCOL_VERSION, "config": {}}
-    )
-
-    assert INBOUND_PRODUCER_CAPABILITY not in initialized["capabilities"]
-
-
 @pytest.mark.parametrize("invalid", [None, 0, 1, "false", object()])
 def test_service_rejects_non_boolean_inbound_producer_declaration(invalid):
     service = IsolatedFeatureService(name="invalid", version="1.0.0")
@@ -94,6 +68,42 @@ def memory_stdio_pair() -> tuple[MemoryReader, MemoryWriter, MemoryReader, Memor
     host_writer = MemoryWriter(service_reader)
     service_writer = MemoryWriter(host_reader)
     return host_reader, host_writer, service_reader, service_writer
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_producer", [False, True, None])
+async def test_inbound_producer_declaration_crosses_initialize_boundary(
+    has_producer: bool | None,
+):
+    host_reader, host_writer, service_reader, service_writer = memory_stdio_pair()
+    service = IsolatedFeatureService(name="producer", version="1.0.0")
+    if has_producer is not None:
+        service.advertise_inbound_producer(has_producer)
+    service_task = asyncio.create_task(service.serve(service_reader, service_writer))
+    client = IsolatedFeatureClient(host_reader, host_writer)
+
+    try:
+        await client.initialize()
+        assert client.inbound_producer_declaration is has_producer
+        assert client.idle_retirement_is_declared_safe is (has_producer is False)
+        if has_producer is None:
+            assert INBOUND_PRODUCER_CAPABILITY not in client.capabilities
+        else:
+            assert client.capabilities[INBOUND_PRODUCER_CAPABILITY] is has_producer
+        await client.shutdown()
+        await service_task
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("hostile", [None, 0, 1, "false", []])
+def test_inbound_producer_accessor_fails_resident_for_malformed_metadata(hostile):
+    host_reader, host_writer, _service_reader, _service_writer = memory_stdio_pair()
+    client = IsolatedFeatureClient(host_reader, host_writer)
+    client.capabilities[INBOUND_PRODUCER_CAPABILITY] = hostile
+
+    assert client.inbound_producer_declaration is None
+    assert client.idle_retirement_is_declared_safe is False
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## 0.36.1 — 2026-08-25
+## 0.37.0 — 2026-08-25
 
 ### Added
 
@@ -11,6 +11,9 @@ All notable changes to this project are documented in this file.
   explicitly whether host idle retirement would remove an unmanaged poller or
   listener. Omitted declarations remain ambiguous for backward-compatible,
   fail-resident host policy.
+- Added typed client accessors that normalize absent or malformed declarations
+  to the fail-resident state and authorize idle retirement only for exact
+  `False`.
 
 ## 0.36.0 — 2026-08-10
 

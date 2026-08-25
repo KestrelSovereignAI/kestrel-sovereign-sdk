@@ -465,11 +465,16 @@ from kestrel_sdk.isolated_feature import IsolatedFeatureService
 
 service = IsolatedFeatureService(name="utility", version="1.0.0")
 service.advertise_inbound_producer(False)  # Safe for host idle retirement.
+
+# Host side, after initialize. This is true only for an exact False declaration.
+assert client.idle_retirement_is_declared_safe
 ```
 
 Use `True` for services with an independent poller or listener. Services that
 omit the declaration remain ambiguous so compatible hosts keep them resident
-unless an operator explicitly opts that named feature into retirement.
+unless an operator explicitly opts that named feature into retirement. Hosts
+can inspect `client.inbound_producer_declaration`, which is `None` for missing
+or malformed child metadata and therefore never authorizes retirement.
 
 ## Isolated tool execution context
 
