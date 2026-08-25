@@ -14,6 +14,9 @@ All notable changes to this project are documented in this file.
 - Added typed client accessors that normalize absent or malformed declarations
   to the fail-resident state and authorize idle retirement only for exact
   `False`.
+- Froze producer ownership after successful initialize negotiation so a live
+  config change cannot leave a stale retirement-safe declaration on the host;
+  producer-state changes require restart and re-negotiation.
 
 ## 0.36.0 — 2026-08-10
 
