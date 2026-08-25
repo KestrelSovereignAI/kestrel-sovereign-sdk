@@ -8,6 +8,7 @@ import pytest
 
 from kestrel_sdk.isolated_feature import (
     FEATURE_EVENT,
+    INBOUND_PRODUCER_CAPABILITY,
     PROTOCOL_VERSION,
     IsolatedFeatureClient,
     IsolatedFeatureService,
@@ -17,6 +18,40 @@ from kestrel_sdk.isolated_feature import (
     decode_message,
     encode_message,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_producer", [False, True])
+async def test_service_advertises_explicit_inbound_producer_capability(
+    has_producer: bool,
+):
+    service = IsolatedFeatureService(name="producer", version="1.0.0")
+    service.advertise_inbound_producer(has_producer)
+
+    initialized = await service.on_initialize(
+        {"protocolVersion": PROTOCOL_VERSION, "config": {}}
+    )
+
+    assert initialized["capabilities"][INBOUND_PRODUCER_CAPABILITY] is has_producer
+
+
+@pytest.mark.asyncio
+async def test_service_omits_ambiguous_inbound_producer_capability():
+    service = IsolatedFeatureService(name="legacy", version="1.0.0")
+
+    initialized = await service.on_initialize(
+        {"protocolVersion": PROTOCOL_VERSION, "config": {}}
+    )
+
+    assert INBOUND_PRODUCER_CAPABILITY not in initialized["capabilities"]
+
+
+@pytest.mark.parametrize("invalid", [None, 0, 1, "false", object()])
+def test_service_rejects_non_boolean_inbound_producer_declaration(invalid):
+    service = IsolatedFeatureService(name="invalid", version="1.0.0")
+
+    with pytest.raises(TypeError, match="has_producer must be a bool"):
+        service.advertise_inbound_producer(invalid)
 
 
 class MemoryReader:

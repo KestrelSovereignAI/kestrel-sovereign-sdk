@@ -454,6 +454,23 @@ concurrency. Ingress is rejected once shutdown or restart-required lifecycle
 fencing begins, and public errors never reflect handler exceptions or payload
 values.
 
+## Idle retirement and inbound producers
+
+An isolated service that may be retired by an idle-runtime policy must declare
+whether it owns an unmanaged inbound producer. A producer polls, listens, or
+otherwise receives work without a host tool call or private host-ingress call.
+
+```python
+from kestrel_sdk.isolated_feature import IsolatedFeatureService
+
+service = IsolatedFeatureService(name="utility", version="1.0.0")
+service.advertise_inbound_producer(False)  # Safe for host idle retirement.
+```
+
+Use `True` for services with an independent poller or listener. Services that
+omit the declaration remain ambiguous so compatible hosts keep them resident
+unless an operator explicitly opts that named feature into retirement.
+
 ## Isolated tool execution context
 
 Hosts can attach trusted, versioned invocation metadata to an isolated

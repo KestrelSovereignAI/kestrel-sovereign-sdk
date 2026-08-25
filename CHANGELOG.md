@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.36.1 — 2026-08-25
+
+### Added
+
+- Added the public `INBOUND_PRODUCER_CAPABILITY` contract and
+  `IsolatedFeatureService.advertise_inbound_producer()` so services can declare
+  explicitly whether host idle retirement would remove an unmanaged poller or
+  listener. Omitted declarations remain ambiguous for backward-compatible,
+  fail-resident host policy.
+
 ## 0.36.0 — 2026-08-10
 
 ### Added

@@ -30,6 +30,11 @@ FEATURE_EVENT = "feature/event"
 CONFIG_TRANSITION = "lifecycle/config-transition"
 CONFIG_TRANSITION_CAPABILITY = "config_transition"
 
+# Explicit service declaration used by hosts that may retire an idle child.
+# Omission is deliberately distinct from ``False``: legacy or ambiguous
+# services must fail resident unless an operator explicitly overrides policy.
+INBOUND_PRODUCER_CAPABILITY = "inbound_producer"
+
 # Private, host-to-service ingress. This intentionally lives outside
 # ``tools/*``: registrations are control-plane callbacks for the trusted host,
 # never feature tools that an agent can discover or invoke.
