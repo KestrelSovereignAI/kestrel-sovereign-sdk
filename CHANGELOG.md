@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.37.1 — 2026-08-28
+
+### Added
+
+- Added lifecycle-owned `ContextClauseRegistration` declarations and no-op
+  `Feature` / `HostFeature` getters so feature packages can contribute cached
+  system-context clauses through the existing validated contribution boundary.
+
 ## 0.37.0 — 2026-08-25
 
 ### Added

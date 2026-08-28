@@ -62,6 +62,9 @@ TOP_LEVEL_OPERATOR_EXPORTS = OPERATOR_EXPORTS
 FEATURE_CONTRIBUTION_EXPORTS = {
     "ContributionContractError",
     "ContributionResult",
+    "ContextClauseContributions",
+    "ContextClauseRegistration",
+    "ContextClauseRenderer",
     "FeatureContributionSet",
     "FeaturePermissionDefaults",
     "PermissionLevel",
@@ -160,6 +163,7 @@ methods = (
     'get_workflow_registrations',
     'get_feature_permission_defaults',
     'get_setup_step_registrations',
+    'get_context_clause_registrations',
 )
 for cls in (Feature, HostFeature):
     for name in methods:
@@ -218,6 +222,9 @@ def test_all_contribution_method_annotations_resolve_without_extra_globals() -> 
             feature_contracts.FeaturePermissionDefaults | None
         ),
         "get_setup_step_registrations": feature_contracts.SetupStepContributions,
+        "get_context_clause_registrations": (
+            feature_contracts.ContextClauseContributions
+        ),
     }
 
     for feature_class in (Feature, HostFeature):
@@ -276,6 +283,7 @@ def test_existing_feature_fixture_works_without_new_overrides() -> None:
     assert feature.get_workflow_registrations() == ()
     assert feature.get_feature_permission_defaults() is None
     assert feature.get_setup_step_registrations() == ()
+    assert feature.get_context_clause_registrations() == ()
     assert feature.get_permission_defaults() == "legacy permission API"
     assert feature.get_setup_steps() == ["legacy setup API"]
 
@@ -296,5 +304,6 @@ async def test_existing_host_feature_fixture_works_without_new_overrides() -> No
     assert feature.get_workflow_registrations() == ()
     assert feature.get_feature_permission_defaults() is None
     assert feature.get_setup_step_registrations() == ()
+    assert feature.get_context_clause_registrations() == ()
     assert feature.get_permission_defaults() == "legacy host permission API"
     assert feature.get_setup_steps() == ["legacy host setup API"]

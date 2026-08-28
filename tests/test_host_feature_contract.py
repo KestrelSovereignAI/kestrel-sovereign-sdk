@@ -181,6 +181,7 @@ def test_declares_required_contract_methods():
         "get_workflow_registrations",
         "get_feature_permission_defaults",
         "get_setup_step_registrations",
+        "get_context_clause_registrations",
     ):
         assert hasattr(HostFeature, name), f"missing contract method: {name}"
 
@@ -216,6 +217,7 @@ def test_base_defaults_are_thin():
     assert bare.get_workflow_registrations() == ()
     assert bare.get_feature_permission_defaults() is None
     assert bare.get_setup_step_registrations() == ()
+    assert bare.get_context_clause_registrations() == ()
     assert "Bare" in bare.contribution_owner
 
 
