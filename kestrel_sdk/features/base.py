@@ -42,6 +42,7 @@ from kestrel_sdk.features.ui import UIContributions
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kestrel_sdk.features.contributions import (
+        ContextClauseContributions,
         FeaturePermissionDefaults,
         ServiceContributions,
         SetupStepContributions,
@@ -340,6 +341,17 @@ class Feature(ABC):
         The runtime collects once per enable transition, validates declared
         owners against the registered feature identity, and retains the exact
         callables and identities for teardown.
+        """
+        return ()
+
+    def get_context_clause_registrations(
+        self,
+    ) -> _contribution_annotation("ContextClauseContributions"):
+        """Return this feature's instance-stable context-clause registrations.
+
+        Sovereign collects these once per enable transition, validates their
+        owners and identities, and retains the exact renderer objects until
+        disable teardown. The host controls rendering and prompt budgeting.
         """
         return ()
 

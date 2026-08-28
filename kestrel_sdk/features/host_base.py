@@ -60,6 +60,7 @@ from kestrel_sdk.storage.database import (
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastapi import APIRouter
     from kestrel_sdk.features.contributions import (
+        ContextClauseContributions,
         FeaturePermissionDefaults,
         ServiceContributions,
         SetupStepContributions,
@@ -306,6 +307,16 @@ class HostFeature(ABC):
 
         Sovereign collects and validates these once at host start and retains
         exact callable objects and identities until host stop.
+        """
+        return ()
+
+    def get_context_clause_registrations(
+        self,
+    ) -> _contribution_annotation("ContextClauseContributions"):
+        """Return instance-stable context clauses for this host lifecycle.
+
+        Sovereign collects and validates these once at host start and retains
+        the exact renderer objects until host stop.
         """
         return ()
 

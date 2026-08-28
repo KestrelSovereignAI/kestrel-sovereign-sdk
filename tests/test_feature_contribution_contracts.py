@@ -10,6 +10,7 @@ import pytest
 
 from kestrel_sdk.features import (
     ContributionContractError,
+    ContextClauseRegistration,
     Feature,
     FeaturePermissionDefaults,
     PermissionLevel,
@@ -65,6 +66,10 @@ async def _workflow_actor(run_id: str) -> str:
 
 def _setup_step(ctx: SetupStepContext) -> None:
     ctx.record("fixture configured")
+
+
+def _context_clause() -> str:
+    return "Fixture context"
 
 
 _SOURCE = SourceRegistration(
@@ -126,6 +131,14 @@ class ExternalFixtureFeature(Feature):
                 "fixture_launch": PermissionLevel.ALWAYS_ASK,
             }
         )
+        self._context_clauses = (
+            ContextClauseRegistration(
+                owner=self.contribution_owner,
+                name="fixture-context",
+                priority=700,
+                renderer=_context_clause,
+            ),
+        )
         self._setup_steps = (
             SetupStepRegistration(
                 owner=self.contribution_owner,
@@ -159,6 +172,9 @@ class ExternalFixtureFeature(Feature):
     def get_setup_step_registrations(self):
         return self._setup_steps
 
+    def get_context_clause_registrations(self):
+        return self._context_clauses
+
     def get_router(self):
         return _Router()
 
@@ -177,6 +193,7 @@ def test_external_feature_can_expose_every_row_one_seam_via_sdk() -> None:
     wait = feature.get_wait_provider_registrations()[0]
     workflow = feature.get_workflow_registrations()[0]
     setup = feature.get_setup_step_registrations()[0]
+    context_clause = feature.get_context_clause_registrations()[0]
     permissions = feature.get_feature_permission_defaults()
 
     assert service.reference.agent_id == "agent-fixture"
@@ -196,6 +213,9 @@ def test_external_feature_can_expose_every_row_one_seam_via_sdk() -> None:
     assert setup.identity == (feature.contribution_owner, "fixture")
     assert setup.name == "fixture"
     assert setup.after == ("integrations",)
+    assert context_clause.identity == (feature.contribution_owner, "fixture-context")
+    assert context_clause.priority == 700
+    assert context_clause.renderer() == "Fixture context"
     assert permissions is not None
     assert permissions.feature_default is PermissionLevel.ASK
     assert permissions.tool_overrides["fixture_status"] is PermissionLevel.ALLOW
@@ -223,6 +243,10 @@ def test_contribution_methods_return_instance_stable_objects() -> None:
         feature.get_setup_step_registrations()
         is feature.get_setup_step_registrations()
     )
+    assert (
+        feature.get_context_clause_registrations()
+        is feature.get_context_clause_registrations()
+    )
 
 
 def test_owned_identity_supports_exact_deterministic_teardown() -> None:
@@ -232,6 +256,7 @@ def test_owned_identity_supports_exact_deterministic_teardown() -> None:
         for registration in (
             *feature.get_wait_provider_registrations(),
             *feature.get_workflow_registrations(),
+            *feature.get_context_clause_registrations(),
         )
     }
     other_owner = WorkflowRegistration(
@@ -279,6 +304,14 @@ def test_registration_validation_prevents_ambiguous_identity() -> None:
     with pytest.raises(TypeError, match="actor must be callable"):
         WorkflowRegistration(
             "fixture", "actor", object(), _SOURCE  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="priority must be an int"):
+        ContextClauseRegistration(
+            "fixture", "context", True, _context_clause  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="renderer must be callable"):
+        ContextClauseRegistration(
+            "fixture", "context", 100, object()  # type: ignore[arg-type]
         )
 
 
@@ -378,10 +411,12 @@ def test_runtime_validation_checks_types_owners_and_duplicate_identities() -> No
         workflows=feature.get_workflow_registrations(),
         permission_defaults=feature.get_feature_permission_defaults(),
         setup_steps=feature.get_setup_step_registrations(),
+        context_clauses=feature.get_context_clause_registrations(),
     )
 
     assert validated.services is feature.get_service_registrations()
     assert validated.services[0].service is feature
+    assert validated.context_clauses is feature.get_context_clause_registrations()
     with pytest.raises(ContributionContractError, match="must be returned as a tuple"):
         validate_feature_contributions(
             feature.contribution_owner,
@@ -391,6 +426,17 @@ def test_runtime_validation_checks_types_owners_and_duplicate_identities() -> No
             workflows=(),
             permission_defaults=None,
             setup_steps=(),
+        )
+    with pytest.raises(ContributionContractError, match="must be returned as a tuple"):
+        validate_feature_contributions(
+            feature.contribution_owner,
+            tool_names=(),
+            services=(),
+            wait_providers=(),
+            workflows=(),
+            permission_defaults=None,
+            setup_steps=(),
+            context_clauses=[],
         )
     wrong_owner = SetupStepRegistration("other-feature", "step", _setup_step)
     with pytest.raises(ContributionContractError, match="expected 'fixture-feature'"):
@@ -415,6 +461,33 @@ def test_runtime_validation_checks_types_owners_and_duplicate_identities() -> No
             setup_steps=(),
         )
 
+    context_clause = feature.get_context_clause_registrations()[0]
+    with pytest.raises(ContributionContractError, match="duplicate identity"):
+        validate_feature_contributions(
+            feature.contribution_owner,
+            tool_names=(),
+            services=(),
+            wait_providers=(),
+            workflows=(),
+            permission_defaults=None,
+            setup_steps=(),
+            context_clauses=(context_clause, context_clause),
+        )
+    wrong_context_owner = ContextClauseRegistration(
+        "other-feature", "context", 100, _context_clause
+    )
+    with pytest.raises(ContributionContractError, match="expected 'fixture-feature'"):
+        validate_feature_contributions(
+            feature.contribution_owner,
+            tool_names=(),
+            services=(),
+            wait_providers=(),
+            workflows=(),
+            permission_defaults=None,
+            setup_steps=(),
+            context_clauses=(wrong_context_owner,),
+        )
+
 
 def test_runtime_rejects_duplicate_owners_across_active_feature_set() -> None:
     owners = ("package-a:Feature", "package-b:Feature", "explicit-owner")
@@ -437,6 +510,7 @@ def test_runtime_rejects_duplicate_owners_across_active_feature_set() -> None:
         ("wait_providers", (object(),)),
         ("workflows", (object(),)),
         ("setup_steps", (object(),)),
+        ("context_clauses", (object(),)),
         ("permission_defaults", object()),
     ],
 )
@@ -450,6 +524,7 @@ def test_runtime_validation_rejects_every_bad_contribution_type(
         "workflows": (),
         "permission_defaults": None,
         "setup_steps": (),
+        "context_clauses": (),
     }
     values[field] = bad_value
 
@@ -518,6 +593,7 @@ def test_base_feature_defaults_preserve_existing_subclasses() -> None:
     assert feature.get_workflow_registrations() == ()
     assert feature.get_feature_permission_defaults() is None
     assert feature.get_setup_step_registrations() == ()
+    assert feature.get_context_clause_registrations() == ()
 
 
 @pytest.mark.asyncio

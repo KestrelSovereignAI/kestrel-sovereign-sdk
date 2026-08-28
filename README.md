@@ -120,6 +120,7 @@ change:
 ```python
 from kestrel_sdk.features import (
     ContributionContractError,
+    ContextClauseRegistration,
     FeaturePermissionDefaults,
     ServiceContributions,
     SetupFlow,
@@ -135,8 +136,9 @@ from kestrel_sdk.features import (
 Agent features expose these through `get_service_registrations()`,
 `get_wait_provider_registrations()`, `get_workflow_registrations()`,
 `get_feature_permission_defaults()`, and
-`get_setup_step_registrations()`. Host features use the same methods, tied to
-host start/stop instead of agent enable/disable. Sovereign calls each method
+`get_setup_step_registrations()`, and
+`get_context_clause_registrations()`. Host features use the same methods, tied
+to host start/stop instead of agent enable/disable. Sovereign calls each method
 exactly once per enable or host-start transition, validates every collection
 and element with
 `validate_feature_contributions(feature.contribution_owner, tool_names=...)`,
@@ -163,7 +165,10 @@ subclasses may continue assigning any legacy value to `self.owner`, including
 display text, objects, or `None`, without affecting contribution identity.
 
 `ServiceRegistration`, `WaitProviderRegistration`, `WorkflowRegistration`,
-and `SetupStepRegistration` all carry that lifecycle owner. A workflow
+`SetupStepRegistration`, and `ContextClauseRegistration` all carry that
+lifecycle owner. A context-clause registration retains a zero-argument string
+renderer; Sovereign owns when it renders and how the integer priority affects
+deterministic ordering and budget eviction. A workflow
 registration represents one actor identity and an immutable tuple containing
 zero or more `SourceRegistration` values. Sovereign registers the actor once,
 then registers each source without duplicating the actor. Source names must be

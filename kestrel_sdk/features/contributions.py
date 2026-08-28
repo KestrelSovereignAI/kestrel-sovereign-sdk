@@ -131,6 +131,7 @@ class WaitProviderRegistration:
 
 ContributionResult: TypeAlias = object | Awaitable[object]
 WorkflowActor: TypeAlias = Callable[..., ContributionResult]
+ContextClauseRenderer: TypeAlias = Callable[[], str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +170,35 @@ class WorkflowRegistration:
         if len(set(source_names)) != len(source_names):
             raise ValueError("workflow source names must be unique")
         object.__setattr__(self, "sources", sources)
+
+    @property
+    def identity(self) -> tuple[str, str]:
+        """Stable ``(owner, name)`` key used for deterministic teardown."""
+
+        return (self.owner, self.name)
+
+
+@dataclass(frozen=True, slots=True)
+class ContextClauseRegistration:
+    """One lifecycle-owned system-context clause renderer.
+
+    Sovereign collects the registration once per feature transition and owns
+    when the zero-argument renderer is called. ``priority`` controls drop and
+    deterministic ordering policy in the host; it does not grant the clause a
+    fixed prompt position or authority over higher-priority host doctrine.
+    """
+
+    owner: str
+    name: str
+    priority: int
+    renderer: ContextClauseRenderer
+
+    def __post_init__(self) -> None:
+        _owned_identity(self.owner, self.name)
+        if isinstance(self.priority, bool) or not isinstance(self.priority, int):
+            raise TypeError("priority must be an int")
+        if not callable(self.renderer):
+            raise TypeError("renderer must be callable")
 
     @property
     def identity(self) -> tuple[str, str]:
@@ -402,6 +432,7 @@ class FeatureContributionSet:
     workflows: tuple[WorkflowRegistration, ...]
     permission_defaults: FeaturePermissionDefaults | None
     setup_steps: tuple[SetupStepRegistration, ...]
+    context_clauses: tuple[ContextClauseRegistration, ...] = ()
 
 
 def validate_contribution_owner_uniqueness(
@@ -450,6 +481,7 @@ def validate_feature_contributions(
     workflows: object,
     permission_defaults: object,
     setup_steps: object,
+    context_clauses: object = (),
 ) -> FeatureContributionSet:
     """Validate values collected from one feature lifecycle transition.
 
@@ -481,6 +513,11 @@ def validate_feature_contributions(
     setup_values = _typed_tuple(
         setup_steps, SetupStepRegistration, "setup step registrations"
     )
+    context_clause_values = _typed_tuple(
+        context_clauses,
+        ContextClauseRegistration,
+        "context clause registrations",
+    )
     if permission_defaults is not None and not isinstance(
         permission_defaults, FeaturePermissionDefaults
     ):
@@ -499,6 +536,7 @@ def validate_feature_contributions(
         ("get_wait_provider_registrations", wait_values),
         ("get_workflow_registrations", workflow_values),
         ("get_setup_step_registrations", setup_values),
+        ("get_context_clause_registrations", context_clause_values),
     ):
         identities: set[object] = set()
         for registration in registrations:
@@ -527,6 +565,7 @@ def validate_feature_contributions(
         workflows=workflow_values,
         permission_defaults=permission_defaults,
         setup_steps=setup_values,
+        context_clauses=context_clause_values,
     )
 
 
@@ -544,11 +583,15 @@ ServiceContributions: TypeAlias = tuple[ServiceRegistration, ...]
 WaitProviderContributions: TypeAlias = tuple[WaitProviderRegistration, ...]
 WorkflowContributions: TypeAlias = tuple[WorkflowRegistration, ...]
 SetupStepContributions: TypeAlias = tuple[SetupStepRegistration, ...]
+ContextClauseContributions: TypeAlias = tuple[ContextClauseRegistration, ...]
 
 
 __all__ = [
     "ContributionContractError",
     "ContributionResult",
+    "ContextClauseContributions",
+    "ContextClauseRegistration",
+    "ContextClauseRenderer",
     "FeaturePermissionDefaults",
     "FeatureContributionSet",
     "PermissionLevel",
