@@ -72,7 +72,7 @@ Repo entry points and standard project files.
 - **kestrel_sdk/features/base.py** — Base class for Kestrel Features — SDK interface.
   - `class TaskHandler`; `def parse_docstring_params(docstring)`; `class Feature`; `def tool(name, description, category, command_prefix)`
 - **kestrel_sdk/features/contributions.py** — Declarative feature contribution contracts.
-  - `class PermissionLevel`; `class FeaturePermissionDefaults`; `class ContributionContractError`; `class WaitProviderRegistration`; `class WorkflowRegistration`; `class SetupStepContext`; `class SetupFlow`; `def normalize_setup_flow(value)`; `…`
+  - `class PermissionLevel`; `class FeaturePermissionDefaults`; `class ContributionContractError`; `class WaitProviderRegistration`; `class WorkflowRegistration`; `class ContextClauseRegistration`; `class SetupStepContext`; `class SetupFlow`; `…`
 - **kestrel_sdk/features/host_base.py** — Host-scoped feature contract — SDK interface.
   - `class HostContext`; `class HostFeature`
 - **kestrel_sdk/features/ui.py** — SDK-owned UI contribution shape.
