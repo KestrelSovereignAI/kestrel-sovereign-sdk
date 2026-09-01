@@ -1,0 +1,74 @@
+{
+  "$schema": "kestrel.two-axes.peer-drives-spawned-child/v1",
+  "scenario": "peer_drives_spawned_child",
+  "identities": {
+    "parent_did": "did:example:two-axes-parent",
+    "peer_did": "did:example:two-axes-peer",
+    "child_did": "did:example:two-axes-child"
+  },
+  "a2a_task": {
+    "id": "task-two-axes-peer-to-child-001",
+    "signed_metadata_causation_chain": [
+      {
+        "agent_id": "did:example:two-axes-peer",
+        "source": "a2a.task_submitted",
+        "signal_id": "task-two-axes-peer-to-child-001",
+        "turn_id": "turn-two-axes-peer-001",
+        "depth": 1,
+        "emitted_at": "2026-08-31T12:00:00+00:00"
+      }
+    ],
+    "canonical_recipient_chain": [
+      {
+        "agent_id": "did:example:two-axes-peer",
+        "source": "a2a.task_submitted",
+        "signal_id": "task-two-axes-peer-to-child-001",
+        "turn_id": "turn-two-axes-peer-001",
+        "depth": 1,
+        "emitted_at": "2026-08-31T12:00:00+00:00"
+      },
+      {
+        "agent_id": "did:example:two-axes-child",
+        "source": "a2a.task_submitted",
+        "signal_id": "signal-two-axes-child-receives-task-001",
+        "turn_id": null,
+        "depth": 2,
+        "emitted_at": "2026-08-31T12:00:01+00:00"
+      }
+    ]
+  },
+  "lineage": {
+    "parent_did": "did:example:two-axes-parent",
+    "child_did": "did:example:two-axes-child"
+  },
+  "expected": {
+    "causal_predecessor_did": "did:example:two-axes-peer",
+    "authority_holder_did": "did:example:two-axes-parent",
+    "missing_causation": "unknown",
+    "truncated_causation": "unknown",
+    "unsigned_lineage_authority": "denied",
+    "tampered_lineage_authority": "denied",
+    "valid_causation_with_invalid_lineage": "preserved"
+  },
+  "forbidden_authority_from_causation": [
+    "terminate",
+    "delegate",
+    "cascade",
+    "hold",
+    "mutate"
+  ],
+  "verification_matrix": {
+    "storage_backends": [
+      "sqlite",
+      "postgres"
+    ],
+    "load_orders": [
+      "core_then_observability",
+      "observability_then_core"
+    ],
+    "restart_states": [
+      "before_restart",
+      "after_cold_restart"
+    ]
+  }
+}
