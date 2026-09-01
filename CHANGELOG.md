@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.38.0 — 2026-08-31
+
+### Added
+
+- Added a validated, versioned Two Axes contract fixture shared by Sovereign
+  core and out-of-tree observability features. The fixture keeps a peer causal
+  predecessor distinct from a spawned child's signed-lineage parent and pins
+  fail-closed, cold-restart, backend, and load-order expectations.
+
 ## 0.37.1 — 2026-08-28
 
 ### Added

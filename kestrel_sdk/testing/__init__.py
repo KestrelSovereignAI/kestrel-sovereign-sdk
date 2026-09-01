@@ -65,11 +65,19 @@ from .conformance import (
     drain_streaming_with_tools,
     drain_streaming_text_only,
 )
+from .two_axes_contract import (
+    TWO_AXES_CONTRACT_SCHEMA,
+    TwoAxesContractFixture,
+    load_two_axes_contract,
+)
 
 __all__ = [
     "StreamingWithToolsResult",
+    "TWO_AXES_CONTRACT_SCHEMA",
+    "TwoAxesContractFixture",
     "assert_response_contract",
     "assert_tool_call_started_contract",
     "drain_streaming_text_only",
     "drain_streaming_with_tools",
+    "load_two_axes_contract",
 ]
