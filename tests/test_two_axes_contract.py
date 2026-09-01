@@ -43,7 +43,7 @@ def test_packaged_fixture_pins_fail_closed_and_restart_matrix() -> None:
         "hold",
         "mutate",
     }
-    assert fixture.storage_backends == {"sqlite", "postgresql"}
+    assert fixture.storage_backends == {"sqlite", "postgres"}
     assert fixture.load_orders == {
         "core_then_observability",
         "observability_then_core",
@@ -76,6 +76,12 @@ def test_wire_chain_accessors_return_fresh_json_compatible_values() -> None:
                 "signed_metadata_causation_chain"
             ][0].__setitem__("agent_id", raw["identities"]["parent_did"]),
             "signed metadata does not identify the peer producer",
+        ),
+        (
+            lambda raw: raw["a2a_task"]["canonical_recipient_chain"][0].__setitem__(
+                "emitted_at", "2026-08-31T07:00:00-05:00"
+            ),
+            "recipient chain must preserve the signed producer frame",
         ),
         (
             lambda raw: raw["forbidden_authority_from_causation"].remove("hold"),

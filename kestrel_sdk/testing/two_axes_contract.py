@@ -29,7 +29,7 @@ _EXPECTED_FORBIDDEN_ACTIONS = frozenset(
     {"terminate", "delegate", "cascade", "hold", "mutate"}
 )
 _EXPECTED_MATRIX_VALUES = {
-    "storage_backends": frozenset({"sqlite", "postgresql"}),
+    "storage_backends": frozenset({"sqlite", "postgres"}),
     "load_orders": frozenset(
         {"core_then_observability", "observability_then_core"}
     ),
@@ -115,7 +115,12 @@ def _parse_two_axes_contract(raw: Any) -> TwoAxesContractFixture:
         or producer.depth != 1
     ):
         raise ValueError("signed metadata does not identify the peer producer")
-    if len(recipient_chain) != 2 or recipient_chain[0] != producer:
+    signed_wire_chain = task["signed_metadata_causation_chain"]
+    recipient_wire_chain = task["canonical_recipient_chain"]
+    if (
+        len(recipient_chain) != 2
+        or recipient_wire_chain[0] != signed_wire_chain[0]
+    ):
         raise ValueError("recipient chain must preserve the signed producer frame")
     recipient = recipient_chain[1]
     if (

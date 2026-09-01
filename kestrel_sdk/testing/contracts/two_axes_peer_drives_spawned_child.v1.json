@@ -60,7 +60,7 @@
   "verification_matrix": {
     "storage_backends": [
       "sqlite",
-      "postgresql"
+      "postgres"
     ],
     "load_orders": [
       "core_then_observability",
