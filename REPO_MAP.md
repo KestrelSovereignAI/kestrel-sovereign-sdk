@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 126 tracked files (114 `.py`, 5 `.md`, 7 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 129 tracked files (116 `.py`, 5 `.md`, 8 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -143,6 +143,9 @@ Repo entry points and standard project files.
 - **kestrel_sdk/testing/__init__.py** — Plugin conformance helpers (SDK 0.8.0+).
 - **kestrel_sdk/testing/conformance.py** — Conformance assertions for the LLM adapter streaming contract.
   - `class StreamingWithToolsResult`; `async def drain_streaming_with_tools(stream)`; `async def drain_streaming_text_only(stream)`; `def assert_tool_call_started_contract(marker)`; `def assert_response_contract(response)`
+- **kestrel_sdk/testing/contracts/two_axes_peer_drives_spawned_child.v1.json** — (configuration)
+- **kestrel_sdk/testing/two_axes_contract.py** — Versioned cross-repository fixture for the Two Axes contract.
+  - `class TwoAxesContractFixture`; `def load_two_axes_contract()`
 - **kestrel_sdk/timeline/__init__.py** — Timeline protocols for cross-implementation interop.
 - **kestrel_sdk/timeline/protocol.py** — Timeline Protocol — minimal duck-typed shape for timeline implementations.
   - `class TimelineProtocol`; `class EventProtocol`; `class PersonProtocol`
@@ -240,6 +243,8 @@ Repo entry points and standard project files.
   - `def test_resolve_optional_and_union_and_generics()`; `def test_resolved_flag_distinguishes_mapping_from_fallback()`; `def test_no_warning_for_optional_str_but_warning_for_true_fallback(caplog)`; `def test_tool_schema_under_pep563_string_annotations()`; `def test_unresolvable_annotation_falls_back_to_string_without_crashing()`; `def test_raw_str_annotation_after_hint_failure_resolves_without_warning(caplog)`
 - **tests/test_tracing.py** — Tests for the OTel instrumentation helper (``kestrel_sdk.tracing``).
   - `class TestWorksWithoutExtra`; `class TestNoOpWhenUnconfigured`; `class TestConfigureEnabled`; `class TestSpanTree`; `class TestAttributeResolution`; `class TestLLMSpan`; `class TestProjectNameResourceAttr`; `class TestConventionDrift`
+- **tests/test_two_axes_contract.py** — Shared Two Axes fixture contract tests (kestrel-sovereign#3200).
+  - `def test_packaged_fixture_keeps_causation_and_authority_on_different_axes()`; `def test_packaged_fixture_pins_fail_closed_and_restart_matrix()`; `def test_wire_chain_accessors_return_fresh_json_compatible_values()`; `def test_parser_rejects_relationship_or_matrix_collapse(mutation, message)`
 - **tests/test_vector_search_protocol.py** — Tests for vector search backend protocol.
   - `class StubVectorSearchBackend`; `async def test_vector_search_backend_conformance()`; `async def test_vector_search_backend_callable()`; `async def test_vector_search_backend_without_filter()`; `async def test_vector_search_backend_supports_filters_property()`; `async def test_vector_search_backend_returns_tuples()`
 - **tests/test_voice_provider_contract.py** — —
