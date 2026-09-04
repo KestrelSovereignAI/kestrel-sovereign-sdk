@@ -136,9 +136,9 @@ from kestrel_sdk.features import (
 Agent features expose these through `get_service_registrations()`,
 `get_wait_provider_registrations()`, `get_workflow_registrations()`,
 `get_feature_permission_defaults()`, and
-`get_setup_step_registrations()`, and
-`get_context_clause_registrations()`. Host features use the same methods, tied
-to host start/stop instead of agent enable/disable. Sovereign calls each method
+`get_setup_step_registrations()`, and `get_context_clause_registrations()`.
+Host features use the same methods, tied to host start/stop instead of agent
+enable/disable. Sovereign calls each contribution getter
 exactly once per enable or host-start transition, validates every collection
 and element with
 `validate_feature_contributions(feature.contribution_owner, tool_names=...)`,
@@ -168,11 +168,20 @@ display text, objects, or `None`, without affecting contribution identity.
 `SetupStepRegistration`, and `ContextClauseRegistration` all carry that
 lifecycle owner. A context-clause registration retains a zero-argument string
 renderer; Sovereign owns when it renders and how the integer priority affects
-deterministic ordering and budget eviction. A workflow
-registration represents one actor identity and an immutable tuple containing
-zero or more `SourceRegistration` values. Sovereign registers the actor once,
-then registers each source without duplicating the actor. Source names must be
-unique across all workflow registrations returned by one feature.
+deterministic ordering and budget eviction. Before a host-owned configuration
+transition rerenders the complete active context-clause set, Sovereign awaits
+each contributing feature's optional `prepare_context_clause_refresh()` hook.
+Features may override that async hook to load state that only became readable
+after a privacy or other host policy change. The hook must update only the
+feature's own renderer state and must not publish context clauses itself:
+Sovereign invokes every synchronous renderer only after all preparation
+succeeds, then atomically commits the complete batch. The base implementation
+is a no-op, so existing feature classes remain compatible.
+
+A workflow registration represents one actor identity and an immutable tuple
+containing zero or more `SourceRegistration` values. Sovereign registers the
+actor once, then registers each source without duplicating the actor. Source
+names must be unique across all workflow registrations returned by one feature.
 
 Setup-step `before` and `after` values are hard topological constraints across
 the complete active step set. Unknown references and cycles reject the whole
