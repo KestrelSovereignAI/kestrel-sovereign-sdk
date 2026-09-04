@@ -182,6 +182,7 @@ def test_declares_required_contract_methods():
         "get_feature_permission_defaults",
         "get_setup_step_registrations",
         "get_context_clause_registrations",
+        "prepare_context_clause_refresh",
     ):
         assert hasattr(HostFeature, name), f"missing contract method: {name}"
 

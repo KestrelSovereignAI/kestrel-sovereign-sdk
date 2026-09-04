@@ -320,5 +320,18 @@ class HostFeature(ABC):
         """
         return ()
 
+    async def prepare_context_clause_refresh(self) -> None:
+        """Prepare host-feature state before a host context refresh.
+
+        Sovereign awaits this hook before synchronously rendering and
+        atomically committing the complete context-clause batch. Host features
+        whose renderers depend on asynchronous state may override it, but must
+        leave publication to the host-owned batch transition.
+
+        The default is an additive no-op for existing host features.
+        """
+
+        return None
+
 
 __all__ = ["HostFeature", "HostContext"]

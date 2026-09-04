@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.38.1 — 2026-09-04
+
+### Added
+
+- Added the optional async `Feature` / `HostFeature`
+  `prepare_context_clause_refresh()` lifecycle hook. Hosts await it before
+  synchronously rendering and atomically committing a context-clause refresh,
+  allowing feature caches to rehydrate after privacy or other host-owned
+  configuration transitions without making prompt reads asynchronous.
+
 ## 0.38.0 — 2026-08-31
 
 ### Added

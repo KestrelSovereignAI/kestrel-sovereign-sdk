@@ -289,6 +289,15 @@ def test_existing_feature_fixture_works_without_new_overrides() -> None:
 
 
 @pytest.mark.asyncio
+async def test_existing_feature_context_refresh_preparation_is_noop() -> None:
+    """The additive lifecycle hook must not burden existing features."""
+
+    feature = _LegacyFeature(object())
+
+    assert await feature.prepare_context_clause_refresh() is None
+
+
+@pytest.mark.asyncio
 async def test_existing_host_feature_fixture_works_without_new_overrides() -> None:
     feature = _LegacyHostFeature()
     events: list[str] = []
@@ -307,3 +316,4 @@ async def test_existing_host_feature_fixture_works_without_new_overrides() -> No
     assert feature.get_context_clause_registrations() == ()
     assert feature.get_permission_defaults() == "legacy host permission API"
     assert feature.get_setup_steps() == ["legacy host setup API"]
+    assert await feature.prepare_context_clause_refresh() is None

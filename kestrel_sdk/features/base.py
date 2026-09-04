@@ -355,6 +355,21 @@ class Feature(ABC):
         """
         return ()
 
+    async def prepare_context_clause_refresh(self) -> None:
+        """Prepare feature-owned state before a host context refresh.
+
+        Sovereign awaits this hook after a host-owned configuration change and
+        before it invokes the synchronous context-clause renderers as one
+        atomic batch. Features whose renderer depends on asynchronously loaded
+        state may override the hook to refresh that state. Implementations must
+        not publish context clauses themselves: the host owns the subsequent
+        all-feature render and commit.
+
+        The default is an additive no-op for existing features.
+        """
+
+        return None
+
     async def post_all_features_loaded(self, agent):
         """Called after ALL features are discovered and initialized."""
         pass
