@@ -78,6 +78,23 @@ class MyFeature(Feature):
         return [Tool(name="my-tool", description="Does something", handler=self.handle)]
 ```
 
+### Tool argument types
+
+A `@tool` method receives each argument as the JSON type its annotation
+declares. Models routinely send an integer as `"30"` or a boolean as `"true"`,
+so the wrapper coerces those to `30` and `True` before the call — the same
+rules the `!tool arg` command-prefix parser uses. `str`, list, and dict
+parameters pass through untouched. A value that cannot be coerced, such as
+`"thirty"` for an `int`, never reaches the method: the call returns
+`ToolResult.failed(...)` naming the parameter and the type it expects.
+
+JSON `null` is judged the same way, because `min(None, 100)` fails exactly as
+`min("30", 100)` did. A numeric or boolean parameter accepts `null` only when
+its signature admits it — `Optional[int]`, `int | None`, or a literal `None`
+default — which `@tool` records as the new `ToolParameter.nullable` field. A
+`null` sent for a required `count: int`, or for `max_results: int = 30`, is
+refused with the same named failure instead of reaching the method.
+
 ## Operator execution contracts
 
 `kestrel_sdk.operator` is the public contract surface for feature-owned
