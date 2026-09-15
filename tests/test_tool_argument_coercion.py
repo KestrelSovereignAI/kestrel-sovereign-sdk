@@ -324,6 +324,20 @@ class TestJsonNull:
         assert "not supported between instances" not in str(out)
 
     @pytest.mark.asyncio
+    async def test_integer_too_large_for_a_float_is_a_coercion_failure(self, feature):
+        """``float(10**309)`` raises OverflowError; the wrapper must not leak it.
+
+        Coercion runs before the method call and outside the method's own
+        exception handling, so an uncaught error here escapes ``execute``
+        entirely instead of producing the promised failed ToolResult.
+        """
+        out = await _dyn_tool(feature, "scale").execute(factor=10**309)
+        assert out["status"] == "error"
+        assert "factor" in out["error"]
+        assert "number" in out["error"]
+        assert feature.calls == []
+
+    @pytest.mark.asyncio
     async def test_non_none_default_does_not_make_a_parameter_nullable(self, feature):
         """``max_results: int = 30`` never contemplated None."""
         out = await _dyn_tool(feature, "get_comments").execute(

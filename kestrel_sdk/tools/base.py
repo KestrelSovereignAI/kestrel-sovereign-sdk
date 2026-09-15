@@ -87,7 +87,13 @@ def coerce_json_value(value: Any, param_type: str, nullable: bool = False) -> An
         if isinstance(value, bool):
             return COERCION_FAILED
         if isinstance(value, (int, float)):
-            return float(value)
+            # A JSON integer is unbounded; ``float`` raises OverflowError past
+            # ~1.8e308, and that must be a coercion failure, not an exception
+            # escaping the tool's failure envelope (review on #78).
+            try:
+                return float(value)
+            except OverflowError:
+                return COERCION_FAILED
         if isinstance(value, str):
             try:
                 return float(value)
