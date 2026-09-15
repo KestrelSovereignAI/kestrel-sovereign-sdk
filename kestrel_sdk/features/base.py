@@ -31,7 +31,14 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from kestrel_sdk.tools.base import ToolSchema, ToolParameter, ToolCategory, AgentTool
+from kestrel_sdk.tools.base import (
+    COERCION_FAILED,
+    ToolSchema,
+    ToolParameter,
+    ToolCategory,
+    AgentTool,
+    coerce_json_value,
+)
 from kestrel_sdk.a2a.agent_card import AgentCard, AgentSkill, AgentCapabilities
 from kestrel_sdk.a2a.types import Task, TaskState, TaskStatus, Artifact, DataPart, Message, TextPart
 from kestrel_sdk.features._contribution_support import (
@@ -188,6 +195,58 @@ def _resolve_json_type(
 
     resolved = annotation in _JSON_TYPE_MAP
     return _JSON_TYPE_MAP.get(annotation, "string"), None, False, resolved
+
+
+_REJECTED_VALUE_REPR_LIMIT = 120
+
+
+def _coerce_tool_arguments(
+    tool_name: str,
+    parameters: List[ToolParameter],
+    arguments: Dict[str, Any],
+) -> tuple[Dict[str, Any], Optional[str]]:
+    """Coerce model-supplied arguments to the types the tool schema declares.
+
+    ``@tool`` advertises each parameter's JSON type to the model, but a model
+    is free to send an integer as the string ``"30"``. Before this ran, that
+    string reached the feature method untouched and any arithmetic, slicing or
+    comparison on it raised from inside the feature — ``min("30", 100)``
+    surfacing as "'<' not supported between instances of 'int' and 'str'"
+    (issue #78). Coercion uses :func:`coerce_json_value`, the same rules as the
+    command-prefix path, so the two cannot disagree.
+
+    A JSON ``null`` is judged by the same rule: it is a value for a parameter
+    whose signature admits ``None`` and a type error for one that doesn't,
+    because ``min(None, 100)`` fails exactly as ``min("30", 100)`` did.
+
+    Arguments with no matching parameter are left alone, and a failure leaves
+    the original mapping untouched.
+
+    Returns:
+        ``(coerced_arguments, error)``. ``error`` is ``None`` when every
+        argument already matched or coerced; otherwise it names the offending
+        parameter and the type it expects.
+    """
+    coerced = dict(arguments)
+    for param in parameters:
+        if param.name not in coerced:
+            continue
+        value = coerced[param.name]
+        result = coerce_json_value(value, param.type, nullable=param.nullable)
+        if result is COERCION_FAILED:
+            # The error travels back into the model's context, so an
+            # oversized rejected value is bounded rather than echoed whole.
+            rendered = repr(value)
+            if len(rendered) > _REJECTED_VALUE_REPR_LIMIT:
+                rendered = f"{rendered[:_REJECTED_VALUE_REPR_LIMIT]}..."
+            return arguments, (
+                f"{tool_name}: parameter '{param.name}' expects type "
+                f"'{param.type}', but received {rendered} "
+                f"({type(value).__name__}), which is not a valid "
+                f"{param.type}"
+            )
+        coerced[param.name] = result
+    return coerced, None
 
 
 class Feature(ABC):
@@ -513,6 +572,24 @@ class Feature(ABC):
                         )
 
                     async def execute(self, **kwargs) -> Dict[str, Any]:
+                        from kestrel_sdk.tools.result import ToolResult
+
+                        # This wrapper is the one door every JSON-argument
+                        # call passes through, and the only place that knows
+                        # the declared type, so arguments are coerced to the
+                        # advertised schema type here (#78). A value that
+                        # can't be coerced fails as a named ToolResult rather
+                        # than a TypeError from inside the feature.
+                        kwargs, coercion_error = _coerce_tool_arguments(
+                            self.name, self._schema_data["parameters"], kwargs
+                        )
+                        if coercion_error is not None:
+                            # The message already names the tool.
+                            logger.error("Rejected tool call — %s", coercion_error)
+                            payload = ToolResult.failed(coercion_error).to_dict()
+                            payload["tool"] = self.name
+                            return payload
+
                         # Bind the pending typed-parts buffer around the
                         # wrapped call (kestrel-sovereign #2641): the
                         # framework's ``emit_part``, finding no per-turn
@@ -551,7 +628,6 @@ class Feature(ABC):
                         # alongside as dispatch-layer metadata so
                         # audit logs can still identify which tool
                         # produced this row.
-                        from kestrel_sdk.tools.result import ToolResult
                         if isinstance(result, ToolResult):
                             payload = result.to_dict()
                             payload["tool"] = self.name
@@ -635,7 +711,7 @@ def tool(name: str, description: str, category: ToolCategory = ToolCategory.SYST
                 continue
 
             annotation = resolved_hints.get(param_name, param.annotation)
-            param_type, items_schema, _nullable, resolved = _resolve_json_type(annotation)
+            param_type, items_schema, nullable, resolved = _resolve_json_type(annotation)
             # Warn only when "string" is a genuine fallback (no JSON-schema
             # equivalent), not when the annotation deliberately maps to string
             # (``str`` / ``Optional[str]``). A missing annotation is normal for
@@ -647,6 +723,14 @@ def tool(name: str, description: str, category: ToolCategory = ToolCategory.SYST
                     name, param_name, annotation,
                 )
             required = param.default == inspect.Parameter.empty
+
+            # A literal ``None`` default admits None just as ``Optional[X]``
+            # does — PEP 484's implicit-Optional form, which plenty of tool
+            # signatures still use (``limit: int = None``). Honouring it keeps
+            # argument coercion from rejecting a null the author clearly
+            # contemplated, while ``max_results: int = 30`` and a bare
+            # ``count: int`` stay non-nullable (#78).
+            nullable = nullable or (not required and param.default is None)
 
             # Get description from parsed docstring, fallback to placeholder
             param_desc = param_descriptions.get(
@@ -661,6 +745,7 @@ def tool(name: str, description: str, category: ToolCategory = ToolCategory.SYST
                 required=required,
                 default=None if required else param.default,
                 items=items_schema,
+                nullable=nullable,
             ))
 
         func._tool_schema = {

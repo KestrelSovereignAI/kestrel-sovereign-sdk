@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.38.2 — 2026-09-15
+
+### Added
+
+- Added `ToolParameter.nullable`, recording whether a parameter's signature
+  admits `None` (`Optional[int]`, `int | None`, or a literal `None` default).
+  `@tool` already computed this and discarded it. The field is last and
+  defaults to `False`, so existing constructions are unaffected, and it does
+  not change the schema advertised to the model.
+
+### Fixed
+
+- Coerced `@tool` arguments to the JSON type their schema declares before the
+  feature method is called. A model that sent an integer as `"30"`, a boolean
+  as `"true"`, or a number as `"1.5"` previously reached the method as a
+  string, so any arithmetic or comparison on it raised from inside the feature
+  (`min("30", 100)`). The wrapper now applies the same rules as the
+  command-prefix parser, and a value that cannot be coerced returns a failed
+  `ToolResult` naming the parameter and its expected type instead of leaking a
+  `TypeError`. String, object, and array parameters pass through unchanged.
+- Refused a JSON `null` sent for a non-nullable numeric or boolean parameter,
+  which reproduced the same failure one line later (`min(None, 100)` raises the
+  `TypeError` that `min("30", 100)` did). Such a `null` now returns the same
+  named failed `ToolResult`; parameters whose signature admits `None` still
+  receive it.
+
 ## 0.38.1 — 2026-09-04
 
 ### Added

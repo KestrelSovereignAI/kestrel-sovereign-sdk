@@ -11,6 +11,107 @@ from typing import Any, Dict, List, Optional
 from enum import Enum
 
 
+class _CoercionFailed:
+    """Singleton sentinel: a value is not representable as the declared type."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<coercion-failed>"
+
+
+COERCION_FAILED = _CoercionFailed()
+
+# Tokens accepted for a "boolean" parameter, shared by both argument paths.
+_TRUE_TOKENS = frozenset({"true", "1", "yes", "on"})
+_FALSE_TOKENS = frozenset({"false", "0", "no", "off"})
+
+# The types this function actually converts, and so the only ones for which a
+# JSON ``null`` is a type error rather than a pass-through value. "string",
+# "object" and "array" values are handed over untouched, ``None`` included.
+_COERCED_TYPES = frozenset({"integer", "number", "boolean"})
+
+
+def coerce_json_value(value: Any, param_type: str, nullable: bool = False) -> Any:
+    """
+    Coerce a value to the JSON schema type its parameter declares.
+
+    This is the single rule set behind both argument paths: the command-prefix
+    parser (``!tool 30``) and the model's decoded JSON arguments
+    (``{"max_results": "30"}``). Keeping one implementation means the two
+    cannot disagree about what ``"30"``, ``"true"`` or ``"1.5"`` mean.
+
+    ``"string"``, ``"object"`` and ``"array"`` parameters pass through
+    unchanged — the SDK does not re-parse or re-shape structured values.
+
+    ``None`` is a value like any other: for a numeric or boolean parameter it
+    is accepted only when ``nullable`` says the parameter admits it. A JSON
+    ``null`` for a non-nullable ``count: int`` reaches the method as ``None``
+    and reproduces issue #78's failure one line later (``min(None, 100)``
+    raises the same ``TypeError`` as ``min("30", 100)`` did), so it is refused
+    here. ``nullable`` defaults to ``False`` to match
+    :attr:`ToolParameter.nullable`: a caller that does not know a parameter's
+    nullability gets the conservative answer.
+
+    Args:
+        value: The raw value, either a command-line token or a decoded JSON value
+        param_type: The expected type from the parameter schema
+        nullable: Whether the parameter accepts ``None``
+
+    Returns:
+        The coerced value, or :data:`COERCION_FAILED` when ``value`` cannot be
+        represented as ``param_type``.
+    """
+    if value is None:
+        if nullable or param_type not in _COERCED_TYPES:
+            return None
+        return COERCION_FAILED
+
+    if param_type == "integer":
+        # bool is a subclass of int, but a JSON ``true`` for an integer
+        # parameter is a model mistake worth surfacing, not a silent 1.
+        if isinstance(value, bool):
+            return COERCION_FAILED
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value) if value.is_integer() else COERCION_FAILED
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                return COERCION_FAILED
+        return COERCION_FAILED
+
+    if param_type == "number":
+        if isinstance(value, bool):
+            return COERCION_FAILED
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                return COERCION_FAILED
+        return COERCION_FAILED
+
+    if param_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            # JSON ``1``/``0`` mirrors the "1"/"0" tokens accepted below.
+            return bool(value) if value in (0, 1) else COERCION_FAILED
+        if isinstance(value, str):
+            token = value.strip().lower()
+            if token in _TRUE_TOKENS:
+                return True
+            if token in _FALSE_TOKENS:
+                return False
+        return COERCION_FAILED
+
+    return value
+
+
 class ToolCategory(Enum):
     """Categories of agent tools for organization and filtering."""
     MODEL_MANAGEMENT = "model_management"
@@ -35,6 +136,12 @@ class ToolParameter:
     default: Any = None
     enum: Optional[List[str]] = None
     items: Optional[Dict[str, Any]] = None  # JSON Schema for array element type
+    # Whether the parameter's signature admits ``None`` (``Optional[int]``,
+    # ``int | None``, or a literal ``None`` default). Argument coercion reads
+    # this to decide whether a JSON ``null`` is a value or a type error; it is
+    # deliberately last so existing positional constructions keep working, and
+    # it does not change the schema advertised to the model.
+    nullable: bool = False
 
 
 @dataclass
@@ -254,6 +361,10 @@ class AgentTool(ABC):
         """
         Coerce a string value to the expected type based on schema.
 
+        Delegates to :func:`coerce_json_value` so this path and the
+        JSON-argument path share one rule set. An uncoercible token keeps this
+        path's lenient behaviour and is handed back as the original string.
+
         Args:
             value: The string value from command parsing
             param_type: The expected type from parameter schema
@@ -261,24 +372,8 @@ class AgentTool(ABC):
         Returns:
             The coerced value, or original string if coercion fails
         """
-        if param_type == "integer":
-            try:
-                return int(value)
-            except (ValueError, TypeError):
-                return value
-        elif param_type == "number":
-            try:
-                return float(value)
-            except (ValueError, TypeError):
-                return value
-        elif param_type == "boolean":
-            if value.lower() in ("true", "1", "yes", "on"):
-                return True
-            elif value.lower() in ("false", "0", "no", "off"):
-                return False
-            return value
-        # Default: return as string
-        return value
+        coerced = coerce_json_value(value, param_type)
+        return value if coerced is COERCION_FAILED else coerced
 
     def validate_parameters(self, **kwargs) -> tuple[bool, Optional[str]]:
         """
