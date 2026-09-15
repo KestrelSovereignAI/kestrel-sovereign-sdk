@@ -5,6 +5,7 @@ This module defines the core abstractions for the tool system, enabling agents
 to autonomously select and execute capabilities based on context and user needs.
 """
 
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -91,15 +92,23 @@ def coerce_json_value(value: Any, param_type: str, nullable: bool = False) -> An
             # ~1.8e308, and that must be a coercion failure, not an exception
             # escaping the tool's failure envelope (review on #78).
             try:
-                return float(value)
+                converted = float(value)
             except OverflowError:
                 return COERCION_FAILED
-        if isinstance(value, str):
+        elif isinstance(value, str):
             try:
-                return float(value)
+                converted = float(value)
             except ValueError:
                 return COERCION_FAILED
-        return COERCION_FAILED
+        else:
+            return COERCION_FAILED
+        # ``float`` accepts "nan", "inf" and overflowing literals like "1e309"
+        # and returns a non-finite value. JSON has no such number, so it can
+        # neither have been meant by the model nor be serialized back in the
+        # result envelope: fail the coercion rather than pass it on.
+        if not math.isfinite(converted):
+            return COERCION_FAILED
+        return converted
 
     if param_type == "boolean":
         if isinstance(value, bool):

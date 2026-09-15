@@ -338,6 +338,17 @@ class TestJsonNull:
         assert feature.calls == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "sent", ["NaN", "nan", "Infinity", "-inf", "1e309", float("inf"), float("nan")]
+    )
+    async def test_non_finite_numbers_are_a_coercion_failure(self, feature, sent):
+        """JSON has no NaN or Infinity; ``float`` accepts them, the tool must not."""
+        out = await _dyn_tool(feature, "scale").execute(factor=sent)
+        assert out["status"] == "error"
+        assert "factor" in out["error"]
+        assert feature.calls == []
+
+    @pytest.mark.asyncio
     async def test_non_none_default_does_not_make_a_parameter_nullable(self, feature):
         """``max_results: int = 30`` never contemplated None."""
         out = await _dyn_tool(feature, "get_comments").execute(
