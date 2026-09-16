@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 129 tracked files (116 `.py`, 5 `.md`, 8 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 130 tracked files (117 `.py`, 5 `.md`, 8 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -155,7 +155,7 @@ Repo entry points and standard project files.
   - `class VectorSearchBackend`
 - **kestrel_sdk/tools/__init__.py** — Kestrel SDK — Tool interfaces.
 - **kestrel_sdk/tools/base.py** — Base classes and interfaces for Kestrel agent tools.
-  - `class ToolCategory`; `class ToolParameter`; `class ToolSchema`; `class AgentTool`; `class ToolExecutionError`
+  - `def coerce_json_value(value, param_type, nullable)`; `class ToolCategory`; `class ToolParameter`; `class ToolSchema`; `class AgentTool`; `class ToolExecutionError`
 - **kestrel_sdk/tools/parts.py** — Pending typed-parts buffer for the tool call currently executing.
   - `def tool_result_parts_buffer()`; `def current_tool_result_parts()`
 - **kestrel_sdk/tools/result.py** — Tool result envelope contract.
@@ -237,6 +237,8 @@ Repo entry points and standard project files.
   - `class StubTimeline`; `class StubEvent`; `class StubPerson`; `def test_timeline_protocol_conformance()`; `def test_timeline_protocol_optional_subject_name()`; `def test_event_protocol_conformance()`; `def test_event_protocol_optional_fields()`; `def test_person_protocol_conformance()`; `…`
 - **tests/test_timeline_sharing.py** — Tests for timeline sharing protocols.
   - `class StubTimeline`; `class StubEvent`; `class StubPerson`; `def test_json_serializer_is_protocol()`; `def test_json_serializer_content_type()`; `def test_json_serializer_produces_valid_json()`; `def test_json_serializer_round_trip()`; `def test_json_serializer_handles_null_fields()`; `…`
+- **tests/test_tool_argument_coercion.py** — Tool arguments are coerced to the type their schema declares (issue #78).
+  - `def feature()`; `class TestJsonArgumentPath`; `class TestJsonNull`; `class TestUncoercibleArguments`; `class TestCommandPrefixPath`; `class TestSharedRules`
 - **tests/test_tool_result.py** — Tests for ToolResult — the cross-feature tool envelope contract.
   - `class TestToolResultStatus`; `class TestToolResultOk`; `class TestToolResultFailed`; `class TestToolResultPartial`; `class TestToolResultTypeGuards`; `class TestToolResultFrozen`; `class TestToolResultSerialization`; `class TestHonestyLayerInvariants`; `…`
 - **tests/test_tool_schema_annotations.py** — @tool parameter-schema generation from real and PEP 563 annotations.
