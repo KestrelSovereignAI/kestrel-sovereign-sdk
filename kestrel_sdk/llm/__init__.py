@@ -50,6 +50,31 @@ from .capabilities import (
     ToolStreamingMode,
     VisionInputMode,
 )
+from .decisions import (
+    Answer,
+    ChoiceAnswer,
+    ChoiceQuestion,
+    DecisionError,
+    DecisionModelInfo,
+    DecisionProtocolError,
+    DecisionRequest,
+    DecisionRequestInvalid,
+    DecisionResult,
+    DecisionTimeout,
+    DecisionTransportError,
+    DecisionUnavailable,
+    DecisionsNotSupported,
+    NoulAnswer,
+    NoulQuestion,
+    RejectionReason,
+    RouteRejection,
+    ScoreAnswer,
+    ScoreQuestion,
+    UnavailableReason,
+    ValidatedDecisionRequest,
+    concentration,
+    validate_decision_request,
+)
 from .inference_lease import (
     INFERENCE_LEASE_PROVIDER_ENTRY_POINT_GROUP,
     InferenceLease,
@@ -139,7 +164,14 @@ from .types import BackendType
 # read ``marker.index`` directly continue to work; plugins that
 # wrote consumer code against the old (positional) wording must
 # update to read by stream order.
-SDK_LLM_CONTRACT_VERSION = 6
+#
+# Version 7 (SDK 0.39.0): adds the optional decisions surface — typed
+# choice / score / noul questions over a state (``kestrel_sdk.llm.decisions``),
+# ``LLMAdapter.adecide()`` / ``list_decision_models()`` and
+# ``ProviderCapabilities.supports_decisions``. Additive: adapters that do not
+# override the new methods keep their defaults (``DecisionsNotSupported`` and
+# an empty model list), so v6 adapters remain conforming.
+SDK_LLM_CONTRACT_VERSION = 7
 
 __all__ = [
     "INFERENCE_LEASE_PROVIDER_ENTRY_POINT_GROUP",
@@ -192,4 +224,27 @@ __all__ = [
     "ToolStreamingMode",
     "VisionInputMode",
     "WebSearchOptions",
+    "Answer",
+    "ChoiceAnswer",
+    "ChoiceQuestion",
+    "DecisionError",
+    "DecisionModelInfo",
+    "DecisionProtocolError",
+    "DecisionRequest",
+    "DecisionRequestInvalid",
+    "DecisionResult",
+    "DecisionTimeout",
+    "DecisionTransportError",
+    "DecisionUnavailable",
+    "DecisionsNotSupported",
+    "NoulAnswer",
+    "NoulQuestion",
+    "RejectionReason",
+    "RouteRejection",
+    "ScoreAnswer",
+    "ScoreQuestion",
+    "UnavailableReason",
+    "ValidatedDecisionRequest",
+    "concentration",
+    "validate_decision_request",
 ]

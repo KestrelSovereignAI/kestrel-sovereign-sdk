@@ -104,6 +104,34 @@ else:
     LLM_TOKENS = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
+# Decision metrics. A separate series from the chat LLM metrics so decision
+# calls never change what ``kestrel_llm_calls_total`` counts.
+# ---------------------------------------------------------------------------
+if PROMETHEUS_AVAILABLE:
+    DECISION_CALLS = Counter(
+        "kestrel_llm_decision_calls_total",
+        "Total decision-model calls by provider, model, caller, and success",
+        ["provider", "model", "caller", "success"],
+        registry=REGISTRY,
+    )
+    DECISION_DURATION = Histogram(
+        "kestrel_llm_decision_duration_seconds",
+        "Decision-model call latency in seconds",
+        ["provider", "model", "caller"],
+        registry=REGISTRY,
+    )
+    DECISION_TOKENS = Counter(
+        "kestrel_llm_decision_tokens_total",
+        "Total decision-model input tokens by model",
+        ["model"],
+        registry=REGISTRY,
+    )
+else:
+    DECISION_CALLS = None  # type: ignore[assignment]
+    DECISION_DURATION = None  # type: ignore[assignment]
+    DECISION_TOKENS = None  # type: ignore[assignment]
+
+# ---------------------------------------------------------------------------
 # Tool metrics
 # ---------------------------------------------------------------------------
 if PROMETHEUS_AVAILABLE:
