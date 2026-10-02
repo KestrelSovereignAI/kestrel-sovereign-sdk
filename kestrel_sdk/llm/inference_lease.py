@@ -12,7 +12,6 @@ credentials entirely.  Agent-facing code must serialize leases with
 
 from __future__ import annotations
 
-import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -25,6 +24,8 @@ from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from pydantic import SecretStr
+
+from kestrel_sdk._frozen_json import freeze_json, thaw_json
 
 INFERENCE_LEASE_PROVIDER_ENTRY_POINT_GROUP = (
     "kestrel_sovereign.inference_lease_providers"
@@ -43,7 +44,6 @@ _SECRET_KEY_SEGMENTS = frozenset(
     }
 )
 _SECRET_KEY_PAIRS = frozenset({("api", "key"), ("private", "key")})
-_PUBLIC_SCALARS = (str, int, float, bool, type(None))
 
 
 class InferenceLeaseState(str, Enum):
@@ -175,44 +175,22 @@ def _privacy_satisfies(
     return _PRIVACY_EXPOSURE[delivered] <= _PRIVACY_EXPOSURE[permitted]
 
 
-def _freeze_public_value(value: Any, *, path: str) -> Any:
-    """Deep-freeze JSON-shaped public metadata and reject secret-like keys."""
-
-    if isinstance(value, Mapping):
-        frozen: dict[str, Any] = {}
-        for raw_key, item in value.items():
-            if not isinstance(raw_key, str) or not raw_key:
-                raise ValueError(f"{path} keys must be non-empty strings")
-            if _is_secret_like_public_key(raw_key):
-                raise ValueError(f"{path} cannot contain secret-like key {raw_key!r}")
-            frozen[raw_key] = _freeze_public_value(
-                item,
-                path=f"{path}.{raw_key}",
-            )
-        return MappingProxyType(frozen)
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze_public_value(item, path=f"{path}[]") for item in value)
-    if not isinstance(value, _PUBLIC_SCALARS):
-        raise TypeError(f"{path} must contain only JSON scalar/list/object values")
-    if isinstance(value, float) and not math.isfinite(value):
-        raise ValueError(f"{path} cannot contain non-finite numbers")
+def _public_metadata_key(value: object, path: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{path} keys must be non-empty strings")
+    if _is_secret_like_public_key(value):
+        raise ValueError(f"{path} cannot contain secret-like key {value!r}")
     return value
 
 
 def _freeze_public_metadata(value: Mapping[str, Any]) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError("metadata must be a mapping")
-    frozen = _freeze_public_value(value, path="metadata")
+    frozen = freeze_json(
+        value, path="metadata", validate_key=_public_metadata_key
+    ).value
     assert isinstance(frozen, Mapping)
     return frozen
-
-
-def _thaw_public_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {key: _thaw_public_value(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_thaw_public_value(item) for item in value]
-    return value
 
 
 @dataclass(frozen=True)
@@ -309,7 +287,7 @@ class InferenceLeaseRequest:
             "idle_ttl_seconds": self.idle_ttl_seconds,
             "ready_deadline_seconds": self.ready_deadline_seconds,
             "requested_at": self.requested_at.isoformat(),
-            "metadata": _thaw_public_value(self.metadata),
+            "metadata": thaw_json(self.metadata),
         }
 
 
@@ -460,7 +438,7 @@ class InferenceLeaseQuote:
             "estimated_total_cost_usd": str(self.estimated_total_cost_usd),
             "estimated_ready_seconds": self.estimated_ready_seconds,
             "expires_at": self.expires_at.isoformat(),
-            "metadata": _thaw_public_value(self.metadata),
+            "metadata": thaw_json(self.metadata),
         }
 
 
@@ -563,7 +541,7 @@ class InferenceLeaseFailure:
             "code": self.code,
             "message": self.message,
             "retryable": self.retryable,
-            "metadata": _thaw_public_value(self.metadata),
+            "metadata": thaw_json(self.metadata),
         }
 
 
@@ -750,7 +728,7 @@ class InferenceLease:
             ),
             "route": self.route.to_public_dict() if self.route else None,
             "failure": self.failure.to_public_dict() if self.failure else None,
-            "metadata": _thaw_public_value(self.metadata),
+            "metadata": thaw_json(self.metadata),
         }
         return result
 

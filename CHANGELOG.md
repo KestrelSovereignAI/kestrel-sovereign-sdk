@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.39.0 — 2026-10-02
+
+### Added
+
+- Added the decisions contract (`kestrel_sdk.llm.decisions`, LLM contract
+  version 7). A decision is a set of typed `choice` / `score` / `noul`
+  questions evaluated against a `state`, answered with probability
+  distributions instead of text. This is the `/v1/systemone` shape served by
+  TypeSafe Jev, OpenRouter, Ollama (≥ 0.35) and others. It provides:
+  - request, answer and result types, plus typed errors and rejection
+    reasons;
+  - `validate_decision_request()`, which returns an immutable, size-measured
+    `ValidatedDecisionRequest` snapshot. Adapters only ever see the snapshot,
+    so a caller mutating its own `state` mid-call cannot change what is sent;
+  - validation bounds, set to the intersection every known route accepts:
+    1–64 questions, 2–26 options or levels, bounded text, a strict JSON tree
+    for `state` (string keys, finite numbers, no cycles, depth ≤ 64), and a
+    1 MiB limit on the whole request;
+  - `concentration()`, the single definition of how peaked a distribution is.
+    Vendor `confidence` fields are intentionally not part of the contract.
+- Added `LLMAdapter.adecide()` and `LLMAdapter.list_decision_models()`. They
+  default to raising `DecisionsNotSupported` and returning an empty list, so
+  existing adapters keep conforming.
+- Added `ProviderCapabilities.supports_decisions`, as the last field so
+  positional constructions are unaffected.
+- Added decision metrics, separate from the chat LLM series:
+  `kestrel_llm_decision_calls_total`, `kestrel_llm_decision_duration_seconds`
+  and `kestrel_llm_decision_tokens_total`.
+
+### Changed
+
+- Operator artifact metadata, inference-lease public metadata and decision
+  state now share one bounded deep-freeze (`kestrel_sdk._frozen_json`);
+  previously each carried its own copy. Each contract keeps its own key,
+  string and number policy. A self-referencing lease metadata value now fails
+  with a `ValueError` naming the cycle; it previously failed with a
+  `RecursionError`.
+
 ## 0.38.2 — 2026-09-15
 
 ### Added

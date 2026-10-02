@@ -398,6 +398,7 @@ class TestProviderCapabilities:
             "reasoning_effort_levels": ["low", "medium", "high"],
             "max_cache_breakpoints": 4,
             "raw_operations": ["responses.create"],
+            "supports_decisions": False,
         }
         assert set(data) == {field.name for field in fields(ProviderCapabilities)}
 
@@ -1053,16 +1054,18 @@ class TestLLMAdapterContractVersion:
         ``requested_at + ready_deadline_seconds + expected_session_seconds``,
         which ``validate_for`` did not previously bound. Adding ``touch``
         alone is not sufficient for v6. Ordinary LLM adapters are unchanged.
+      * 7 — added the optional decisions surface (SDK 0.39.0):
+        ``kestrel_sdk.llm.decisions``, ``LLMAdapter.adecide()`` /
+        ``list_decision_models()`` and ``ProviderCapabilities.supports_decisions``.
+        Additive; v6 adapters keep conforming through the defaults.
     """
 
-    def test_contract_version_is_6(self):
+    def test_contract_version_is_7(self):
         from kestrel_sdk.llm import SDK_LLM_CONTRACT_VERSION
 
-        assert SDK_LLM_CONTRACT_VERSION == 6, (
-            "LLM contract version 6 requires inference-lease providers to "
-            "renew idle deadlines and to bound lease expiry by the request's "
-            "authorized session window, while keeping get_response as the "
-            "only LLMAdapter abstract method."
+        assert SDK_LLM_CONTRACT_VERSION == 7, (
+            "LLM contract version 7 adds the optional decisions surface while "
+            "keeping get_response as the only LLMAdapter abstract method."
         )
 
 

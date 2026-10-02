@@ -148,6 +148,7 @@ class ProviderCapabilities:
     reasoning_effort_levels: tuple[str, ...] = ()
     max_cache_breakpoints: int | None = None
     raw_operations: tuple[str, ...] = ()
+    supports_decisions: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -181,6 +182,7 @@ class ProviderCapabilities:
                 data.get("supports_structured_output", False)
             ),
             supports_embeddings=bool(data.get("supports_embeddings", False)),
+            supports_decisions=bool(data.get("supports_decisions", False)),
             supports_inline_system=bool(
                 data.get("supports_inline_system", False)
             ),

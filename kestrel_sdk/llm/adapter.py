@@ -43,6 +43,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Type, Union
 from pydantic import BaseModel
 
 from .capabilities import ProviderCapabilities
+from .decisions import DecisionModelInfo, DecisionsNotSupported, ValidatedDecisionRequest
 from .model_info import ModelInfo
 from .response import (
     BatchHandle,
@@ -310,6 +311,44 @@ class LLMAdapter(ABC):
             for text in texts
         ]
 
+
+    async def adecide(
+        self,
+        client: Any,
+        model: str,
+        request: ValidatedDecisionRequest,
+        *,
+        timeout: float,
+    ) -> Dict[str, Any]:
+        """Answer a decision request and return the route's raw JSON response.
+
+        ``request`` is the immutable snapshot produced by
+        :func:`kestrel_sdk.llm.decisions.validate_decision_request`; never the
+        caller's own object. The adapter translates it into its route's wire
+        dialect (``request.wire`` is the canonical systemone form), sends it
+        with ``timeout`` applied to the HTTP call, and returns the decoded
+        response body unchanged. The framework normalises and checks the
+        answers; adapters must not.
+
+        Raise :class:`~kestrel_sdk.llm.decisions.DecisionTransportError` for
+        network/HTTP failures (including a missing model or endpoint). The
+        default raises :class:`DecisionsNotSupported`, which keeps chat-only
+        adapters conforming.
+        """
+        raise DecisionsNotSupported(
+            f"{self.__class__.__name__} does not support decisions"
+        )
+
+    async def list_decision_models(self, client: Any) -> List[DecisionModelInfo]:
+        """Return the decision models this route serves right now.
+
+        Use the runtime's own capability report (for example a catalog
+        filtered by output modality, or a per-model capability list); never
+        infer a decision model from its name. ``context_limit`` must be the
+        effective serving limit, not the base model's. The default returns an
+        empty list.
+        """
+        return []
     async def count_tokens(
         self,
         client: Any,
