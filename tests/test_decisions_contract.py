@@ -259,3 +259,7 @@ def test_invalid_unicode_is_a_validation_error(request_: DecisionRequest) -> Non
     with pytest.raises(DecisionRequestInvalid) as excinfo:
         validate_decision_request(request_)
     assert excinfo.value.rule == "text"
+
+
+def test_huge_integer_is_a_validation_error() -> None:
+    assert _rule(_request(state={"n": 10**5000})) == "number"

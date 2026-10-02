@@ -145,6 +145,12 @@ class _Walk:
                 f"{self.path} contains text that is not valid Unicode "
                 "(an unpaired surrogate)",
             ) from error
+        except ValueError as error:
+            # json.dumps refuses integers past the interpreter's
+            # int-to-str digit limit (sys.get_int_max_str_digits()).
+            raise JSONLimitError(
+                "number", f"{self.path} contains a number too large to encode"
+            ) from error
         self.add_bytes(len(encoded))
 
     def freeze(self, value: Any, depth: int) -> ImmutableJSON:

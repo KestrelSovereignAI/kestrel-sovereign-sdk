@@ -161,3 +161,9 @@ def test_unmeasured_freeze_does_not_encode() -> None:
     frozen = freeze_json({"x": "\ud800"}, path="metadata")
     assert frozen.value["x"] == "\ud800"  # type: ignore[index]
     assert frozen.encoded_bytes is None
+
+
+def test_integer_past_the_str_digit_limit_is_a_number_error() -> None:
+    with pytest.raises(JSONLimitError) as excinfo:
+        freeze_json({"n": 10**5000}, path="state", limits=JSONLimits(max_encoded_bytes=1 << 20))
+    assert excinfo.value.rule == "number"
