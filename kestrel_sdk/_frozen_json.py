@@ -130,10 +130,22 @@ class _Walk:
         if limit is not None and self.keys > limit:
             raise JSONLimitError("keys", f"{self.path} must not exceed {limit} keys")
 
-    def encoded_scalar_bytes(self, value: JSONScalar) -> int:
-        return len(
-            json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
-        )
+    def add_scalar(self, value: JSONScalar) -> None:
+        """Account for one scalar's encoded size; a no-op without a budget."""
+
+        if self.size is None:
+            return
+        try:
+            encoded = json.dumps(value, ensure_ascii=False, allow_nan=False).encode(
+                "utf-8"
+            )
+        except UnicodeEncodeError as error:
+            raise JSONLimitError(
+                "text",
+                f"{self.path} contains text that is not valid Unicode "
+                "(an unpaired surrogate)",
+            ) from error
+        self.add_bytes(len(encoded))
 
     def freeze(self, value: Any, depth: int) -> ImmutableJSON:
         limit = self.limits.max_depth
@@ -143,12 +155,12 @@ class _Walk:
             )
         self.add_node()
         if value is None or isinstance(value, bool):
-            self.add_bytes(self.encoded_scalar_bytes(value))
+            self.add_scalar(value)
             return value
         if isinstance(value, str):
             if self.validate_string is not None:
                 value = self.validate_string(value, self.path)
-            self.add_bytes(self.encoded_scalar_bytes(value))
+            self.add_scalar(value)
             return value
         if isinstance(value, (int, float)):
             if isinstance(value, float) and not math.isfinite(value):
@@ -157,7 +169,7 @@ class _Walk:
                 )
             if self.validate_number is not None:
                 value = self.validate_number(value, self.path)
-            self.add_bytes(self.encoded_scalar_bytes(value))
+            self.add_scalar(value)
             return value
         if isinstance(value, Mapping):
             return self._freeze_mapping(value, depth)
@@ -183,8 +195,9 @@ class _Walk:
             for index, (raw_key, item) in enumerate(value.items()):
                 key = self.validate_key(raw_key, self.path)
                 self.add_key()
-                # key, colon, and the comma before every entry but the first
-                self.add_bytes(self.encoded_scalar_bytes(key) + 1 + (1 if index else 0))
+                # key, then the colon and the comma before every entry but the first
+                self.add_scalar(key)
+                self.add_bytes(1 + (1 if index else 0))
                 frozen[key] = self.freeze(item, depth + 1)
             return MappingProxyType(frozen)
         finally:

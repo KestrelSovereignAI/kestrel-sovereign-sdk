@@ -244,3 +244,18 @@ def test_decision_model_info_defaults() -> None:
     info = DecisionModelInfo(id="m", vendor="v", route="v:r")
     assert info.context_limit is None
     assert info.parallel_questions is None
+
+
+@pytest.mark.parametrize(
+    "request_",
+    [
+        _request(state={"x": "\ud800"}),
+        _request(state={"\udfff": 1}),
+        _request(q=NoulQuestion(instructions="ok\ud800?")),
+        _request(team=ChoiceQuestion(instructions="pick", options={"a": "\ud800", "b": None})),
+    ],
+)
+def test_invalid_unicode_is_a_validation_error(request_: DecisionRequest) -> None:
+    with pytest.raises(DecisionRequestInvalid) as excinfo:
+        validate_decision_request(request_)
+    assert excinfo.value.rule == "text"

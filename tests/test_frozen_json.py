@@ -146,3 +146,18 @@ def test_hashable_json_is_equality_consistent() -> None:
     right = freeze_json({"c": 3, "a": [1, {"b": 2}]}, path="v").value
     assert hashable_json(left) == hashable_json(right)
     assert hash(hashable_json(left)) == hash(hashable_json(right))
+
+
+def test_unpaired_surrogate_is_a_text_error_when_measuring() -> None:
+    for value in ({"x": "\ud800"}, {"\udfff": 1}):
+        with pytest.raises(JSONLimitError) as excinfo:
+            freeze_json(value, path="state", limits=JSONLimits(max_encoded_bytes=1024))
+        assert excinfo.value.rule == "text"
+
+
+def test_unmeasured_freeze_does_not_encode() -> None:
+    # Without a byte budget nothing is encoded, so contracts that never
+    # measured size keep accepting what they accepted before.
+    frozen = freeze_json({"x": "\ud800"}, path="metadata")
+    assert frozen.value["x"] == "\ud800"  # type: ignore[index]
+    assert frozen.encoded_bytes is None
