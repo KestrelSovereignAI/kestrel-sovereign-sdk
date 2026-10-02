@@ -7,7 +7,6 @@ the responsibility of Workflows, Sovereign, and the owning feature.
 
 from __future__ import annotations
 
-import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -15,8 +14,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from ipaddress import IPv6Address
-from types import MappingProxyType
-from typing import Protocol, TypeAlias, runtime_checkable
+from typing import Protocol, runtime_checkable
 from urllib.parse import unquote, urlsplit
 
 from kestrel_sdk._validation import (
@@ -24,6 +22,13 @@ from kestrel_sdk._validation import (
     frozen_tokens,
     non_empty_text,
     stable_token,
+)
+from kestrel_sdk._frozen_json import (
+    ImmutableJSON,
+    JSONLimits,
+    JSONScalar,
+    freeze_json,
+    hashable_json,
 )
 from .context import OperatorAuthorizationError, OperatorContext
 from .targets import ExecutionTargetReference
@@ -468,10 +473,6 @@ class RunPage:
                 )
 
 
-JSONScalar: TypeAlias = None | bool | int | float | str
-ImmutableJSON: TypeAlias = JSONScalar | tuple["ImmutableJSON", ...] | Mapping[
-    str, "ImmutableJSON"
-]
 
 _MEDIA_TYPE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$"
@@ -533,7 +534,7 @@ class ArtifactRecord:
                 self.label,
                 self.media_type,
                 self.href,
-                _hashable_json(self.metadata),
+                hashable_json(self.metadata),
             )
         )
 
@@ -758,80 +759,53 @@ def _validate_percent_encoding(value: str, field_name: str, *, path: bool) -> No
             index += 1
 
 
-@dataclass(slots=True)
-class _MetadataBudget:
-    nodes: int = 0
-    keys: int = 0
+_METADATA_LIMITS = JSONLimits(
+    max_depth=_MAX_METADATA_DEPTH,
+    max_nodes=_MAX_METADATA_NODES,
+    max_keys=_MAX_METADATA_KEYS,
+)
 
 
 def _freeze_metadata(value: Mapping[str, object]) -> Mapping[str, ImmutableJSON]:
     if not isinstance(value, Mapping):
         raise TypeError("metadata must be a mapping")
-    budget = _MetadataBudget(nodes=1)
-    frozen: dict[str, ImmutableJSON] = {}
-    for key, item in value.items():
-        _metadata_key(key, budget)
-        frozen[key] = _freeze_json(item, depth=1, budget=budget)
-    return MappingProxyType(frozen)
+    frozen = freeze_json(
+        value,
+        path="metadata",
+        limits=_METADATA_LIMITS,
+        validate_key=_metadata_key,
+        validate_string=_metadata_string,
+        validate_number=_metadata_number,
+    ).value
+    assert isinstance(frozen, Mapping)
+    return frozen
 
 
-def _hashable_json(value: ImmutableJSON) -> object:
-    """Return an equality-consistent hashable representation of frozen JSON."""
-
-    if isinstance(value, Mapping):
-        return frozenset(
-            (key, _hashable_json(item)) for key, item in value.items()
-        )
-    if isinstance(value, tuple):
-        return tuple(_hashable_json(item) for item in value)
-    return value
+def _metadata_key(value: object, path: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{path} keys must be strings")
+    return browser_safe_string(
+        value, f"{path} key", max_length=256, allow_empty=False
+    )
 
 
-def _freeze_json(
-    value: object, *, depth: int, budget: _MetadataBudget
-) -> ImmutableJSON:
-    if depth > _MAX_METADATA_DEPTH:
-        raise ValueError(f"metadata must not exceed {_MAX_METADATA_DEPTH} levels")
-    budget.nodes += 1
-    if budget.nodes > _MAX_METADATA_NODES:
-        raise ValueError(f"metadata must not exceed {_MAX_METADATA_NODES} nodes")
-    if value is None or isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return browser_safe_string(
-            value, "metadata string", max_length=_MAX_METADATA_STRING
-        )
+def _metadata_string(value: str, path: str) -> str:
+    return browser_safe_string(
+        value, f"{path} string", max_length=_MAX_METADATA_STRING
+    )
+
+
+def _metadata_number(value: int | float, path: str) -> int | float:
     if isinstance(value, int):
         if not -_MAX_SAFE_INTEGER <= value <= _MAX_SAFE_INTEGER:
-            raise ValueError("metadata integer exceeds the interoperable JSON range")
+            raise ValueError(f"{path} integer exceeds the interoperable JSON range")
         return value
-    if isinstance(value, float):
-        if not math.isfinite(value) or abs(value) > _MAX_SAFE_INTEGER:
-            raise ValueError("metadata number exceeds the interoperable JSON range")
-        digits = len(Decimal(str(value)).as_tuple().digits)
-        if digits > _MAX_FLOAT_SIGNIFICANT_DIGITS:
-            raise ValueError("metadata number exceeds supported precision")
-        return value
-    if isinstance(value, Mapping):
-        nested: dict[str, ImmutableJSON] = {}
-        for key, item in value.items():
-            _metadata_key(key, budget)
-            nested[key] = _freeze_json(item, depth=depth + 1, budget=budget)
-        return MappingProxyType(nested)
-    if isinstance(value, (list, tuple)):
-        return tuple(
-            _freeze_json(item, depth=depth + 1, budget=budget) for item in value
-        )
-    raise TypeError("metadata values must be JSON-like")
-
-
-def _metadata_key(value: object, budget: _MetadataBudget) -> None:
-    if not isinstance(value, str):
-        raise TypeError("metadata keys must be strings")
-    browser_safe_string(value, "metadata key", max_length=256, allow_empty=False)
-    budget.keys += 1
-    if budget.keys > _MAX_METADATA_KEYS:
-        raise ValueError(f"metadata must not exceed {_MAX_METADATA_KEYS} keys")
+    if abs(value) > _MAX_SAFE_INTEGER:
+        raise ValueError(f"{path} number exceeds the interoperable JSON range")
+    digits = len(Decimal(str(value)).as_tuple().digits)
+    if digits > _MAX_FLOAT_SIGNIFICANT_DIGITS:
+        raise ValueError(f"{path} number exceeds supported precision")
+    return value
 
 
 __all__ = [
