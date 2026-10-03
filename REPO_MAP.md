@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 130 tracked files (117 `.py`, 5 `.md`, 8 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 134 tracked files (121 `.py`, 5 `.md`, 8 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -36,6 +36,8 @@ Repo entry points and standard project files.
 ## `kestrel_sdk/`
 
 - **kestrel_sdk/__init__.py** — Kestrel Sovereign SDK — lightweight interfaces for feature packages.
+- **kestrel_sdk/_frozen_json.py** — One bounded deep-freeze for JSON-shaped values in public SDK contracts.
+  - `class JSONTypeError`; `class JSONLimitError`; `class JSONLimits`; `class FrozenJSON`; `def freeze_json(value)`; `def thaw_json(value)`; `def hashable_json(value)`; `def canonical_json_bytes(value)`
 - **kestrel_sdk/_validation.py** — Validation helpers shared by public SDK contract modules.
   - `def stable_token(value, field_name)`; `def non_empty_text(value, field_name)`; `def browser_safe_string(value, field_name)`; `def semantic_version(value, field_name)`; `def semantic_version_parts(value)`; `def frozen_tokens(values, field_name)`; `def unique_tuple(values, field_name)`
 - **kestrel_sdk/a2a/__init__.py** — Kestrel SDK — A2A Protocol interfaces.
@@ -94,6 +96,8 @@ Repo entry points and standard project files.
   - `class LLMAdapter`
 - **kestrel_sdk/llm/capabilities.py** — Provider-level LLM capability metadata.
   - `class StructuredOutputMode`; `class ToolStreamingMode`; `class VisionInputMode`; `class ReasoningControlMode`; `class PromptCacheMode`; `class BatchMode`; `class FilesMode`; `class TokenCountMode`; `…`
+- **kestrel_sdk/llm/decisions.py** — Decision contract: typed choice / score / noul questions over a state.
+  - `class ChoiceQuestion`; `class ScoreQuestion`; `class NoulQuestion`; `class DecisionRequest`; `class ValidatedDecisionRequest`; `class ChoiceAnswer`; `class ScoreAnswer`; `class NoulAnswer`; `…`
 - **kestrel_sdk/llm/inference_lease.py** — Provider-neutral contracts for privately leased inference capacity.
   - `class InferenceLeaseState`; `class InferencePrivacy`; `class InferenceLeaseError`; `class InferenceLeaseConstraintError`; `class InferenceLeaseNotFoundError`; `class InferenceLeaseOwnershipError`; `class InferenceLeaseProviderUnavailableError`; `class InferenceLeaseProvisioningError`; `…`
 - **kestrel_sdk/llm/model_info.py** — Standardized model metadata.
@@ -191,6 +195,8 @@ Repo entry points and standard project files.
   - `def test_require_constitution_echo_defaults_to_false()`; `def test_prompt_template_format_defaults_to_claude_code()`; `def test_constitution_injection_defaults_to_none()`; `def test_system_prompt_budget_bytes_defaults_to_none()`; `def test_pre_0_11_caller_constructs_cleanly()`; `def test_codex_reviewer_can_set_require_echo_true_at_sdk_level()`; `def test_local_reviewer_format_settable()`; `def test_bare_format_settable_for_caller_responsibility()`; `…`
 - **tests/test_database_surface.py** — Tests for kestrel_sdk.storage.database surface (issue #1094).
   - `def test_module_exports_match_acceptance_criteria()`; `def test_database_backend_is_abstract()`; `def test_error_hierarchy()`; `def test_privacy_mode_string_round_trip()`; `def test_privacy_mode_hashes_identical_to_string()`; `def test_resolve_ephemeral_ignores_fallback()`; `def test_resolve_isolated_creates_tempfile_and_is_volatile()`; `def test_isolated_cleanup_is_idempotent()`; `…`
+- **tests/test_decisions_contract.py** — Decision contract: validation, immutable snapshot, adapter defaults.
+  - `def test_snapshot_is_immune_to_caller_mutation_after_validation()`; `def test_wire_form_is_the_systemone_shape()`; `def test_question_count_bounds()`; `def test_question_and_option_ids_are_restricted(bad_id)`; `def test_option_and_level_cardinality()`; `def test_text_rules()`; `def test_unknown_question_type_is_rejected()`; `def test_state_must_be_a_strict_json_tree(state, rule)`; `…`
 - **tests/test_docstring_parser.py** — Regression tests for parse_docstring_params wrapped-description truncation.
   - `def test_wrapped_description_not_truncated_at_word_continuation()`; `def test_single_line_params_unchanged()`; `def test_param_with_type_annotation()`
 - **tests/test_dynamic_tool_result.py** — Tests for ``DynamicTool.execute``'s ToolResult-aware pass-through.
@@ -199,6 +205,8 @@ Repo entry points and standard project files.
   - `def test_agent_feature_ui_contract_is_sdk_owned()`; `def test_ui_contributions_preserves_0292_positional_order()`; `def test_app_extension_defaults_are_safe_noops()`
 - **tests/test_feature_contribution_contracts.py** — Contract tests for external feature-owned declarative contributions.
   - `class ExternalFixtureFeature`; `def test_external_feature_can_expose_every_row_one_seam_via_sdk()`; `def test_contribution_methods_return_instance_stable_objects()`; `def test_owned_identity_supports_exact_deterministic_teardown()`; `def test_permission_vocabulary_is_closed_conservative_and_immutable()`; `def test_registration_validation_prevents_ambiguous_identity()`; `def test_workflow_registration_supports_empty_and_plural_sources()`; `def test_setup_flow_normalizes_real_non_string_enum()`; `…`
+- **tests/test_frozen_json.py** — The shared bounded JSON freeze used by public SDK contracts.
+  - `def test_freeze_copies_deeply_and_is_read_only()`; `def test_self_reference_is_a_cycle_error_not_recursion()`; `def test_shared_but_acyclic_containers_are_not_cycles()`; `def test_non_string_keys_are_rejected_by_default()`; `def test_non_finite_numbers_are_rejected(number)`; `def test_unsupported_types_are_rejected()`; `def test_depth_nodes_and_keys_budgets()`; `def test_measured_size_equals_canonical_encoding(value)`; `…`
 - **tests/test_hook_input.py** — SDK 0.9 — HookInput narration-check fields (kestrel-sovereign #1048 Wave 5D).
   - `def test_post_response_narration_fields_present_and_default_to_none()`; `def test_post_response_narration_fields_round_trip_through_to_dict()`; `def test_to_dict_exact_shape_for_post_response_event()`; `def test_positional_args_through_agent_spawn_keep_pre_0_9_meaning()`; `def test_pre_0_9_callers_still_construct_without_narration_fields()`
 - **tests/test_host_feature_contract.py** — Tests for the host-scoped feature contract (issue #46).
