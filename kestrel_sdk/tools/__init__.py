@@ -3,6 +3,7 @@
 from .base import (
     COERCION_FAILED,
     AgentTool,
+    CommandParseError,
     ToolCategory,
     ToolParameter,
     ToolSchema,
@@ -16,6 +17,7 @@ from .waitable import MonitorableWaitable, Outcome, WaitStatus, Waitable
 __all__ = [
     "AgentTool",
     "COERCION_FAILED",
+    "CommandParseError",
     "coerce_json_value",
     "ToolCategory",
     "ToolParameter",

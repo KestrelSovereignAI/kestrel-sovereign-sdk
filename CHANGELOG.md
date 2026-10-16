@@ -19,9 +19,49 @@ All notable changes to this project are documented in this file.
   artifacts have independent identity and lifetime; run/session provenance is
   optional. Existing operator-run metadata remains a separate consumer until
   its coordinated host migration.
+- Added `CommandParseError` (`kestrel_sdk.tools`), a `ValueError` whose
+  message names the command and the problem in the input.
 
 - Bind staged artifact files to the future publication key, so completing one
   save cannot consume another pending save’s bytes (#86).
+
+### Changed
+
+- `AgentTool.parse_command_args` now binds `!command` arguments differently
+  (#73, kestrel-sovereign#3118). Previously it split the text on whitespace
+  and bound words by position, and the last parameter, plus any `object` or
+  `array` parameter, took all remaining words. A free-text parameter that was
+  not last therefore broke on its second word. For example,
+  `!strategy-search context window bloat` bound `kind="window"`. JSON
+  containing spaces in a non-final string parameter (`args_json`) was split
+  across the parameters after it. The docstring promised quoting, but the code
+  did not implement it. The new binding:
+  - is quote-aware. A value that starts with `"` or `'` may contain spaces and
+    ends at the matching quote; inside double quotes, `\"` and `\\` are
+    escapes. Quotes inside an unquoted word stay ordinary text, so
+    `don't` and `{"repo":"x"}` arrive verbatim. Plain POSIX `shlex` would
+    reject the first and strip the quotes from the second.
+  - accepts `name=value` (with quoted values, such as
+    `args_json='{"intent": "x y"}'`) when `name` is exactly a declared
+    parameter. Any other `a=b` word, and any quoted token, stays a positional
+    value. Positional values come first, then `name=value`.
+  - gives each parameter one value. No parameter takes the remaining words,
+    so a multi-word value must be quoted or named. Commands made of
+    single-word positional arguments bind exactly as before. For the same
+    reason, unquoted words that fit the declared parameters still bind one
+    per parameter. On the four-parameter `strategy_search`,
+    `!strategy-search context window` still binds `kind="window"`; only
+    words beyond the last parameter can be detected and refused.
+- Inputs that were previously misbound or silently accepted now raise
+  `CommandParseError`. These are: more values than parameters (including any
+  word given to a tool with no parameters, which used to be dropped), an
+  unbalanced quote, text directly after a closing quote, a parameter given
+  twice, a positional value after `name=value`, and an `object` or `array`
+  value that is not JSON of that shape (it used to be passed on as a string).
+  Integer, number, and boolean values still fall back to the typed string,
+  and the `@tool` wrapper rejects them with the parameter's name.
+  Command-surface callers must catch `CommandParseError` and show its message
+  as the command's failure.
 
 ## 0.40.0 — Tagged; publication pending
 

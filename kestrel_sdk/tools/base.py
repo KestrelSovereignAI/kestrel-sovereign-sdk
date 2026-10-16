@@ -5,7 +5,9 @@ This module defines the core abstractions for the tool system, enabling agents
 to autonomously select and execute capabilities based on context and user needs.
 """
 
+import json
 import math
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -247,6 +249,128 @@ class ToolSchema:
         }
 
 
+class CommandParseError(ValueError):
+    """A ``!command`` line could not be bound to its tool's parameters.
+
+    Raised by :meth:`AgentTool.parse_command_args`. The message is written for
+    whoever typed the command: it names the command and the actual problem
+    with the input (an unbalanced quote, more values than parameters, a
+    parameter given twice), so a caller can show ``str(error)`` as the
+    command's failure.
+    """
+
+    def __init__(self, command: str, message: str):
+        self.command = command
+        super().__init__(f"{command}: {message}")
+
+
+# A tuple, not a string, so the empty slice past the end of a line never
+# counts as a quote (``"" in "abc"`` is true).
+_QUOTES = ('"', "'")
+# The ``name=`` head of a token that may bind by name. Whether it does is the
+# binder's decision: only an exact declared parameter name binds.
+_NAMED_TOKEN = re.compile(r"([^\W\d]\w*)=")
+# How much of a user-typed value an error message echoes back.
+_ECHO_LIMIT = 60
+
+
+@dataclass(frozen=True)
+class _CommandToken:
+    """One argument of a command line.
+
+    ``text`` is the token as a positional value, with quotes removed. A bare
+    ``name=value`` token also carries ``name`` and ``value``; a quoted token
+    never does, so quoting is how a literal ``a=b`` is passed positionally.
+    """
+
+    text: str
+    name: Optional[str] = None
+    value: Optional[str] = None
+
+
+def _echo(text: str) -> str:
+    rendered = repr(text)
+    if len(rendered) > _ECHO_LIMIT:
+        rendered = f"{rendered[:_ECHO_LIMIT]}..."
+    return rendered
+
+
+def _read_quoted(line: str, start: int, command: str) -> tuple[str, int]:
+    """Read the quoted value opening at ``line[start]``.
+
+    Returns the value and the index just past its closing quote.
+    """
+    quote = line[start]
+    chars: List[str] = []
+    index = start + 1
+    while index < len(line):
+        char = line[index]
+        if char == quote:
+            end = index + 1
+            if end < len(line) and not line[end].isspace():
+                raise CommandParseError(
+                    command,
+                    f"unexpected {_echo(line[end])} after the closing {quote} "
+                    f"of {_echo(''.join(chars))}; a quoted value ends at its "
+                    "closing quote, so to pass a value containing spaces or "
+                    "quotes, quote the whole value (single quotes keep "
+                    "double quotes inside it)",
+                )
+            return "".join(chars), end
+        if quote == '"' and char == "\\" and line[index + 1:index + 2] in ('"', "\\"):
+            chars.append(line[index + 1])
+            index += 2
+            continue
+        chars.append(char)
+        index += 1
+    raise CommandParseError(
+        command,
+        f"unbalanced quote: the {quote} that opens {_echo(line[start:])} is "
+        "never closed; a value that starts with a quote must end with the "
+        "same quote",
+    )
+
+
+def _tokenize_command(line: str, command: str) -> List[_CommandToken]:
+    """Split the arguments of a command line into tokens.
+
+    Quotes are significant only where a value starts: at the start of a token,
+    or right after the ``=`` of ``name=``. Anywhere else a quote character is
+    ordinary text, so an unquoted ``don't`` or ``{"repo":"x"}`` arrives
+    verbatim, as it did before quoting was supported.
+    """
+    tokens: List[_CommandToken] = []
+    index = 0
+    while True:
+        while index < len(line) and line[index].isspace():
+            index += 1
+        if index == len(line):
+            return tokens
+        if line[index] in _QUOTES:
+            value, index = _read_quoted(line, index, command)
+            tokens.append(_CommandToken(text=value))
+            continue
+        named = _NAMED_TOKEN.match(line, index)
+        if named and line[named.end():named.end() + 1] in _QUOTES:
+            value, index = _read_quoted(line, named.end(), command)
+            tokens.append(_CommandToken(
+                text=f"{named.group(1)}={value}", name=named.group(1), value=value
+            ))
+            continue
+        end = index
+        while end < len(line) and not line[end].isspace():
+            end += 1
+        if named:
+            tokens.append(_CommandToken(
+                text=line[index:end],
+                name=named.group(1),
+                value=line[named.end():end],
+            ))
+        else:
+            tokens.append(_CommandToken(text=line[index:end]))
+        index = end
+
+
 class AgentTool(ABC):
     """
     Base class for all agent tools.
@@ -321,56 +445,136 @@ class AgentTool(ABC):
 
     def parse_command_args(self, user_input: str) -> Dict[str, Any]:
         """
-        Parse command-line style arguments from user input.
-        Handles JSON objects/arrays and quoted strings for complex parameters.
-        Performs type coercion based on parameter schema.
+        Bind a ``!command`` line to this tool's parameters.
+
+        The text after the command prefix is split on whitespace into values,
+        with quoting:
+
+        * A value that starts with ``"`` or ``'`` runs to the matching closing
+          quote and may contain whitespace; the quotes are removed. Inside
+          double quotes, ``\\"`` and ``\\\\`` stand for a quote and a
+          backslash; single quotes keep everything literally, which makes them
+          the way to pass JSON (``'{"intent": "x y"}'``).
+        * ``name=value`` binds by name when ``name`` is exactly a declared
+          parameter name, and its value may be quoted
+          (``query="context window"``). Any other ``a=b`` word, and any quoted
+          token, is a positional value, so free text is never mistaken for a
+          name.
+        * A quote character inside an unquoted word is ordinary text:
+          ``don't`` and ``{"repo":"x"}`` arrive verbatim.
+
+        Positional values bind in declaration order, one value per parameter.
+        No parameter takes the remaining words, so a value with spaces must be
+        quoted or given as ``name=value``. Positional values come first, then
+        ``name=value`` arguments.
+
+        Each value is converted to its parameter's declared type. An
+        ``object`` or ``array`` value must be JSON of that shape (``null`` too,
+        when the parameter is nullable). An integer, number or boolean value
+        that does not convert is passed on as the typed string, leaving the
+        rejection to the tool's argument check (the ``@tool`` wrapper names
+        the parameter and the type it expects). A parameter that is not given
+        takes its default, unless that default is ``None``.
+
+        Returns:
+            The bound arguments, or ``{}`` when ``user_input`` is not a ``!``
+            command.
+
+        Raises:
+            CommandParseError: For an unbalanced quote, text directly after a
+                closing quote, more positional values than parameters, a
+                positional value after a ``name=value`` argument, a parameter
+                given twice, or an ``object``/``array`` value that is not JSON
+                of that shape. The message names the command and the problem
+                in the input, never a parameter the input did not reach.
         """
-        import json
-
-        parts = user_input.strip().split()
-
-        # First part is the command itself
-        if not parts or not parts[0].startswith("!"):
+        line = user_input.strip()
+        if not line.startswith("!"):
             return {}
 
-        # Determine how many words the command prefix has (e.g., "!memory search" = 2)
-        prefix = self.schema.command_prefix or parts[0]
-        prefix_word_count = len(prefix.split())
+        schema = self.schema
+        # The prefix may be several words (e.g. "!memory search"). Splitting
+        # off only those words keeps the arguments' own whitespace intact for
+        # quoted values.
+        command = schema.command_prefix or line.split()[0]
+        prefix_word_count = len(command.split())
+        words = line.split(maxsplit=prefix_word_count)
+        arguments = words[prefix_word_count] if len(words) > prefix_word_count else ""
 
-        args = {}
-        current_part_idx = prefix_word_count
-
-        for param in self.schema.parameters:
-            if current_part_idx >= len(parts):
-                if param.default is not None:
-                    args[param.name] = param.default
-                continue
-
-            # If this is an object/array, consume the rest
-            if param.type in ["object", "array"]:
-                # Join the rest of the parts
-                value_str = " ".join(parts[current_part_idx:])
-
-                try:
-                    args[param.name] = json.loads(value_str)
-                except json.JSONDecodeError:
-                    # Fallback to string if parsing fails (might be intended as string)
-                    args[param.name] = value_str
-
-                # We consumed everything for this complex type
-                break
-            elif param == self.schema.parameters[-1]:
-                 # Last parameter consumes the rest if it's a string
-                value = " ".join(parts[current_part_idx:])
-                args[param.name] = self._coerce_type(value, param.type)
-                break
+        parameters = {param.name: param for param in schema.parameters}
+        positional: List[str] = []
+        named: List[_CommandToken] = []
+        for token in _tokenize_command(arguments, command):
+            if token.name in parameters:
+                named.append(token)
+            elif named:
+                raise CommandParseError(
+                    command,
+                    f"positional value {_echo(token.text)} follows a "
+                    "name=value argument; give positional values first, "
+                    "then name=value",
+                )
             else:
-                # Simple positional argument - coerce to expected type
-                value = parts[current_part_idx]
-                args[param.name] = self._coerce_type(value, param.type)
-                current_part_idx += 1
+                positional.append(token.text)
 
+        if len(positional) > len(parameters):
+            if parameters:
+                plural = "" if len(parameters) == 1 else "s"
+                takes = (
+                    f"it takes at most {len(parameters)} positional "
+                    f"value{plural} ({', '.join(parameters)})"
+                )
+                hint = "; quote multi-word values or use name=value"
+            else:
+                takes, hint = "it takes no arguments", ""
+            raise CommandParseError(
+                command,
+                f"too many arguments: {takes} but got {len(positional)} "
+                f"({', '.join(_echo(text) for text in positional)}){hint}",
+            )
+
+        supplied: Dict[str, str] = {}
+        given_as: Dict[str, str] = {}
+        for name, text in zip(parameters, positional):
+            supplied[name] = text
+            given_as[name] = f"positionally as {_echo(text)}"
+        for token in named:
+            again = f"as {token.name}={_echo(token.value)}"
+            if token.name in supplied:
+                raise CommandParseError(
+                    command,
+                    f"parameter '{token.name}' is given twice "
+                    f"({given_as[token.name]} and {again}); give it once",
+                )
+            supplied[token.name] = token.value
+            given_as[token.name] = again
+
+        args: Dict[str, Any] = {}
+        for name, param in parameters.items():
+            if name in supplied:
+                args[name] = self._convert_command_value(param, supplied[name], command)
+            elif param.default is not None:
+                args[name] = param.default
         return args
+
+    def _convert_command_value(self, param: ToolParameter, text: str, command: str) -> Any:
+        """Convert one command-line value to its parameter's declared type."""
+        if param.type not in ("object", "array"):
+            return self._coerce_type(text, param.type)
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            value = COERCION_FAILED
+        if value is None and param.nullable:
+            return None
+        if not isinstance(value, dict if param.type == "object" else list):
+            raise CommandParseError(
+                command,
+                f"parameter '{param.name}' expects a JSON {param.type}, but "
+                f"got {_echo(text)}; quote JSON that contains spaces, e.g. "
+                f"{param.name}='...'",
+            )
+        return value
 
     def _coerce_type(self, value: str, param_type: str) -> Any:
         """
