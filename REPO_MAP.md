@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 134 tracked files (121 `.py`, 5 `.md`, 8 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 137 tracked files (124 `.py`, 5 `.md`, 8 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -125,13 +125,15 @@ Repo entry points and standard project files.
 - **kestrel_sdk/payer_policy.py** — PayerPolicy — declarative model of who pays for which metered resource.
   - `class ResourceClass`; `class PayerKind`; `class SupportStatus`; `def status_for(resource_class, vendor, kind)`; `def is_offerable(resource_class, vendor, kind)`; `def supported_kinds_for(resource_class, vendor)`; `class KeyResolverProtocol`; `class ResolvedResource`; `…`
 - **kestrel_sdk/py.typed** — —
-- **kestrel_sdk/security/__init__.py** — Kestrel SDK — Security interfaces and encryption helpers.
+- **kestrel_sdk/security/__init__.py** — Kestrel SDK — Security interfaces, outbound policy and encryption helpers.
 - **kestrel_sdk/security/aead.py** — AEAD container — versioned AES-256-GCM with Fernet-compatible read path.
   - `class AEADCipher`
 - **kestrel_sdk/security/encryption.py** — Symmetric encryption helpers for Kestrel SDK.
   - `def get_fernet()`; `def get_master_key_bytes()`; `def get_agent_fernet(agent_id)`; `def get_agent_key(agent_did, purpose)`; `def encrypt(agent_did, purpose, plaintext)`; `def decrypt(agent_did, purpose, ciphertext)`; `def encrypt_string(agent_did, purpose, plaintext)`; `def decrypt_string(agent_did, purpose, ciphertext)`; `…`
 - **kestrel_sdk/security/exceptions.py** — Unified exception hierarchy for Kestrel security module.
   - `class SecurityError`; `class KeyStorageError`; `class KeyNotFoundError`; `class KeyNotConfiguredError`; `class EncryptionError`; `class DecryptionError`; `class MasterKeyNotConfiguredError`; `class InvalidPurposeError`; `…`
+- **kestrel_sdk/security/outbound.py** — Shared outbound URL validation and DNS-pinned HTTP transports.
+  - `class SSRFError`; `class ValidatedOutboundURL`; `def validate_outbound_url(url)`; `async def assert_safe_url(url)`; `def pinned_httpx_async_transport(validated)`; `def pinned_httpx2_async_transport(validated)`
 - **kestrel_sdk/signals/__init__.py** — Kestrel SDK — Signal Dispatcher interfaces.
 - **kestrel_sdk/signals/models.py** — Signal Dispatcher data model — public contract.
   - `class SignalMode`; `class Trust`; `class Urgency`; `class Visibility`; `class Status`; `class ResourceLock`; `class CausationFrame`; `class RateLimit`; `…`
@@ -233,6 +235,10 @@ Repo entry points and standard project files.
   - `class TestContractVersion`; `class TestToolCall`; `class TestLLMResponse`; `class TestModelCategory`; `class TestModelInfo`; `class TestProviderInfo`; `class TestProviderCapabilities`; `class TestBackendType`; `…`
 - **tests/test_operator_contracts.py** — Focused tests for feature-owned operator SDK contracts.
   - `def test_operator_context_rejects_invalid_or_missing_tenant(tenant_id)`; `def test_operator_context_requires_tenant_field()`; `def test_operator_context_normalizes_collections_and_is_frozen()`; `def test_operator_context_helpers_fail_closed_for_unknown_values()`; `def test_operator_context_has_bounded_freshness_and_agent_attribution()`; `def test_service_descriptors_are_versioned_and_scope_is_explicit()`; `def test_stable_service_requirement_uses_compatible_major_and_minimum()`; `def test_service_requirement_rejects_non_stable_versions(version)`; `…`
+- **tests/test_outbound_http.py** — SSRF guard (#1727): block server-side fetches to non-public addresses.
+  - `async def test_native_transport_rejects_changed_scheme_before_network(family, monkeypatch)`; `class TestAddressClassification`; `class TestValidateOutboundUrl`; `class TestPinnedConnections`
+- **tests/test_outbound_transport.py** — Native client I/O keeps approved IPs, TLS identity and the HTTP origin bound.
+  - `def native_client(request)`; `async def test_native_tls_keeps_host_sni_verification_and_never_resolves_again(native_client, certificate_host, tmp_path, monkeypatch)`; `async def test_native_transport_rejects_other_origin_before_connect(native_client, url, monkeypatch)`; `async def test_backend_propagates_unexpected_errors_and_refuses_unix_sockets()`; `async def test_backend_reports_all_approved_addresses_exhausted()`; `def test_policy_import_does_not_import_optional_http_or_crypto_dependencies()`
 - **tests/test_payer_policy.py** — Tests for kestrel_sdk.payer_policy.
   - `class TestEnums`; `class TestSupportMatrix`; `class TestPayerSpec`; `class TestPayerPolicy`; `class TestTOMLRoundTrip`; `class TestResolvedResource`
 - **tests/test_public_contract_exports.py** — Public import and compatibility guarantees for row-1 SDK contracts.
