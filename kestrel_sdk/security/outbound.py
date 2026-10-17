@@ -96,7 +96,7 @@ def _resolve_addresses(host: str, port: int) -> list[ipaddress.IPv4Address | ipa
     """Resolve ``host`` to all IPs (blocking). Raises SSRFError on failure."""
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
-    except socket.gaierror as e:
+    except (socket.gaierror, UnicodeError) as e:
         raise SSRFError(f"cannot resolve host {host!r}: {e}") from e
     return list(dict.fromkeys(ipaddress.ip_address(info[4][0]) for info in infos))
 
@@ -213,9 +213,8 @@ class _PinnedAsyncNetworkBackend:
 def _pinned_async_transport(validated: ValidatedOutboundURL, *,
                             httpx_module: ModuleType, httpcore_module: ModuleType):
     config = importlib.import_module(f"{httpx_module.__name__}._config")
-    backends = importlib.import_module(f"{httpcore_module.__name__}._backends.anyio")
     backend = _PinnedAsyncNetworkBackend(
-        validated, backend=backends.AnyIOBackend(),
+        validated, backend=httpcore_module.AnyIOBackend(),
         connect_errors=(httpcore_module.NetworkError, httpcore_module.TimeoutException, OSError),
         connect_timeout_error=httpcore_module.ConnectTimeout,
     )
@@ -234,7 +233,7 @@ def _pinned_async_transport(validated: ValidatedOutboundURL, *,
         def __init__(self):
             limits = config.DEFAULT_LIMITS
             self._pool = httpcore_module.AsyncConnectionPool(
-                ssl_context=config.create_ssl_context(verify=True, cert=None, trust_env=True),
+                ssl_context=httpx_module.create_ssl_context(verify=True, cert=None, trust_env=True),
                 max_connections=limits.max_connections,
                 max_keepalive_connections=limits.max_keepalive_connections,
                 keepalive_expiry=limits.keepalive_expiry,

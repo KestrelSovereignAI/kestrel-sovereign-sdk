@@ -11,6 +11,7 @@ from kestrel_sdk.security.outbound import (
     _PinnedAsyncNetworkBackend,
 )
 import ipaddress
+import socket
 
 
 @pytest.mark.parametrize("family", ["httpx", "httpx2"])
@@ -72,6 +73,7 @@ class TestValidateOutboundUrl:
         result = validate_outbound_url("wss://socket.example/path", allowed_schemes=("wss",))
         assert result.port == 443
         assert calls == [("socket.example", 443)]
+
     def test_rejected_literal_never_uses_dns_as_another_path(self, monkeypatch):
         def unexpected_dns(*args, **kwargs):
             pytest.fail("a blocked literal must be rejected before DNS")
@@ -142,6 +144,10 @@ class TestValidateOutboundUrl:
     @pytest.mark.parametrize("bad", [
         "http://example.com:abc",       # non-numeric port
         "http://[not-an-ipv6/",         # malformed IPv6 literal
+        "https://cdn..example.com/x",   # empty IDNA label
+        "https://" + "a" * 64 + ".example.com/x",  # oversized label
+        "https://.example.com/x",
+        "https://\udce9.example.com/x",
     ])
     def test_malformed_url_raises_ssrferror_not_valueerror(self, bad):
         # #1727 codex r1: malformed input must surface as SSRFError (→ 400),
@@ -153,7 +159,10 @@ class TestValidateOutboundUrl:
         def fake_getaddrinfo(host, port, proto=0, type=0):
             assert host == "assets.example"
             assert port == 443
+            assert type == socket.SOCK_STREAM
+            assert proto == socket.IPPROTO_TCP
             return [
+                (None, None, None, None, ("2001:4860:4860::8888", port)),
                 (None, None, None, None, ("2001:4860:4860::8888", port)),
                 (None, None, None, None, ("93.184.216.34", port)),
             ]
@@ -195,6 +204,14 @@ class TestValidateOutboundUrl:
             validate_outbound_url("https://mixed.example/avatar.png")
 
         assert calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("host", ["cdn..example.com", "a" * 64 + ".example.com", ".example.com", "\udce9.example.com"])
+    async def test_async_validation_preserves_typed_idna_rejections(self, host):
+        from kestrel_sdk.security.outbound import assert_safe_url
+
+        with pytest.raises(SSRFError):
+            await assert_safe_url(f"https://{host}/x")
 
 
 class TestPinnedConnections:
