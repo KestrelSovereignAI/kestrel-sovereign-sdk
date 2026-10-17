@@ -41,6 +41,11 @@ class TestAddressClassification:
         "0.0.0.0",                    # unspecified
         "fd00::1",                    # IPv6 ULA (private)
         "::ffff:169.254.169.254",     # IPv4-mapped metadata
+        "100.64.1.1",                 # shared-address space (neither private nor global)
+        "224.0.0.1",                  # multicast
+        "64:ff9b::7f00:1", "::7f00:1",  # reserved transition formats
+        "fec0::1",                    # deprecated IPv6 site-local
+        "192.88.99.2", "::ffff:192.88.99.2",  # IANA non-global 6a44 relay
     ])
     def test_blocked_addresses(self, addr):
         assert _address_is_blocked(ipaddress.ip_address(addr)) is True
@@ -51,6 +56,22 @@ class TestAddressClassification:
 
 
 class TestValidateOutboundUrl:
+    @pytest.mark.parametrize("address", ["169.254.169.254", "100.64.1.1", "fec0::1"])
+    def test_direct_construction_cannot_bypass_public_address_policy(self, address):
+        with pytest.raises(SSRFError, match="non-public"):
+            ValidatedOutboundURL(url="https://public.example/mcp", scheme="https", host="public.example", port=443, ip_addresses=(ipaddress.ip_address(address),))
+
+    def test_allowed_tls_websocket_scheme_resolves_the_standard_port(self, monkeypatch):
+        calls = []
+
+        def resolver(host, port, **kwargs):
+            calls.append((host, port))
+            return [(None, None, None, None, ("8.8.8.8", port))]
+
+        monkeypatch.setattr("socket.getaddrinfo", resolver)
+        result = validate_outbound_url("wss://socket.example/path", allowed_schemes=("wss",))
+        assert result.port == 443
+        assert calls == [("socket.example", 443)]
     def test_rejected_literal_never_uses_dns_as_another_path(self, monkeypatch):
         def unexpected_dns(*args, **kwargs):
             pytest.fail("a blocked literal must be rejected before DNS")
@@ -129,7 +150,7 @@ class TestValidateOutboundUrl:
             validate_outbound_url(bad)
 
     def test_validation_returns_pinned_public_ip(self, monkeypatch):
-        def fake_getaddrinfo(host, port, proto=0):
+        def fake_getaddrinfo(host, port, proto=0, type=0):
             assert host == "assets.example"
             assert port == 443
             return [
@@ -154,7 +175,7 @@ class TestValidateOutboundUrl:
     ):
         calls = []
 
-        def fake_getaddrinfo(host, port, proto=0):
+        def fake_getaddrinfo(host, port, proto=0, type=0):
             return [
                 (None, None, None, None, ("93.184.216.34", port)),
                 (None, None, None, None, ("127.0.0.1", port)),
@@ -211,7 +232,7 @@ class TestPinnedConnections:
     ):
         calls = []
 
-        def fake_getaddrinfo(host, port, proto=0):
+        def fake_getaddrinfo(host, port, proto=0, type=0):
             assert host == "bücher.example"
             return [
                 (None, None, None, None, ("93.184.216.34", port)),
@@ -250,7 +271,7 @@ class TestPinnedConnections:
     ):
         calls = []
 
-        def fake_getaddrinfo(host, port, proto=0):
+        def fake_getaddrinfo(host, port, proto=0, type=0):
             assert host == "dualstack.example"
             return [
                 (None, None, None, None, ("2001:4860:4860::8888", port)),

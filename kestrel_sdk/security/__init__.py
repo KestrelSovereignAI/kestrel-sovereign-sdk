@@ -6,6 +6,7 @@ matching 'httpx' or 'httpx2' extra. Encryption requires the 'crypto' extra.
 
 from .exceptions import (
     SecurityError,
+    SSRFError,
     EncryptionError,
     DecryptionError,
     MasterKeyNotConfiguredError,
@@ -18,6 +19,7 @@ from .exceptions import (
 
 __all__ = [
     "SecurityError",
+    "SSRFError",
     "EncryptionError",
     "DecryptionError",
     "MasterKeyNotConfiguredError",

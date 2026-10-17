@@ -20,6 +20,7 @@ from cryptography.x509.oid import NameOID
 import pytest
 
 from kestrel_sdk.security import outbound
+from kestrel_sdk.security.exceptions import SecurityError
 
 
 @pytest.fixture(params=["httpx", "httpx2"])
@@ -29,6 +30,109 @@ def native_client(request):
     core = importlib.import_module("httpcore" if family == "httpx" else "httpcore2")
     backend = importlib.import_module(f"{core.__name__}._backends.anyio")
     return module, backend.AnyIOBackend, getattr(outbound, f"pinned_{family}_async_transport")
+
+
+@pytest.mark.asyncio
+async def test_pinned_pool_preserves_native_finite_connection_limits(native_client):
+    client_module, _backend, factory = native_client
+    validated = outbound.validate_outbound_url("https://8.8.8.8/mcp")
+    async with factory(validated) as pinned, client_module.AsyncHTTPTransport() as native:
+        assert pinned._pool._max_connections == native._pool._max_connections
+        assert pinned._pool._max_keepalive_connections == native._pool._max_keepalive_connections
+
+
+@pytest.mark.asyncio
+async def test_transport_checks_origin_before_delegating_to_its_pool(native_client, monkeypatch):
+    client_module, _backend, factory = native_client
+    transport = factory(outbound.validate_outbound_url("https://8.8.8.8/mcp"))
+    pool = AsyncMock(side_effect=AssertionError("a changed origin reached the pool"))
+    monkeypatch.setattr(transport._pool, "handle_async_request", pool)
+    async with client_module.AsyncClient(transport=transport) as client:
+        with pytest.raises(outbound.SSRFError, match="unexpected origin"):
+            await client.get("https://1.1.1.1/mcp")
+    pool.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_backend_checks_origin_independently_of_the_native_transport():
+    backend = AsyncMock()
+    pinned = outbound._PinnedAsyncNetworkBackend(
+        outbound.validate_outbound_url("https://8.8.8.8/mcp"),
+        backend=backend, connect_errors=(OSError,),
+    )
+    with pytest.raises(outbound.SSRFError, match="unexpected origin"):
+        await pinned.connect_tcp("1.1.1.1", 443)
+    backend.connect_tcp.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_one_connect_budget_bounds_all_approved_addresses():
+    calls = []
+
+    async def stalled_dial(**kwargs):
+        calls.append(kwargs)
+        await asyncio.sleep(0.04)
+        raise OSError("address unreachable")
+
+    backend = AsyncMock()
+    backend.connect_tcp.side_effect = stalled_dial
+    validated = outbound.ValidatedOutboundURL(
+        url="https://public.example/mcp", scheme="https", host="public.example", port=443,
+        ip_addresses=(ipaddress.ip_address("8.8.8.8"), ipaddress.ip_address("1.1.1.1")),
+    )
+    pinned = outbound._PinnedAsyncNetworkBackend(validated, backend=backend, connect_errors=(OSError,))
+    with pytest.raises(TimeoutError, match="deadline"):
+        await pinned.connect_tcp(validated.host, validated.port, timeout=0.01)
+    assert len(calls) == 1
+
+
+def test_ssrf_rejection_belongs_to_the_shared_security_hierarchy():
+    assert issubclass(outbound.SSRFError, SecurityError)
+    assert issubclass(outbound.SSRFError, ValueError)
+
+
+def test_real_localhost_dns_resolution_succeeds_on_the_current_platform():
+    addresses = outbound._resolve_addresses("localhost", 443)
+    assert addresses
+    assert all(address.is_loopback for address in addresses)
+
+
+@pytest.mark.asyncio
+async def test_native_client_receives_its_own_connect_timeout_type(native_client, monkeypatch):
+    client_module, backend_type, factory = native_client
+
+    async def stalled_dial(*args, **kwargs):
+        await asyncio.sleep(1)
+        raise AssertionError("the total connect deadline was not enforced")
+
+    monkeypatch.setattr(backend_type, "connect_tcp", stalled_dial)
+    validated = outbound.validate_outbound_url("https://8.8.8.8/mcp")
+    async with client_module.AsyncClient(transport=factory(validated), timeout=0.01) as client:
+        with pytest.raises(client_module.ConnectTimeout, match="deadline"):
+            await client.get(validated.url)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_dial_never_attempts_the_next_address():
+    entered = asyncio.Event()
+
+    async def stall(**kwargs):
+        entered.set()
+        await asyncio.Future()
+
+    backend = AsyncMock()
+    backend.connect_tcp.side_effect = stall
+    validated = outbound.ValidatedOutboundURL(
+        url="https://public.example/mcp", scheme="https", host="public.example", port=443,
+        ip_addresses=(ipaddress.ip_address("8.8.8.8"), ipaddress.ip_address("1.1.1.1")),
+    )
+    pinned = outbound._PinnedAsyncNetworkBackend(validated, backend=backend, connect_errors=(OSError,))
+    task = asyncio.create_task(pinned.connect_tcp(validated.host, validated.port, timeout=1))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    backend.connect_tcp.assert_awaited_once()
 
 
 def _tls_context(tmp_path, hostname, monkeypatch):
@@ -86,7 +190,7 @@ async def test_native_tls_keeps_host_sni_verification_and_never_resolves_again(
     async with _https_endpoint(context) as (port, requests, server_names):
         # Validate a public answer, then route only the approved numeric dial to
         # our local TLS fixture. The native socket/TLS/HTTP exchange remains real.
-        def initial_dns(host, resolved_port, proto):
+        def initial_dns(host, resolved_port, proto, type):
             assert host == "pinned.example.test"
             return [(socket.AF_INET, socket.SOCK_STREAM, proto, "", ("8.8.8.8", resolved_port))]
 

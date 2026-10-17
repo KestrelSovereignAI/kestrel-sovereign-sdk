@@ -10,15 +10,35 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import importlib
+from importlib.resources import files
 import ipaddress
 import socket
+import tomllib
 from types import ModuleType
 from typing import Any
 from urllib.parse import urlparse
 
+from .exceptions import SSRFError
 
-class SSRFError(ValueError):
-    """Raised when an outbound URL targets a disallowed (non-public) address."""
+
+_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def _load_non_global_networks():
+    with files(__package__).joinpath("outbound_policy.toml").open("rb") as source:
+        policy = tomllib.load(source)
+    return tuple(ipaddress.ip_network(prefix) for prefix in policy["non_global_networks"])
+
+
+_NON_GLOBAL_NETWORKS = _load_non_global_networks()
+
+
+def _origin_port(scheme: str, port: int | None) -> int:
+    if port is not None:
+        return port
+    if scheme not in _DEFAULT_PORTS:
+        raise SSRFError(f"URL scheme {scheme!r} requires an explicit port")
+    return _DEFAULT_PORTS[scheme]
 
 
 @dataclass(frozen=True)
@@ -32,9 +52,15 @@ class ValidatedOutboundURL:
     ip_addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]
 
     def __post_init__(self) -> None:
-        addresses = tuple(self.ip_addresses)
+        try:
+            addresses = tuple(ipaddress.ip_address(address) for address in self.ip_addresses)
+        except (TypeError, ValueError) as error:
+            raise SSRFError("validated outbound URL contains an invalid address") from error
         if not addresses:
             raise SSRFError("validated outbound URL has no addresses")
+        for address in addresses:
+            if _address_is_blocked(address):
+                raise SSRFError(f"URL host {self.host!r} has a non-public address ({address})")
         object.__setattr__(self, "ip_addresses", addresses)
 
     def assert_origin(self, host: str, port: int) -> None:
@@ -60,17 +86,19 @@ def _address_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bo
         or ip.is_multicast
         or ip.is_reserved
         or ip.is_unspecified
+        or (isinstance(ip, ipaddress.IPv6Address) and ip.is_site_local)
         or not ip.is_global
+        or any(ip.version == network.version and ip in network for network in _NON_GLOBAL_NETWORKS)
     )
 
 
 def _resolve_addresses(host: str, port: int) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     """Resolve ``host`` to all IPs (blocking). Raises SSRFError on failure."""
     try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
         raise SSRFError(f"cannot resolve host {host!r}: {e}") from e
-    return [ipaddress.ip_address(info[4][0]) for info in infos]
+    return list(dict.fromkeys(ipaddress.ip_address(info[4][0]) for info in infos))
 
 
 def _canonical_origin_host(host: str) -> str:
@@ -103,7 +131,7 @@ def validate_outbound_url(
         parsed = urlparse(url)
         scheme = parsed.scheme.lower()
         host = parsed.hostname
-        port = parsed.port if parsed.port is not None else (443 if scheme == "https" else 80)
+        port = parsed.port
     except ValueError as e:
         raise SSRFError(f"malformed URL {url!r}: {e}") from e
 
@@ -113,6 +141,7 @@ def validate_outbound_url(
         )
     if not host:
         raise SSRFError(f"URL has no host: {url!r}")
+    port = _origin_port(scheme, port)
 
     # A rejected literal is not a hostname-resolution failure. Do not catch
     # our own SSRFError (a ValueError) and repeat DNS for a blocked address.
@@ -121,8 +150,6 @@ def validate_outbound_url(
     except ValueError:
         ip = None
     if ip is not None:
-        if _address_is_blocked(ip):
-            raise SSRFError(f"URL host {host} is a non-public address")
         return ValidatedOutboundURL(
             url=url, scheme=scheme, host=host, port=port, ip_addresses=(ip,)
         )
@@ -130,11 +157,6 @@ def validate_outbound_url(
     resolved = _resolve_addresses(host, port)
     if not resolved:
         raise SSRFError(f"cannot resolve host {host!r}: no addresses returned")
-    for ip in resolved:
-        if _address_is_blocked(ip):
-            raise SSRFError(
-                f"URL host {host!r} resolves to a non-public address ({ip})"
-            )
     return ValidatedOutboundURL(
         url=url, scheme=scheme, host=host, port=port, ip_addresses=tuple(resolved)
     )
@@ -153,26 +175,32 @@ class _PinnedAsyncNetworkBackend:
     """One origin check and dial policy for either native HTTP client family."""
 
     def __init__(self, validated: ValidatedOutboundURL, *, backend: Any,
-                 connect_errors: tuple[type[Exception], ...]):
+                 connect_errors: tuple[type[Exception], ...],
+                 connect_timeout_error: type[Exception] = TimeoutError):
         self._validated = validated
         self._backend = backend
         self._connect_errors = connect_errors
+        self._connect_timeout_error = connect_timeout_error
 
     async def connect_tcp(self, host: str, port: int, timeout: float | None = None,
                           local_address: str | None = None, socket_options: Any = None):
         self._validated.assert_origin(host, port)
-        last_error = None
-        for address in self._validated.ip_addresses:
-            try:
-                return await self._backend.connect_tcp(
-                    host=str(address), port=port, timeout=timeout,
-                    local_address=local_address, socket_options=socket_options,
-                )
-            except self._connect_errors as error:
-                last_error = error
-        if last_error is not None:
-            raise last_error
-        raise SSRFError("pinned transport has no validated addresses")
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        try:
+            async with asyncio.timeout(timeout):
+                for index, address in enumerate(self._validated.ip_addresses):
+                    remaining = None if deadline is None else max(0.0, deadline - loop.time())
+                    try:
+                        return await self._backend.connect_tcp(
+                            host=str(address), port=port, timeout=remaining,
+                            local_address=local_address, socket_options=socket_options,
+                        )
+                    except self._connect_errors:
+                        if index == len(self._validated.ip_addresses) - 1:
+                            raise
+        except TimeoutError as error:
+            raise self._connect_timeout_error("approved-address connection deadline exceeded") from error
 
     async def connect_unix_socket(self, path: str, timeout: float | None = None,
                                   socket_options: Any = None):
@@ -189,6 +217,7 @@ def _pinned_async_transport(validated: ValidatedOutboundURL, *,
     backend = _PinnedAsyncNetworkBackend(
         validated, backend=backends.AnyIOBackend(),
         connect_errors=(httpcore_module.NetworkError, httpcore_module.TimeoutException, OSError),
+        connect_timeout_error=httpcore_module.ConnectTimeout,
     )
 
     class PinnedAsyncHTTPTransport(httpx_module.AsyncHTTPTransport):
@@ -198,12 +227,12 @@ def _pinned_async_transport(validated: ValidatedOutboundURL, *,
             port = request.url.port
             validated.assert_origin(
                 request.url.host,
-                port if port is not None else (443 if request.url.scheme == "https" else 80),
+                _origin_port(request.url.scheme, port),
             )
             return await super().handle_async_request(request)
 
         def __init__(self):
-            limits = httpx_module.Limits()
+            limits = config.DEFAULT_LIMITS
             self._pool = httpcore_module.AsyncConnectionPool(
                 ssl_context=config.create_ssl_context(verify=True, cert=None, trust_env=True),
                 max_connections=limits.max_connections,

@@ -81,6 +81,18 @@ disable automatic redirects when the caller should refuse them altogether.
 Validation itself needs no HTTP extra. A client dependency is imported only
 when its transport factory is called.
 
+The address policy combines Python's address classifications with the packaged
+`outbound_policy.toml` for explicit IANA non-global allocations missing from
+the supported standard-library tables. This includes the
+[6a44 relay address](https://www.iana.org/assignments/iana-ipv4-special-registry).
+
+The pool retains the matching native client's finite connection limits. One
+connect deadline covers all approved addresses. These transports must be the
+client's only transport: explicit `proxy` or `mounts` options select other
+transports and bypass the pinning boundary. TLS uses each native client's trust
+store and honors `SSL_CERT_FILE` / `SSL_CERT_DIR`; httpx uses certifi by default,
+while httpx2 uses the operating system store.
+
 ## Usage
 
 ```python
