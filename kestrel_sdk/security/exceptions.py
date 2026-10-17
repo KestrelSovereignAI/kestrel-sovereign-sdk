@@ -26,6 +26,10 @@ class SecurityError(Exception):
     pass
 
 
+class SSRFError(SecurityError, ValueError):
+    """An outbound URL or pinned connection violates the public-origin policy."""
+
+
 # =============================================================================
 # Key Storage Exceptions
 # =============================================================================

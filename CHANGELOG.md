@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.39.1 — 2026-10-17
+
+### Added
+
+- Shared outbound URL validation and DNS-pinned transports in
+  `kestrel_sdk.security.outbound`, extracted from Sovereign core so host
+  fetchers and remote MCP connections use one policy. Validation rejects
+  non-public IPs, including mixed public/private DNS answers. The optional
+  `httpx` and `httpx2` extras provide each client's native transport; the base
+  SDK still requires only Pydantic. Transports bind the scheme, host and port,
+  dial approved IPs, and retain the original HTTP Host and TLS identity.
+  Pools preserve native finite limits, a single connect deadline covers the
+  address set, and direct validated-record construction enforces the same
+  address policy. SSRF refusals join the shared security exception hierarchy.
+
 ## 0.39.0 — 2026-10-02
 
 ### Added

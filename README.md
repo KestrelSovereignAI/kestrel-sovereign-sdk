@@ -64,6 +64,34 @@ uv pip install "kestrel-sovereign-sdk[crypto] @ git+https://github.com/KestrelSo
 
 - `pydantic>=2.0`
 - Optional: `cryptography>=42.0` (via `[crypto]` extra)
+- Optional native HTTP clients: `[httpx]` or `[httpx2]`
+
+### Outbound HTTP
+
+`kestrel_sdk.security.outbound` provides the shared server-side URL policy.
+`await assert_safe_url(url, allowed_schemes=("https",))` resolves DNS off the
+event loop and rejects every non-public address, including mixed DNS answers.
+Pass the resulting `ValidatedOutboundURL` to `pinned_httpx_async_transport()`
+or `pinned_httpx2_async_transport()` and use that transport with the matching
+native client's `AsyncClient`. The transport dials only those approved IPs,
+preserves the original Host and TLS identity, and refuses a different scheme,
+host or port. Use a separate validated transport for a redirect destination;
+disable automatic redirects when the caller should refuse them altogether.
+
+Validation itself needs no HTTP extra. A client dependency is imported only
+when its transport factory is called.
+
+The address policy combines Python's address classifications with the packaged
+`outbound_policy.toml` for explicit IANA non-global allocations missing from
+the supported standard-library tables. This includes the
+[6a44 relay address](https://www.iana.org/assignments/iana-ipv4-special-registry).
+
+The pool retains the matching native client's finite connection limits. One
+connect deadline covers all approved addresses. These transports must be the
+client's only transport: explicit `proxy` or `mounts` options select other
+transports and bypass the pinning boundary. TLS uses each native client's trust
+store and honors `SSL_CERT_FILE` / `SSL_CERT_DIR`; httpx uses certifi by default,
+while httpx2 uses the operating system store.
 
 ## Usage
 

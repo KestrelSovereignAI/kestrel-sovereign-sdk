@@ -1,10 +1,12 @@
-"""Kestrel SDK — Security interfaces and encryption helpers.
+"""Kestrel SDK — Security interfaces, outbound policy and encryption helpers.
 
-Requires the 'crypto' extra: pip install kestrel-sovereign-sdk[crypto]
+Outbound policy uses the standard library; native HTTP transports require the
+matching 'httpx' or 'httpx2' extra. Encryption requires the 'crypto' extra.
 """
 
 from .exceptions import (
     SecurityError,
+    SSRFError,
     EncryptionError,
     DecryptionError,
     MasterKeyNotConfiguredError,
@@ -17,6 +19,7 @@ from .exceptions import (
 
 __all__ = [
     "SecurityError",
+    "SSRFError",
     "EncryptionError",
     "DecryptionError",
     "MasterKeyNotConfiguredError",

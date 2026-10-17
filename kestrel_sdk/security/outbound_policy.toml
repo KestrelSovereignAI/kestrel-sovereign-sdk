@@ -1,0 +1,4 @@
+# Explicit IANA non-global allocations missing from supported stdlib tables.
+# Source: https://www.iana.org/assignments/iana-ipv4-special-registry
+# Verified 2026-10-17; the 6a44 relay /32 is marked Globally Reachable=False.
+non_global_networks = ["192.88.99.2/32"]
