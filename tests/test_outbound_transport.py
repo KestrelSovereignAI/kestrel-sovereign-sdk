@@ -181,21 +181,28 @@ async def _https_endpoint(context):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("certificate_host", ["pinned.example.test", "wrong.example.test"])
+@pytest.mark.parametrize("certificate_matches", [True, False])
+@pytest.mark.parametrize("request_host,canonical_host", [
+    ("pinned.example.test", "pinned.example.test"),
+    ("straße.example", "xn--strae-oqa.example"),
+    ("xn--strae-oqa.example", "xn--strae-oqa.example"),
+])
 async def test_native_tls_keeps_host_sni_verification_and_never_resolves_again(
-    native_client, certificate_host, tmp_path, monkeypatch,
+    native_client, certificate_matches, request_host, canonical_host, tmp_path, monkeypatch,
 ):
     client_module, backend_type, factory = native_client
+    certificate_host = canonical_host if certificate_matches else "wrong.example.test"
     context = _tls_context(tmp_path, certificate_host, monkeypatch)
     async with _https_endpoint(context) as (port, requests, server_names):
         # Validate a public answer, then route only the approved numeric dial to
         # our local TLS fixture. The native socket/TLS/HTTP exchange remains real.
         def initial_dns(host, resolved_port, proto, type):
-            assert host == "pinned.example.test"
+            assert host == canonical_host
             return [(socket.AF_INET, socket.SOCK_STREAM, proto, "", ("8.8.8.8", resolved_port))]
 
         monkeypatch.setattr(socket, "getaddrinfo", initial_dns)
-        validated = outbound.validate_outbound_url(f"https://pinned.example.test:{port}/mcp")
+        original_url = f"https://{request_host}:{port}/mcp"
+        validated = outbound.validate_outbound_url(original_url)
         dials = []
         original_dial = backend_type.connect_tcp
 
@@ -213,17 +220,17 @@ async def test_native_tls_keeps_host_sni_verification_and_never_resolves_again(
         monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:1")
         monkeypatch.setenv("NO_PROXY", "")
         async with client_module.AsyncClient(transport=factory(validated)) as client:
-            if certificate_host == validated.host:
-                response = await client.get(validated.url)
+            if certificate_matches:
+                response = await client.get(original_url)
                 assert response.text == "ok"
                 assert len(requests) == 1
-                assert f"Host: pinned.example.test:{port}\r\n".encode() in requests[0]
+                assert f"Host: {canonical_host}:{port}\r\n".encode() in requests[0]
             else:
                 with pytest.raises(client_module.ConnectError, match="certificate verify failed"):
-                    await client.get(validated.url)
+                    await client.get(original_url)
                 assert requests == []
         assert dials == [("8.8.8.8", port)]
-        assert server_names == ["pinned.example.test"]
+        assert server_names == [canonical_host]
 
 
 @pytest.mark.asyncio
@@ -287,3 +294,20 @@ assert validate_outbound_url('https://8.8.8.8/mcp').host == '8.8.8.8'
         cwd=Path(__file__).parents[1], timeout=10,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.asyncio
+async def test_invalid_alabel_in_request_has_the_public_security_error_type(native_client, monkeypatch):
+    client_module, _, factory = native_client
+    transport = factory(outbound.validate_outbound_url("https://8.8.8.8/mcp"))
+    pool = AsyncMock()
+    monkeypatch.setattr(transport._pool, "handle_async_request", pool)
+    async with transport:
+        # Client request construction can decode invalid A-labels before a
+        # transport runs. Supply Host to exercise this transport's own guard.
+        request = client_module.Request(
+            "GET", "https://xn--zzzz.example/mcp", headers={"Host": "xn--zzzz.example"},
+        )
+        with pytest.raises(outbound.SSRFError):
+            await transport.handle_async_request(request)
+    pool.assert_not_awaited()

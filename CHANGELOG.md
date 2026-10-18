@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.39.2 — 2026-10-18
+
+### Fixed
+
+- Canonicalize outbound URL authorities with IDNA 2008 before DNS so validation,
+  native HTTP clients, and TLS identify the same domain. Returned URLs and host
+  names use the canonical ASCII form. Require IDNA-valid domain names, including
+  ASCII names; names with underscores, reserved hyphen patterns or invalid
+  A-labels are now refused before DNS. Reject URL user information, raw control
+  characters, surrounding whitespace, and validated records whose origin
+  metadata disagrees with their URL. IDNA is a lightweight
+  base dependency; HTTP clients remain optional extras.
+- Inspect native request hosts in their raw ASCII form so malformed A-labels
+  consistently raise `SSRFError` in both HTTP client families.
+- Refuse invalid IPv4-shaped authorities before DNS, including leading-zero
+  spellings that native clients reject. IP-literal records cannot approve a
+  different public address. Suppress unbounded parser/IDNA input from expected
+  validation-error tracebacks.
+- Reject unencodable UTF-8 URL suffixes before DNS rather than allowing a
+  native request-construction exception after validation.
+- Preserve authority host kinds: unsupported bracketed literals are refused
+  rather than rewritten into DNS names. Refuse IPv6 interface/zone hints in
+  public destinations, including IPv4-mapped addresses, before native clients
+  can receive non-ASCII or unbounded scope identifiers.
+- Refuse misplaced or trailing literal brackets before authority normalization;
+  parsing components alone must not authorize rewriting a different host.
+
 ## 0.39.1 — 2026-10-17
 
 ### Added

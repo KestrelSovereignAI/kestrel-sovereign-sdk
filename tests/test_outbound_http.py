@@ -250,7 +250,7 @@ class TestPinnedConnections:
         calls = []
 
         def fake_getaddrinfo(host, port, proto=0, type=0):
-            assert host == "bücher.example"
+            assert host == "xn--bcher-kva.example"
             return [
                 (None, None, None, None, ("93.184.216.34", port)),
             ]
@@ -277,7 +277,7 @@ class TestPinnedConnections:
 
         await backend.connect_tcp("xn--bcher-kva.example", validated.port)
 
-        assert validated.host == "bücher.example"
+        assert validated.host == "xn--bcher-kva.example"
         assert str(validated.ip_addresses[0]) == "93.184.216.34"
         assert calls == [("93.184.216.34", 443)]
 
