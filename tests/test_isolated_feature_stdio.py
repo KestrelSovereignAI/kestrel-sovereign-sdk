@@ -18,14 +18,21 @@ from kestrel_sdk.isolated_feature import (
 from kestrel_sdk.isolated_feature import service as service_module
 
 
-async def _wait_for_thread_event(event: threading.Event) -> None:
+_THREAD_EVENT_TIMEOUT = 1.0
+_THREAD_EVENT_POLL_INTERVAL = 0.001
+
+
+async def _wait_for_thread_event(
+    event: threading.Event, *, timeout: float = _THREAD_EVENT_TIMEOUT,
+) -> None:
     """Bridge a deterministic worker signal without using an executor."""
 
-    for _ in range(1_000):
-        if event.is_set():
-            return
-        await asyncio.sleep(0)
-    raise AssertionError("worker did not reach its expected synchronization point")
+    try:
+        async with asyncio.timeout(timeout):
+            while not event.is_set():
+                await asyncio.sleep(_THREAD_EVENT_POLL_INTERVAL)
+    except TimeoutError as error:
+        raise AssertionError("worker did not reach its expected synchronization point before the deadline") from error
 
 
 class _GateableWriteStream:
@@ -769,3 +776,38 @@ def test_private_wire_cleanup_when_noninheritability_setup_fails(monkeypatch):
             os.fstat(duplicate_fd)
     finally:
         os.close(read_fd)
+
+
+@pytest.mark.asyncio
+async def test_worker_signal_wait_is_not_limited_by_event_loop_turns():
+    """A valid worker can be scheduled after more turns than a fixed spin cap."""
+    ready = threading.Event()
+    release = threading.Event()
+
+    def worker():
+        release.wait()
+        ready.set()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    async def delayed_release():
+        for _ in range(2_000):
+            await asyncio.sleep(0)
+        release.set()
+
+    releaser = asyncio.create_task(delayed_release())
+    try:
+        await _wait_for_thread_event(ready)
+        assert ready.is_set()
+    finally:
+        release.set()
+        await releaser
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+
+
+@pytest.mark.asyncio
+async def test_worker_signal_wait_reports_a_real_deadline_failure():
+    with pytest.raises(AssertionError, match="synchronization point"):
+        await asyncio.wait_for(_wait_for_thread_event(threading.Event(), timeout=0.01), timeout=1)
