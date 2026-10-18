@@ -294,3 +294,20 @@ assert validate_outbound_url('https://8.8.8.8/mcp').host == '8.8.8.8'
         cwd=Path(__file__).parents[1], timeout=10,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.asyncio
+async def test_invalid_alabel_in_request_has_the_public_security_error_type(native_client, monkeypatch):
+    client_module, _, factory = native_client
+    transport = factory(outbound.validate_outbound_url("https://8.8.8.8/mcp"))
+    pool = AsyncMock()
+    monkeypatch.setattr(transport._pool, "handle_async_request", pool)
+    async with transport:
+        # Client request construction can decode invalid A-labels before a
+        # transport runs. Supply Host to exercise this transport's own guard.
+        request = client_module.Request(
+            "GET", "https://xn--zzzz.example/mcp", headers={"Host": "xn--zzzz.example"},
+        )
+        with pytest.raises(outbound.SSRFError):
+            await transport.handle_async_request(request)
+    pool.assert_not_awaited()

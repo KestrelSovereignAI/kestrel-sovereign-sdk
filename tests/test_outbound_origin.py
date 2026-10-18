@@ -100,3 +100,42 @@ def test_raw_url_control_characters_are_not_silently_discarded(monkeypatch, url)
     monkeypatch.setattr(socket, "getaddrinfo", unexpected_dns)
     with pytest.raises(SSRFError):
         validate_outbound_url(url)
+
+
+@pytest.mark.parametrize("host", ["my_host.example", "_svc.example", "ab--cd.example", "-lead.example", "trail-.example", "xn--zzzz.example"])
+def test_dns_name_policy_rejects_non_idna_ascii_names_before_resolution(monkeypatch, host):
+    def unexpected_dns(*args, **kwargs):
+        pytest.fail("non-IDNA hostname reached DNS")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected_dns)
+    with pytest.raises(SSRFError, match="IDNA"):
+        validate_outbound_url(f"https://{host}/avatar.png")
+
+
+@pytest.mark.parametrize("family", ["httpx", "httpx2"])
+@pytest.mark.parametrize("authority,expected,port", [
+    ("[2001:4860:4860:0000:0000:0000:0000:8888]", "[2001:4860:4860::8888]", 443),
+    ("[2001:4860:4860::8888]:8443", "[2001:4860:4860::8888]:8443", 8443),
+])
+def test_public_ipv6_literal_preserves_a_native_parseable_authority(monkeypatch, family, authority, expected, port):
+    def unexpected_dns(*args, **kwargs):
+        pytest.fail("literal IP must not resolve a hostname")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected_dns)
+    validated = validate_outbound_url(f"https://{authority}/p?x#")
+    assert validated.url == f"https://{expected}/p?x#"
+    assert validated.host == "2001:4860:4860::8888"
+    assert validated.port == port
+    assert validated.ip_addresses == (ipaddress.ip_address("2001:4860:4860::8888"),)
+    native = importlib.import_module(family).URL(validated.url)
+    validated.assert_origin(native.raw_host.decode("ascii"), native.port or 443)
+
+
+def test_direct_record_unknown_scheme_diagnostic_is_bounded():
+    scheme = "a" * 10000
+    with pytest.raises(SSRFError) as error:
+        ValidatedOutboundURL(
+            url=scheme + "://public.example/path", scheme=scheme, host="public.example", port=443,
+            ip_addresses=(ipaddress.ip_address("8.8.8.8"),),
+        )
+    assert len(str(error.value)) <= 512

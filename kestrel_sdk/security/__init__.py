@@ -1,6 +1,6 @@
 """Kestrel SDK — Security interfaces, outbound policy and encryption helpers.
 
-Outbound policy uses the standard library; native HTTP transports require the
+Outbound policy uses the standard library and IDNA; native HTTP transports require the
 matching 'httpx' or 'httpx2' extra. Encryption requires the 'crypto' extra.
 """
 

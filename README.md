@@ -82,8 +82,13 @@ disable automatic redirects when the caller should refuse them altogether.
 Use the returned `validated.url` for the request. Its authority and `host` use
 the same canonical ASCII IDNA 2008 name used for DNS, origin checks, HTTP Host,
 and TLS identity. Unicode names such as `straße.example` retain their distinct
-IDNA 2008 identity. URL user information is rejected, and a directly constructed
-validated record must agree with its URL's origin as well as its public IP set.
+IDNA 2008 identity. Domain names must satisfy IDNA 2008, including ASCII input:
+names such as `my_host.example`, `ab--cd.example`, leading/trailing hyphens, and
+invalid A-labels are refused before DNS even when an HTTP client permits them.
+IP literals, including bracketed IPv6 authorities, are supported separately.
+URL user information, raw control characters, and surrounding whitespace are
+rejected. A directly constructed validated record must agree with its URL's
+origin as well as its public IP set.
 
 Validation itself needs no HTTP extra. A client dependency is imported only
 when its transport factory is called.

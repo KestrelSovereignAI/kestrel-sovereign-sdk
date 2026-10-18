@@ -12,12 +12,13 @@ from dataclasses import dataclass
 import importlib
 from importlib.resources import files
 import ipaddress
-import idna
 import socket
 import tomllib
 from types import ModuleType
 from typing import Any
 from urllib.parse import urlparse
+
+import idna
 
 from .exceptions import SSRFError
 
@@ -38,7 +39,7 @@ def _origin_port(scheme: str, port: int | None) -> int:
     if port is not None:
         return port
     if scheme not in _DEFAULT_PORTS:
-        raise SSRFError(f"URL scheme {scheme!r} requires an explicit port")
+        raise SSRFError("URL scheme requires an explicit port")
     return _DEFAULT_PORTS[scheme]
 
 
@@ -108,7 +109,7 @@ def _resolve_addresses(host: str, port: int) -> list[ipaddress.IPv4Address | ipa
 
 
 def _canonical_origin_host(host: str) -> str:
-    """Return the comparable origin host form used by connection backends."""
+    """Require an IP literal or IDNA DNS name and return its wire identity."""
     if host.startswith("[") and host.endswith("]"):
         host = host[1:-1]
     try:
@@ -256,7 +257,7 @@ def _pinned_async_transport(validated: ValidatedOutboundURL, *,
                 raise SSRFError("pinned transport refused a changed URL scheme")
             port = request.url.port
             validated.assert_origin(
-                request.url.host,
+                request.url.raw_host.decode("ascii"),
                 _origin_port(request.url.scheme, port),
             )
             return await super().handle_async_request(request)

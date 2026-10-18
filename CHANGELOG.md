@@ -8,9 +8,14 @@ All notable changes to this project are documented in this file.
 
 - Canonicalize outbound URL authorities with IDNA 2008 before DNS so validation,
   native HTTP clients, and TLS identify the same domain. Returned URLs and host
-  names use the canonical ASCII form. Reject URL user information and validated
-  records whose origin metadata disagrees with their URL. IDNA is a lightweight
+  names use the canonical ASCII form. Require IDNA-valid domain names, including
+  ASCII names; names with underscores, reserved hyphen patterns or invalid
+  A-labels are now refused before DNS. Reject URL user information, raw control
+  characters, surrounding whitespace, and validated records whose origin
+  metadata disagrees with their URL. IDNA is a lightweight
   base dependency; HTTP clients remain optional extras.
+- Inspect native request hosts in their raw ASCII form so malformed A-labels
+  consistently raise `SSRFError` in both HTTP client families.
 
 ## 0.39.1 — 2026-10-17
 
