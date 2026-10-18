@@ -273,6 +273,7 @@ def test_public_fetch_policy_refuses_local_ipv6_scope_hints(monkeypatch, address
 @pytest.mark.parametrize("authority", [
     "trusted.example[attacker.example]", "trusted.example[8.8.4.4]",
     "[2001:4860:4860::8888]trusted.example", "junk[2001:4860:4860::8888]:8443",
+    "[2001:4860:4860::8888]trusted.example:8443",
 ])
 @pytest.mark.parametrize("permissive_parser", [False, True])
 def test_parser_components_do_not_authorize_misplaced_brackets(monkeypatch, authority, permissive_parser):
