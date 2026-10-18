@@ -1,6 +1,6 @@
 """Shared outbound URL validation and DNS-pinned HTTP transports.
 
-The policy imports only the standard library. Install the matching ``httpx``
+The policy uses IDNA 2008 for DNS and wire identity. Install the matching ``httpx``
 or ``httpx2`` SDK extra to construct that client's native transport. Validate
 before connecting; a transport is bound to that one origin and its approved
 IP set. Redirect destinations require separate validation and a new transport.
@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import importlib
 from importlib.resources import files
 import ipaddress
+import idna
 import socket
 import tomllib
 from types import ModuleType
@@ -60,13 +61,18 @@ class ValidatedOutboundURL:
             raise SSRFError("validated outbound URL has no addresses")
         for address in addresses:
             if _address_is_blocked(address):
-                raise SSRFError(f"URL host {self.host!r} has a non-public address ({address})")
+                raise SSRFError("URL resolves to a non-public address")
+        url, _scheme, host, port = _canonical_url_origin(self.url, (self.scheme,))
+        if not _origin_hosts_match(self.host, host) or self.port != port:
+            raise SSRFError("validated outbound URL origin does not match its metadata")
+        object.__setattr__(self, "url", url)
+        object.__setattr__(self, "host", host)
         object.__setattr__(self, "ip_addresses", addresses)
 
     def assert_origin(self, host: str, port: int) -> None:
         """Refuse a request that escapes the origin whose DNS was validated."""
         if not _origin_hosts_match(host, self.host) or port != self.port:
-            raise SSRFError(f"pinned transport refused unexpected origin {host}:{port}")
+            raise SSRFError("pinned transport refused unexpected origin")
 
 
 def _address_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -103,9 +109,14 @@ def _resolve_addresses(host: str, port: int) -> list[ipaddress.IPv4Address | ipa
 
 def _canonical_origin_host(host: str) -> str:
     """Return the comparable origin host form used by connection backends."""
-    host = host.strip("[]")
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
     try:
-        return host.encode("idna").decode("ascii").casefold()
+        return str(ipaddress.ip_address(host)).casefold()
+    except ValueError:
+        pass
+    try:
+        return idna.encode(host.lower()).decode("ascii").casefold()
     except UnicodeError as error:
         raise SSRFError("outbound origin host is not a valid IDNA name") from error
 
@@ -114,16 +125,12 @@ def _origin_hosts_match(candidate: str, validated: str) -> bool:
     return _canonical_origin_host(candidate) == _canonical_origin_host(validated)
 
 
-def validate_outbound_url(
-    url: str, *, allowed_schemes: "tuple[str, ...]" = ("http", "https")
-) -> ValidatedOutboundURL:
-    """Validate ``url`` for a server-side fetch; raise :class:`SSRFError` if unsafe.
-
-    Synchronous (uses ``socket.getaddrinfo``). Prefer :func:`assert_safe_url` in
-    async code so DNS resolution doesn't block the event loop. The returned
-    :class:`ValidatedOutboundURL` contains only public IPs that passed validation;
-    fetchers must connect to those IPs instead of resolving the hostname again.
-    """
+def _canonical_url_origin(url: str, allowed_schemes: tuple[str, ...]) -> tuple[str, str, str, int]:
+    """Canonicalize the authority without changing the raw request suffix."""
+    if not isinstance(url, str):
+        raise SSRFError("outbound URL must be a string")
+    if url != url.strip() or any(ord(character) < 32 or ord(character) == 127 for character in url):
+        raise SSRFError("outbound URL contains control characters or surrounding whitespace")
     # Malformed URLs (bad port, invalid IPv6 literal, …) make urlparse/.port
     # raise ValueError; convert to SSRFError so callers get a clean rejection
     # (400) instead of an uncaught 500 (codex r1).
@@ -133,15 +140,39 @@ def validate_outbound_url(
         host = parsed.hostname
         port = parsed.port
     except ValueError as e:
-        raise SSRFError(f"malformed URL {url!r}: {e}") from e
+        raise SSRFError("malformed outbound URL authority") from e
 
     if scheme not in allowed_schemes:
         raise SSRFError(
-            f"URL scheme {parsed.scheme!r} not allowed (allowed: {allowed_schemes})"
+            "outbound URL scheme is not allowed"
         )
     if not host:
-        raise SSRFError(f"URL has no host: {url!r}")
+        raise SSRFError("outbound URL has no host")
+    if parsed.username is not None or parsed.password is not None:
+        raise SSRFError("outbound URL must not contain user information")
+    host = _canonical_origin_host(host)
+    authority = f"[{host}]" if ":" in host else host
+    if port is not None:
+        authority += f":{port}"
     port = _origin_port(scheme, port)
+    # urlunparse drops empty query/fragment delimiters. Replace only the
+    # parsed authority so validation cannot change a signed request target.
+    prefix, separator, remainder = url.partition("//")
+    canonical_url = prefix + separator + authority + remainder[len(parsed.netloc):]
+    return canonical_url, scheme, host, port
+
+
+def validate_outbound_url(
+    url: str, *, allowed_schemes: "tuple[str, ...]" = ("http", "https")
+) -> ValidatedOutboundURL:
+    """Validate and canonicalize a URL for a server-side fetch.
+
+    DNS uses the same IDNA 2008 ASCII host as the returned ``url`` and ``host``.
+    Synchronous (uses ``socket.getaddrinfo``); prefer :func:`assert_safe_url` in
+    async code. Fetchers must use the returned URL and approved IPs rather than
+    resolving the original input again. Unsafe input raises :class:`SSRFError`.
+    """
+    url, scheme, host, port = _canonical_url_origin(url, allowed_schemes)
 
     # A rejected literal is not a hostname-resolution failure. Do not catch
     # our own SSRFError (a ValueError) and repeat DNS for a blocked address.

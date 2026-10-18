@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.39.2 — 2026-10-18
+
+### Fixed
+
+- Canonicalize outbound URL authorities with IDNA 2008 before DNS so validation,
+  native HTTP clients, and TLS identify the same domain. Returned URLs and host
+  names use the canonical ASCII form. Reject URL user information and validated
+  records whose origin metadata disagrees with their URL. IDNA is a lightweight
+  base dependency; HTTP clients remain optional extras.
+
 ## 0.39.1 — 2026-10-17
 
 ### Added

@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 138 tracked files (124 `.py`, 5 `.md`, 9 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 139 tracked files (125 `.py`, 5 `.md`, 9 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -238,6 +238,8 @@ Repo entry points and standard project files.
   - `def test_operator_context_rejects_invalid_or_missing_tenant(tenant_id)`; `def test_operator_context_requires_tenant_field()`; `def test_operator_context_normalizes_collections_and_is_frozen()`; `def test_operator_context_helpers_fail_closed_for_unknown_values()`; `def test_operator_context_has_bounded_freshness_and_agent_attribution()`; `def test_service_descriptors_are_versioned_and_scope_is_explicit()`; `def test_stable_service_requirement_uses_compatible_major_and_minimum()`; `def test_service_requirement_rejects_non_stable_versions(version)`; `…`
 - **tests/test_outbound_http.py** — SSRF guard (#1727): block server-side fetches to non-public addresses.
   - `async def test_native_transport_rejects_changed_scheme_before_network(family, monkeypatch)`; `class TestAddressClassification`; `class TestValidateOutboundUrl`; `class TestPinnedConnections`
+- **tests/test_outbound_origin.py** — DNS approval and every HTTP client must identify the same IDNA origin.
+  - `def test_dns_url_and_native_wire_share_the_idna2008_origin(monkeypatch, hostname, canonical, family)`; `def test_idna2003_lookalike_is_a_different_approved_origin(monkeypatch)`; `def test_unusable_authorities_are_rejected_before_dns(monkeypatch, url)`; `def test_direct_value_cannot_disagree_with_its_url_origin()`; `def test_direct_value_normalizes_unicode_aliases_for_native_io()`; `def test_validation_diagnostics_do_not_echo_unbounded_url_input(url)`; `def test_canonical_authority_preserves_the_original_request_suffix(monkeypatch, suffix)`; `def test_raw_url_control_characters_are_not_silently_discarded(monkeypatch, url)`
 - **tests/test_outbound_transport.py** — Native client I/O keeps approved IPs, TLS identity and the HTTP origin bound.
   - `def native_client(request)`; `async def test_pinned_pool_preserves_native_finite_connection_limits(native_client)`; `async def test_transport_checks_origin_before_delegating_to_its_pool(native_client, monkeypatch)`; `async def test_backend_checks_origin_independently_of_the_native_transport()`; `async def test_one_connect_budget_bounds_all_approved_addresses()`; `def test_ssrf_rejection_belongs_to_the_shared_security_hierarchy()`; `def test_real_localhost_dns_resolution_succeeds_on_the_current_platform()`; `async def test_native_client_receives_its_own_connect_timeout_type(native_client, monkeypatch)`; `…`
 - **tests/test_payer_policy.py** — Tests for kestrel_sdk.payer_policy.
