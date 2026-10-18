@@ -85,9 +85,14 @@ and TLS identity. Unicode names such as `straße.example` retain their distinct
 IDNA 2008 identity. Domain names must satisfy IDNA 2008, including ASCII input:
 names such as `my_host.example`, `ab--cd.example`, leading/trailing hyphens, and
 invalid A-labels are refused before DNS even when an HTTP client permits them.
-IP literals, including bracketed IPv6 authorities, are supported separately.
-URL user information, raw control characters, and surrounding whitespace are
-rejected. A directly constructed validated record must agree with its URL's
+IP literals, including bracketed IPv6 authorities, are supported separately;
+IPv6 spelling and explicit numeric ports are normalized in the authority.
+Four numeric labels must be a valid IPv4 address; ambiguous leading-zero
+spellings are rejected before DNS. A directly constructed IP-literal record may
+approve only that literal's address.
+URL user information, raw control characters, surrounding whitespace, and
+unpaired surrogates that cannot be encoded as UTF-8 are rejected before DNS.
+A directly constructed validated record must agree with its URL's
 origin as well as its public IP set.
 
 Validation itself needs no HTTP extra. A client dependency is imported only

@@ -56,8 +56,8 @@ class ValidatedOutboundURL:
     def __post_init__(self) -> None:
         try:
             addresses = tuple(ipaddress.ip_address(address) for address in self.ip_addresses)
-        except (TypeError, ValueError) as error:
-            raise SSRFError("validated outbound URL contains an invalid address") from error
+        except (TypeError, ValueError):
+            raise SSRFError("validated outbound URL contains an invalid address") from None
         if not addresses:
             raise SSRFError("validated outbound URL has no addresses")
         for address in addresses:
@@ -66,6 +66,12 @@ class ValidatedOutboundURL:
         url, _scheme, host, port = _canonical_url_origin(self.url, (self.scheme,))
         if not _origin_hosts_match(self.host, host) or self.port != port:
             raise SSRFError("validated outbound URL origin does not match its metadata")
+        try:
+            literal = ipaddress.ip_address(host)
+        except ValueError:
+            literal = None
+        if literal is not None and any(address != literal for address in addresses):
+            raise SSRFError("validated IP-literal URL must approve only its own address")
         object.__setattr__(self, "url", url)
         object.__setattr__(self, "host", host)
         object.__setattr__(self, "ip_addresses", addresses)
@@ -117,9 +123,18 @@ def _canonical_origin_host(host: str) -> str:
     except ValueError:
         pass
     try:
-        return idna.encode(host.lower()).decode("ascii").casefold()
-    except UnicodeError as error:
-        raise SSRFError("outbound origin host is not a valid IDNA name") from error
+        canonical = idna.encode(host.lower()).decode("ascii").casefold()
+    except UnicodeError:
+        raise SSRFError("outbound origin host is not a valid IDNA name") from None
+    # Native HTTP clients treat four numeric labels as an IPv4 literal,
+    # including when IDNA mapped Unicode separators into ASCII dots.
+    labels = canonical.split(".")
+    if len(labels) == 4 and all(label.isdigit() for label in labels):
+        try:
+            return str(ipaddress.IPv4Address(canonical))
+        except ValueError:
+            raise SSRFError("outbound origin host is not a valid IP literal") from None
+    return canonical
 
 
 def _origin_hosts_match(candidate: str, validated: str) -> bool:
@@ -132,6 +147,10 @@ def _canonical_url_origin(url: str, allowed_schemes: tuple[str, ...]) -> tuple[s
         raise SSRFError("outbound URL must be a string")
     if url != url.strip() or any(ord(character) < 32 or ord(character) == 127 for character in url):
         raise SSRFError("outbound URL contains control characters or surrounding whitespace")
+    try:
+        url.encode("utf-8")
+    except UnicodeEncodeError:
+        raise SSRFError("outbound URL must be encodable as UTF-8") from None
     # Malformed URLs (bad port, invalid IPv6 literal, …) make urlparse/.port
     # raise ValueError; convert to SSRFError so callers get a clean rejection
     # (400) instead of an uncaught 500 (codex r1).
@@ -140,13 +159,13 @@ def _canonical_url_origin(url: str, allowed_schemes: tuple[str, ...]) -> tuple[s
         scheme = parsed.scheme.lower()
         host = parsed.hostname
         port = parsed.port
-    except ValueError as e:
-        raise SSRFError("malformed outbound URL authority") from e
+    except ValueError:
+        # Parser and IDNA exceptions can include an unbounded raw authority.
+        # Expected input rejections must remain bounded in logged tracebacks too.
+        raise SSRFError("malformed outbound URL authority") from None
 
     if scheme not in allowed_schemes:
-        raise SSRFError(
-            "outbound URL scheme is not allowed"
-        )
+        raise SSRFError("outbound URL scheme is not allowed")
     if not host:
         raise SSRFError("outbound URL has no host")
     if parsed.username is not None or parsed.password is not None:

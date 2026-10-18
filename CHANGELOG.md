@@ -16,6 +16,12 @@ All notable changes to this project are documented in this file.
   base dependency; HTTP clients remain optional extras.
 - Inspect native request hosts in their raw ASCII form so malformed A-labels
   consistently raise `SSRFError` in both HTTP client families.
+- Refuse invalid IPv4-shaped authorities before DNS, including leading-zero
+  spellings that native clients reject. IP-literal records cannot approve a
+  different public address. Suppress unbounded parser/IDNA input from expected
+  validation-error tracebacks.
+- Reject unencodable UTF-8 URL suffixes before DNS rather than allowing a
+  native request-construction exception after validation.
 
 ## 0.39.1 — 2026-10-17
 

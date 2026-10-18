@@ -139,3 +139,94 @@ def test_direct_record_unknown_scheme_diagnostic_is_bounded():
             ip_addresses=(ipaddress.ip_address("8.8.8.8"),),
         )
     assert len(str(error.value)) <= 512
+
+
+@pytest.mark.parametrize("host", ["01.2.3.4", "0177.0.0.1", "1.2.3.04", "1.02.3.4", "1.2.3.999", "1。2。3。04"])
+def test_invalid_ipv4_shaped_authorities_are_refused_before_dns(monkeypatch, host):
+    def unexpected_dns(*args, **kwargs):
+        pytest.fail("invalid IPv4-shaped origin reached DNS")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected_dns)
+    with pytest.raises(SSRFError, match="IP literal"):
+        validate_outbound_url(f"https://{host}/avatar.png")
+
+
+@pytest.mark.parametrize("family", ["httpx", "httpx2"])
+@pytest.mark.parametrize("host", ["8。8。8。8", "8．8．8．8"])
+def test_idna_separator_mapping_to_a_valid_ipv4_still_round_trips(monkeypatch, family, host):
+    def unexpected_dns(*args, **kwargs):
+        pytest.fail("a canonical IP literal must not query DNS")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected_dns)
+    validated = validate_outbound_url(f"https://{host}/avatar.png")
+    assert validated.url == "https://8.8.8.8/avatar.png"
+    assert validated.host == "8.8.8.8"
+    assert validated.ip_addresses == (ipaddress.ip_address("8.8.8.8"),)
+    assert importlib.import_module(family).URL(validated.url).raw_host == b"8.8.8.8"
+
+
+@pytest.mark.parametrize("host", ["numeric123.example", "1.2.3.4.5", "2130706433", "01.2.3.4."])
+def test_other_numeric_dns_names_remain_subject_to_normal_resolution(monkeypatch, host):
+    seen = []
+    def resolve(name, port, **kwargs):
+        seen.append(name)
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    validated = validate_outbound_url(f"https://{host}/avatar.png")
+    assert seen == [host]
+    assert validated.host == host
+    assert validated.ip_addresses == (ipaddress.ip_address("8.8.8.8"),)
+    for family in ("httpx", "httpx2"):
+        assert importlib.import_module(family).URL(validated.url).raw_host.decode("ascii") == host
+
+
+@pytest.mark.parametrize("url,candidate", [
+    ("https://pub.example/x", "PUB.Example"),
+    ("https://straße.example/x", "STRAẞE.EXAMPLE"),
+    ("https://[2001:4860:4860::8888]/x", "[2001:4860:4860::8888]"),
+])
+def test_public_origin_check_accepts_case_and_bracket_equivalents(monkeypatch, url, candidate):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, port, **kwargs: [
+        (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", port)),
+    ])
+    validate_outbound_url(url).assert_origin(candidate, 443)
+
+
+@pytest.mark.parametrize("host,addresses", [
+    ("8.8.8.8", ("1.1.1.1",)),
+    ("8.8.8.8", ("8.8.8.8", "1.1.1.1")),
+    ("2001:4860:4860::8888", ("2606:4700:4700::1111",)),
+])
+def test_direct_ip_literal_records_cannot_approve_a_different_destination(host, addresses):
+    authority = f"[{host}]" if ":" in host else host
+    with pytest.raises(SSRFError, match="literal"):
+        ValidatedOutboundURL(url=f"https://{authority}/x", scheme="https", host=host, port=443,
+                             ip_addresses=tuple(ipaddress.ip_address(address) for address in addresses))
+
+
+@pytest.mark.parametrize("kind", ["authority", "idna", "address"])
+def test_untrusted_validation_values_do_not_escape_through_logged_tracebacks(kind):
+    import traceback
+    marker = "untrusted-input-marker" * 1000
+    with pytest.raises(SSRFError) as error:
+        if kind == "authority":
+            validate_outbound_url("https://" + marker + "／example.com/x")
+        elif kind == "idna":
+            validate_outbound_url("https://" + marker + "!.example/x")
+        else:
+            ValidatedOutboundURL(url="https://public.example/x", scheme="https", host="public.example", port=443,
+                                 ip_addresses=(marker,))
+    rendered = "".join(traceback.format_exception(error.value))
+    assert len(rendered) < 4096
+    assert marker not in rendered
+
+
+@pytest.mark.parametrize("suffix", ["/a\ud800", "/p?q=\udfff", "/p#\ud800"])
+def test_unencodable_request_suffix_is_refused_before_dns(monkeypatch, suffix):
+    def unexpected_dns(*args, **kwargs):
+        pytest.fail("unencodable URL reached DNS")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected_dns)
+    with pytest.raises(SSRFError, match="UTF-8"):
+        validate_outbound_url("https://public.example" + suffix)
