@@ -22,6 +22,10 @@ All notable changes to this project are documented in this file.
   validation-error tracebacks.
 - Reject unencodable UTF-8 URL suffixes before DNS rather than allowing a
   native request-construction exception after validation.
+- Preserve authority host kinds: unsupported bracketed literals are refused
+  rather than rewritten into DNS names. Refuse IPv6 interface/zone hints in
+  public destinations, including IPv4-mapped addresses, before native clients
+  can receive non-ASCII or unbounded scope identifiers.
 
 ## 0.39.1 — 2026-10-17
 

@@ -90,8 +90,13 @@ def _address_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bo
     Python; we add the remaining non-global categories explicitly for clarity and
     forward-compatibility.
     """
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        # Local interface/zone hints do not identify a public remote origin.
+        # Check before IPv4 mapping, which would discard the scope identifier.
+        if ip.scope_id is not None:
+            return True
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
     return (
         ip.is_private
         or ip.is_loopback
@@ -116,12 +121,17 @@ def _resolve_addresses(host: str, port: int) -> list[ipaddress.IPv4Address | ipa
 
 def _canonical_origin_host(host: str) -> str:
     """Require an IP literal or IDNA DNS name and return its wire identity."""
-    if host.startswith("[") and host.endswith("]"):
+    bracketed = host.startswith("[") and host.endswith("]")
+    if bracketed:
         host = host[1:-1]
     try:
-        return str(ipaddress.ip_address(host)).casefold()
+        address = ipaddress.ip_address(host)
     except ValueError:
-        pass
+        address = None
+    if bracketed and not isinstance(address, ipaddress.IPv6Address):
+        raise SSRFError("outbound bracketed origin is not a supported IPv6 literal")
+    if address is not None:
+        return str(address).casefold()
     try:
         canonical = idna.encode(host.lower()).decode("ascii").casefold()
     except UnicodeError:
@@ -170,7 +180,9 @@ def _canonical_url_origin(url: str, allowed_schemes: tuple[str, ...]) -> tuple[s
         raise SSRFError("outbound URL has no host")
     if parsed.username is not None or parsed.password is not None:
         raise SSRFError("outbound URL must not contain user information")
-    host = _canonical_origin_host(host)
+    # Preserve the authority's host kind. urllib also parses IPvFuture, which
+    # must not silently become an unrelated DNS name when brackets are removed.
+    host = _canonical_origin_host(f"[{host}]" if parsed.netloc.startswith("[") else host)
     authority = f"[{host}]" if ":" in host else host
     if port is not None:
         authority += f":{port}"

@@ -55,10 +55,15 @@ def test_unusable_authorities_are_rejected_before_dns(monkeypatch, url):
         validate_outbound_url(url)
 
 
-def test_direct_value_cannot_disagree_with_its_url_origin():
+@pytest.mark.parametrize("url,host,port", [
+    ("https://straße.example/avatar.png", "strasse.example", 443),
+    ("https://public.example:8443/x", "public.example", 443),
+    ("https://public.example:0/x", "public.example", 443),
+])
+def test_direct_value_cannot_disagree_with_its_url_origin(url, host, port):
     with pytest.raises(SSRFError, match="origin"):
         ValidatedOutboundURL(
-            url="https://straße.example/avatar.png", scheme="https", host="strasse.example", port=443,
+            url=url, scheme="https", host=host, port=port,
             ip_addresses=(ipaddress.ip_address("8.8.8.8"),),
         )
 
@@ -230,3 +235,36 @@ def test_unencodable_request_suffix_is_refused_before_dns(monkeypatch, suffix):
     monkeypatch.setattr(socket, "getaddrinfo", unexpected_dns)
     with pytest.raises(SSRFError, match="UTF-8"):
         validate_outbound_url("https://public.example" + suffix)
+
+
+@pytest.mark.parametrize("url,host,port", [("https://[v1.example.com]/x", "v1.example.com", 443), ("https://[vF.public.example]:8443/x", "vf.public.example", 8443)])
+def test_unsupported_ip_literal_authorities_never_become_dns_names(monkeypatch, url, host, port):
+    def unexpected_dns(*args, **kwargs):
+        pytest.fail("unsupported bracketed literal was reinterpreted as DNS")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected_dns)
+    with pytest.raises(SSRFError, match="literal"):
+        validate_outbound_url(url)
+    with pytest.raises(SSRFError, match="literal"):
+        ValidatedOutboundURL(url=url, scheme="https", host=host, port=port,
+                             ip_addresses=(ipaddress.ip_address("8.8.8.8"),))
+
+
+@pytest.mark.parametrize("candidate", ["[v1.example.com]", "[8.8.8.8]"])
+def test_bracketed_origin_candidates_require_an_ipv6_literal(candidate):
+    validated = validate_outbound_url("https://8.8.8.8/x")
+    with pytest.raises(SSRFError, match="literal"):
+        validated.assert_origin(candidate, 443)
+
+
+@pytest.mark.parametrize("address", ["2001:4860:4860::8888%en0", "2001:4860:4860::8888%é", "::ffff:8.8.8.8%en0"])
+def test_public_fetch_policy_refuses_local_ipv6_scope_hints(monkeypatch, address):
+    def unexpected_dns(*args, **kwargs):
+        pytest.fail("scoped IP must not resolve DNS")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected_dns)
+    with pytest.raises(SSRFError, match="non-public"):
+        validate_outbound_url(f"https://[{address}]/x")
+    with pytest.raises(SSRFError, match="non-public"):
+        ValidatedOutboundURL(url="https://public.example/x", scheme="https", host="public.example", port=443,
+                             ip_addresses=(ipaddress.ip_address(address),))
