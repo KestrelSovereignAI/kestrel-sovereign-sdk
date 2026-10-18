@@ -180,6 +180,14 @@ def _canonical_url_origin(url: str, allowed_schemes: tuple[str, ...]) -> tuple[s
         raise SSRFError("outbound URL has no host")
     if parsed.username is not None or parsed.password is not None:
         raise SSRFError("outbound URL must not contain user information")
+    # Parsing only supplies components. Validate the complete bracket placement
+    # before replacing the authority, independently of the interpreter's parser.
+    if parsed.netloc.startswith("["):
+        _, closed, after = parsed.netloc.partition("]")
+        if not closed or (after and not after.startswith(":")):
+            raise SSRFError("outbound URL authority has a malformed IP-literal bracket")
+    elif "[" in parsed.netloc or "]" in parsed.netloc:
+        raise SSRFError("outbound URL authority has a misplaced IP-literal bracket")
     # Preserve the authority's host kind. urllib also parses IPvFuture, which
     # must not silently become an unrelated DNS name when brackets are removed.
     host = _canonical_origin_host(f"[{host}]" if parsed.netloc.startswith("[") else host)

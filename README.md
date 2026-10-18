@@ -88,7 +88,9 @@ invalid A-labels are refused before DNS even when an HTTP client permits them.
 IP literals, including bracketed IPv6 authorities, are supported separately;
 IPv6 spelling and explicit numeric ports are normalized in the authority.
 Bracketed authorities must be IPv6 literals; unsupported IPvFuture literals
-are refused, and never reinterpreted as DNS names. Public fetches refuse IPv6
+are refused, and never reinterpreted as DNS names. Brackets must delimit the
+entire literal host, followed only by an optional port. Malformed placement is
+refused before authority normalization or DNS. Public fetches refuse IPv6
 scope identifiers because local interface/zone hints do not identify a public
 remote origin, including on IPv4-mapped IPv6 addresses.
 Four numeric labels must be a valid IPv4 address; ambiguous leading-zero

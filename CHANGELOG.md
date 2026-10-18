@@ -26,6 +26,8 @@ All notable changes to this project are documented in this file.
   rather than rewritten into DNS names. Refuse IPv6 interface/zone hints in
   public destinations, including IPv4-mapped addresses, before native clients
   can receive non-ASCII or unbounded scope identifiers.
+- Refuse misplaced or trailing literal brackets before authority normalization;
+  parsing components alone must not authorize rewriting a different host.
 
 ## 0.39.1 — 2026-10-17
 
