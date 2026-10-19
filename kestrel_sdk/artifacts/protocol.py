@@ -38,13 +38,16 @@ staged files. Completing
 or retiring one publication must not consume another publication's staging.
 Stage on a committed or erased key raises ResourceConflict, including identical
 restages. Reconcile through publication_status or retry the identical commit;
-this stage conflict alone must not be reported as failed publication.
+this stage conflict alone must not be reported as failed publication. For an
+erased key, status and commit raise ResourceNotFound; no receipt or bytes are
+resurrected and the key is terminal.
 A confirmed rolled-back compare-and-swap rejection does not bind the commit key
 or discard its bounded staging. After all attempts with that key are resolved,
 a caller may rebase expected_revision_id under the same key and staged files.
 If it chooses a new key, it must restage every file under that key. Callers must
-retain source bytes (or the frozen export) until publication or explicit discard;
-host staging can expire. An unknown outcome never permits changing the request.
+retain source bytes until publication or explicit discard; a frozen export
+counts only while its session and lease are live. Otherwise the broker must
+retain an authorized bounded copy. Host staging can expire. An unknown outcome never permits changing the request.
 """
 
     async def stage(

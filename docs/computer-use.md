@@ -111,7 +111,8 @@ staging; callers retain original bytes and restage identical files under the
 original key before retrying. A completed or erased publication key rejects
 staging with `ResourceConflict`, including an identical restage. Reconcile with
 `publication_status` or retry the identical commit; this staging conflict alone
-does not mean publication failed.
+does not mean publication failed. An erased key is terminal: both status and
+commit raise `ResourceNotFound`, without resurrecting a receipt or its bytes.
 Commit verifies every required file was staged for that exact publication,
 then commits revision metadata and idempotency state atomically. Return a `PublicationReceipt` only after durable
 acceptance. `publication_status` reconciles a lost response under the same owner
@@ -131,8 +132,9 @@ confirmed rolled-back compare-and-swap conflict does not bind the commit key
 and keeps staging only for bounded recovery. Once all attempts with that key
 are resolved, the caller may rebase `expected_revision_id` with the same key
 and staged files. Choosing a new publication key requires restaging every file
-under that key. Retain source bytes or the frozen workspace export until saved
-or explicitly discarded; do not rely on host staging surviving its expiry.
+under that key. Retain source bytes until saved or explicitly discarded. A
+frozen export counts only while its session and lease are live; otherwise the
+broker retains an authorized bounded copy. Host staging may expire.
 Unknown outcomes never authorize changing the request. A receipt
 records historical publication, not exemption from future erasure or access
 checks. Independent reads verify current policy and byte integrity.
