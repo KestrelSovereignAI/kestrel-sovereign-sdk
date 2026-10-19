@@ -16,7 +16,7 @@ from .models import (
 class WorkspaceTransfer(Protocol):
     """A driver-owned transport, selected only through host capability admission.
 
-The host artifact service owns authorization and publication/materialization.
+The host artifact service owns authorization, staging and publication.
 The driver owns filesystem containment, regular-file checks, byte/hash bounds,
 immutable snapshots, atomic installation, idempotency and physical cleanup.
 No unrestricted shell fallback is permitted. No new network endpoint is implied.
@@ -30,6 +30,12 @@ expiry/revocation; cleanup does not authorize reading or creating new content.
 Prepare methods durably bind a transfer ID to its canonical request digest.
 Changed retries conflict. Unknown outcomes reconcile the same ID with status;
 None means no currently visible record, not proof the first call cannot finish.
+An identical prepare_export retry returns the original frozen snapshot, never
+freezes again; status also carries that snapshot when ready/transferring. After
+release, the same prepare ID raises ResourceNotFound instead of exporting again.
+Exports progress preparing -> ready/transferring -> releasing -> released;
+imports progress preparing -> ready/transferring -> complete or aborting ->
+aborted. Unknown requires reconciliation, never an inferred terminal outcome.
 File retries verify exact manifest path/hash/size; completion requires every
 file and atomic installation. Partial content never becomes a live workspace.
 """

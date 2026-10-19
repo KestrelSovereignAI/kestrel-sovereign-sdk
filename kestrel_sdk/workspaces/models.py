@@ -126,11 +126,15 @@ class WorkspaceTransferStatus(ResourceContract):
     session_id: Identifier
     request_sha256: Digest
     direction: Literal["export", "import"]
-    state: Literal["preparing", "ready", "transferring", "complete", "unknown", "aborting", "aborted", "released"]
+    state: Literal["preparing", "ready", "transferring", "complete", "unknown", "aborting", "aborted", "releasing", "released"]
     materialization: WorkspaceMaterialization | None = None
+    snapshot: WorkspaceSnapshot | None = None
 
     @model_validator(mode="after")
     def confirmed_import(self) -> Self:
+        if ((self.direction == "export" and self.state in {"complete", "aborting", "aborted"})
+                or (self.direction == "import" and self.state in {"releasing", "released"})):
+            raise ValueError("transfer state does not apply to this direction")
         expected = self.direction == "import" and self.state == "complete"
         if expected != (self.materialization is not None):
             raise ValueError("completed import requires its materialization receipt")
@@ -138,4 +142,12 @@ class WorkspaceTransferStatus(ResourceContract):
         if receipt is not None and (receipt.transfer_id, receipt.session_id, receipt.request_sha256) != (
                 self.transfer_id, self.session_id, self.request_sha256):
             raise ValueError("materialization receipt belongs to another transfer")
+        needs_snapshot = self.direction == "export" and self.state in {"ready", "transferring"}
+        if needs_snapshot != (self.snapshot is not None):
+            raise ValueError("ready export requires its original frozen snapshot")
+        if self.snapshot is not None:
+            request = self.snapshot.request
+            if (request.transfer_id, request.session_id, request.digest()) != (
+                    self.transfer_id, self.session_id, self.request_sha256):
+                raise ValueError("snapshot belongs to another transfer")
         return self

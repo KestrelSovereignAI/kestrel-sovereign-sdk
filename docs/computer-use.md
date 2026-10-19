@@ -156,7 +156,13 @@ takeover or revocation fences transfer data immediately. Authenticated cleanup
 retains authority to retire admitted staging after expiry; it grants no reads.
 
 Prepare binds the transfer ID to `request.digest()`. Retries with changed
-content conflict; unknown outcomes reconcile the same ID. Exports freeze a
+content conflict; unknown outcomes reconcile the same ID. Export status carries
+the original snapshot in ready/transferring state. Identical `prepare_export`
+retries return that same snapshot and never freeze again, even if processes in
+the workspace have since changed files. Once released, the same prepare ID
+raises `ResourceNotFound`. Export retirement uses releasing/released; import
+retirement uses aborting/aborted; only imports have a complete state.
+Exports freeze a
 manifest with verified bytes; bounded `SecretBytes` reads do not expose content
 through generic representations. Materialization verifies every manifest file
 and atomically installs the complete source revision in a new target. An

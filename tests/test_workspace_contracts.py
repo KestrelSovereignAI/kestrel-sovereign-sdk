@@ -151,3 +151,23 @@ def test_connections_and_quote_capabilities_cannot_disagree():
     for changes in ({"provider_id": "remote"}, {"location": "remote"}):
         with pytest.raises(ValidationError, match="different providers"):
             EnvironmentQuote(**(quote | changes))
+
+
+def test_export_status_recovers_the_original_frozen_snapshot():
+    export = WorkspaceExportRequest(**request(), paths=(FILE.path,), entrypoint=FILE.path)
+    snapshot = WorkspaceSnapshot(request=export, snapshot_id="original", manifest=MANIFEST)
+    values = dict(transfer_id="transfer", session_id="session", request_sha256=export.digest(), direction="export")
+    with pytest.raises(ValidationError, match="snapshot"):
+        WorkspaceTransferStatus(**values, state="ready")
+    status = WorkspaceTransferStatus(**values, state="ready", snapshot=snapshot)
+    recovered = WorkspaceTransferStatus.model_validate_json(status.model_dump_json())
+    assert recovered.snapshot.snapshot_id == "original"
+    assert recovered.snapshot.manifest == MANIFEST
+    for change in ({"transfer_id": "another"}, {"session_id": "another"}, {"control_epoch": 3}):
+        with pytest.raises(ValidationError, match="another transfer"):
+            WorkspaceTransferStatus(**values, state="ready", snapshot=snapshot.model_copy(
+                update={"request": export.model_copy(update=change)}))
+    for direction, state in (("import", "released"), ("import", "releasing"),
+                             ("export", "complete"), ("export", "aborting"), ("export", "aborted")):
+        with pytest.raises(ValidationError, match="direction"):
+            WorkspaceTransferStatus(**(values | {"direction": direction}), state=state)
