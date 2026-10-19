@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## 0.40.0 — Unreleased
 
 ### Added
+- Bounded workspace transfer contracts and explicit provider/driver configuration factories for portable saved-output import/export (#86).
 
 - Versioned visual computer-use contracts: separate environment provisioning
   and driver protocols, owner scopes, bounded leases, pinned image requests,

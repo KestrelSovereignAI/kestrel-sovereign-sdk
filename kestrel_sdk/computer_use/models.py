@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from pydantic import AwareDatetime, Field, SecretBytes, SecretStr, field_validator, model_validator
 
+from kestrel_sdk._validation import browser_safe_string
 from kestrel_sdk.resources import (
     Identifier, NonNegativeInt, PositiveInt, ResourceContract, ResourceScope, USD,
 )
@@ -158,6 +159,12 @@ class SessionRequest(ResourceContract):
     required_capabilities: frozenset[ComputerCapability]
     expires_at: AwareDatetime
 
+    @model_validator(mode="after")
+    def visual_surface(self) -> Self:
+        if "screenshot" not in self.required_capabilities:
+            raise ValueError("visual sessions require screenshot capability")
+        return self
+
 
 class ComputerSession(ResourceContract):
     session_id: Identifier
@@ -187,10 +194,16 @@ class ScreenFrame(ResourceContract):
     session_id: Identifier
     control_epoch: NonNegativeInt
     observed_at: AwareDatetime
-    width: PositiveInt
-    height: PositiveInt
+    width: Annotated[int, Field(ge=1, le=16384)]
+    height: Annotated[int, Field(ge=1, le=16384)]
     image_sha256: ImageDigest
     media_type: Literal["image/png", "image/jpeg"]
+
+    @model_validator(mode="after")
+    def bounded_pixels(self) -> Self:
+        if self.width * self.height > 16_777_216:
+            raise ValueError("screen frame exceeds pixel limit")
+        return self
 
 
 class ScreenObservation(ResourceContract):
@@ -229,6 +242,11 @@ class Key(ResourceContract):
     kind: Literal["key"] = "key"
     key: Annotated[str, Field(min_length=1, max_length=64)]
 
+    @field_validator("key")
+    @classmethod
+    def safe_key_name(cls, value: str) -> str:
+        return browser_safe_string(value, "key", max_length=64, allow_empty=False)
+
 
 class Scroll(ResourceContract):
     kind: Literal["scroll"] = "scroll"
@@ -250,6 +268,7 @@ class Navigate(ResourceContract):
     @field_validator("url")
     @classmethod
     def web_url(cls, value: str) -> str:
+        browser_safe_string(value, "navigation URL", max_length=4096, allow_empty=False)
         parsed = urlsplit(value)
         if (parsed.scheme not in {"http", "https"} or not parsed.hostname
                 or parsed.username is not None or parsed.password is not None

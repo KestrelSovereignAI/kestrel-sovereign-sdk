@@ -21,9 +21,11 @@ caller-supplied scope or provenance is never authority.
 Environment providers use `kestrel_sovereign.environment_providers`; drivers
 use `kestrel_sovereign.computer_drivers`. Agent deployment's `cloud_providers`
 and model-specific `inference_lease_providers` are different registries.
-Each entry point resolves to a zero-argument factory returning its protocol
-implementation; provider-specific host configuration/credentials are injected
-by the host's plugin loader, never from model intent. `ComputerDriver.driver_id`
+Each entry point resolves to `EnvironmentProviderFactory` or
+`ComputerDriverFactory`, invoked with keyword-only `settings: Mapping[str,
+object]` from trusted host configuration. Each package validates its private
+settings; neither configuration nor credentials come from model intent or
+enter generic serialization/logs. `ComputerDriver.driver_id`
 is a stable identifier. `open(request, connection)` receives the explicit
 host-only `DriverConnection`; both host and driver check its driver ID, matching
 lease ID, current expiry and that session expiry does not exceed connection
@@ -57,6 +59,12 @@ an external resource exists, an action happened, a price is correct or a grant
 is current. Host services must validate returned records and their correlation.
 
 ## Session and action semantics
+
+`ResourceScope.agent_id` identifies an optional owning agent, not the active
+controller identity. Principal-owned automation may have no owning agent;
+`controller="agent"` names the automation role. The host still authenticates
+the actual invoking principal/actor and grants on every operation. An absent
+owning agent never widens that authority.
 
 One active controller owns a session. `ready` permits agent control; human
 takeover is `paused` with controller `human`; unknown/closing/closed fence agent
@@ -103,6 +111,11 @@ an order-independent manifest digest. The receipt's `request_sha256` allows
 reconciliation to verify the same title, parent, provenance and files. Reuse
 with another payload conflicts, even after restart.
 
+A status of `None` means no receipt is currently visible; an in-flight commit
+may still complete. Retain staging and reconcile/retry the identical commit
+with its original key. Never mint a new key or discard unresolved staging on
+that observation alone.
+
 New artifacts omit both artifact ID and expected revision. Updates require
 both; the host compares the current head inside the commit transaction. A
 conflict keeps recoverable staging according to bounded retention. A receipt
@@ -121,6 +134,39 @@ artifacts. Source-session/run IDs are optional attribution. Deletion compares th
 view cannot erase a concurrent edit. Successful deletion retires managed derivatives, indexes and access while respecting other owners'
 shared bytes and erasure policy. Uncommitted edits, credential profiles and
 execution captures are not automatically published artifacts.
+
+## Workspace transfer
+
+`kestrel_sdk.workspaces.WorkspaceTransfer` is an optional driver extension,
+negotiated through `WorkspaceTransferProvider.workspace_transfer()` alongside
+its advertised `files` capability. Missing either refuses transfer. There is
+no unrestricted shell fallback and no new public transport implied.
+
+Core's artifact service owns the broker: it authorizes the source session or
+pinned artifact, validates destination policy, and uses the same authenticated
+`OperatorContext` for staging/commit/read. Environment providers only provision.
+The driver owns actual regular-file containment, bounded reads/writes, frozen
+export snapshots, staging cleanup and atomic installation into a fresh target.
+Export selection is explicit files, never glob/archive expansion. Symlinks,
+hard-link escapes, devices and aliases are rejected at the filesystem boundary.
+
+Data operations require a paused session with controller `none`, the exact
+lease/control epoch and a live deadline bounded by session/lease expiry. Human
+takeover or revocation fences transfer data immediately. Authenticated cleanup
+retains authority to retire admitted staging after expiry; it grants no reads.
+
+Prepare binds the transfer ID to `request.digest()`. Retries with changed
+content conflict; unknown outcomes reconcile the same ID. Exports freeze a
+manifest with verified bytes; bounded `SecretBytes` reads do not expose content
+through generic representations. Materialization verifies every manifest file
+and atomically installs the complete source revision in a new target. An
+existing target conflicts. A complete import requires a
+`WorkspaceMaterialization` receipt; partial staging is never a live workspace.
+
+A snapshot/materialization receipt does not prove a saved artifact. Only
+`ArtifactService.commit` returns durable publication evidence. Releasing an
+export, aborting import staging, destroying a machine and deleting a canonical
+artifact are separate lifecycle operations.
 
 ## Coordinated delivery
 

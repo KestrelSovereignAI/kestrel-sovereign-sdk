@@ -23,6 +23,10 @@ does not grant sharing or cascade-delete the canonical artifact. Deletion must
 retire dependent views and reconcile bytes according to host retention policy.
 Owner scope maps context.tenant_id/principal_id/acting_agent_id exactly. A None
 acting_agent_id selects the principal namespace, never all agent namespaces.
+publication_status(None) means no receipt is currently visible; the original
+commit may still finish. Retain staging and reconcile/retry only the identical
+commit with its original key. None never authorizes a new key or discarding
+unresolved content.
 """
 
     async def stage(
