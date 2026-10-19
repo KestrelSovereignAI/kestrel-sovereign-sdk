@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from kestrel_sdk.resources import ResourceScope
+from kestrel_sdk.resources import Identifier, ResourceScope
 from .models import (
     ActionReceipt, ActionRequest, ComputerSession, ControlRequest,
     DriverConnection, EnvironmentCapabilities, EnvironmentLease,
@@ -48,9 +48,17 @@ reusing an action ID with different content is a conflict. Unknown actions
 are reconciled with action_status, never automatically replayed. control fences
 accepted work before takeover/handback and suspends agent observations. A lost
 connection leaves custody with the host until physical retirement is proven.
+Entry points return a zero-argument factory producing this protocol. open checks
+connection.driver_id == self.driver_id, matching lease IDs, a live connection,
+and request.expires_at <= connection.expires_at before sending any credential.
+An action deadline is checked immediately before the effect, not only ingress.
 """
 
-    async def open(self, request: SessionRequest) -> ComputerSession: ...
+    driver_id: Identifier
+
+    async def open(
+        self, request: SessionRequest, connection: DriverConnection
+    ) -> ComputerSession: ...
     async def status(
         self, scope: ResourceScope, session_id: str
     ) -> ComputerSession: ...

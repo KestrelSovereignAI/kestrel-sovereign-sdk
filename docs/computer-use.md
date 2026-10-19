@@ -21,6 +21,14 @@ caller-supplied scope or provenance is never authority.
 Environment providers use `kestrel_sovereign.environment_providers`; drivers
 use `kestrel_sovereign.computer_drivers`. Agent deployment's `cloud_providers`
 and model-specific `inference_lease_providers` are different registries.
+Each entry point resolves to a zero-argument factory returning its protocol
+implementation; provider-specific host configuration/credentials are injected
+by the host's plugin loader, never from model intent. `ComputerDriver.driver_id`
+is a stable identifier. `open(request, connection)` receives the explicit
+host-only `DriverConnection`; both host and driver check its driver ID, matching
+lease ID, current expiry and that session expiry does not exceed connection
+expiry before using any endpoint or credential. No ambient lease lookup or
+secret environment-variable convention is part of this interface.
 CPU environments have no model/runtime/GPU requirement. The initial contract
 has a fixed authorized expiry; extending a lease is not implicitly supported
 by `inspect` or reconnect. A later renewal capability needs explicit cost and
@@ -37,7 +45,7 @@ authority semantics rather than silently extending this request.
    offer to exact constraints; different decimal spellings are distinct inputs.
 4. Persist request ID and accepted quote before acquiring. Reconcile an unknown
    acquire by the same ID; never launch a second resource to hide uncertainty.
-5. Persist lease/resource custody before admitting an interaction session. An
+5. Verify returned `quote_id` matches the accepted quote, then persist lease/resource custody before admitting an interaction session. An
    expired/failed/unknown allocation is not physical release. `released_at`
    requires provider evidence. Actual cost `None` means unknown, not zero.
 6. Enforce TTL/Stop/revocation outside the driver and retain custody until
@@ -52,7 +60,11 @@ is current. Host services must validate returned records and their correlation.
 
 One active controller owns a session. `ready` permits agent control; human
 takeover is `paused` with controller `human`; unknown/closing/closed fence agent
-input. Every action carries the exact session, observation and control epoch.
+input. Every action carries the exact session, observation, control epoch and
+`not_after` deadline. Host policy bounds frame age and chooses a deadline no
+later than frame freshness, session and lease expiry; the driver checks that
+deadline immediately before any effect. A deadline is not proof a frame is
+still current: revalidate display/focus and fence changed observations too.
 The driver validates current state, frame dimensions/freshness, supported action
 and expiry at execution, not just at API ingress. The action ID is a durable
 deduplication key; a changed payload with the same ID is a conflict. Lost
@@ -79,12 +91,17 @@ endpoint is permitted by the contract.
 ## Saved outputs
 
 Stage bytes under the currently authenticated `OperatorContext`. The host
-owns capability/tenant/principal/agent authorization, quotas, private storage
+maps `tenant_id`, `principal_id` and optional `acting_agent_id` exactly into
+`ResourceScope`. An absent agent selects a distinct principal-owned namespace,
+never a wildcard over agent artifacts. The host owns authorization, quotas, private storage
 and grants. Stage returns a file digest/size/path, not public read permission.
 Commit verifies every required staged blob, then commits revision metadata and
 idempotency state atomically. Return a `PublicationReceipt` only after durable
 acceptance. `publication_status` reconciles a lost response under the same owner
-and key. Reuse with another payload conflicts, even after restart.
+and key. `ArtifactCommit.digest()` canonically binds all commit fields, using
+an order-independent manifest digest. The receipt's `request_sha256` allows
+reconciliation to verify the same title, parent, provenance and files. Reuse
+with another payload conflicts, even after restart.
 
 New artifacts omit both artifact ID and expected revision. Updates require
 both; the host compares the current head inside the commit transaction. A
@@ -100,8 +117,8 @@ their exact source revision. External references remain provider-owned until
 explicit export/import produces a managed snapshot.
 
 Destroying an environment or unlinking a run cannot delete retained canonical
-artifacts. Source-session/run IDs are optional attribution. Explicit deletion
-retires managed derivatives, indexes and access while respecting other owners'
+artifacts. Source-session/run IDs are optional attribution. Deletion compares the caller's expected head revision atomically, so a stale
+view cannot erase a concurrent edit. Successful deletion retires managed derivatives, indexes and access while respecting other owners'
 shared bytes and erasure policy. Uncommitted edits, credential profiles and
 execution captures are not automatically published artifacts.
 

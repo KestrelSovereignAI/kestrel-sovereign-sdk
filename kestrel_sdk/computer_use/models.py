@@ -10,8 +10,9 @@ from datetime import UTC
 import hashlib
 import json
 from typing import Annotated, Literal, Self
+from urllib.parse import urlsplit
 
-from pydantic import AwareDatetime, Field, SecretBytes, SecretStr, model_validator
+from pydantic import AwareDatetime, Field, SecretBytes, SecretStr, field_validator, model_validator
 
 from kestrel_sdk.resources import (
     Identifier, NonNegativeInt, PositiveInt, ResourceContract, ResourceScope, USD,
@@ -28,7 +29,7 @@ ComputerCapability = Literal[
 ImageDigest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 PinnedImage = Annotated[
     str,
-    Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$"),
+    Field(max_length=2048, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$"),
 ]
 
 
@@ -111,6 +112,7 @@ class EnvironmentLease(ResourceContract):
 
     lease_id: Identifier
     request_id: Identifier
+    quote_id: Identifier
     scope: ResourceScope
     provider_id: Identifier
     location: Location
@@ -245,6 +247,16 @@ class Navigate(ResourceContract):
     kind: Literal["navigate"] = "navigate"
     url: Annotated[str, Field(min_length=1, max_length=4096, repr=False)]
 
+    @field_validator("url")
+    @classmethod
+    def web_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or "\\" in value or any(char.isspace() or ord(char) < 32 for char in value)):
+            raise ValueError("navigation requires an HTTP(S) URL without credentials")
+        return value
+
 
 ComputerAction = Annotated[
     Click | TypeText | Key | Scroll | Wait | Navigate, Field(discriminator="kind")
@@ -262,6 +274,7 @@ encrypted transport/store. Do not log a model_dump of this record.
     session_id: Identifier
     observation_id: Identifier
     control_epoch: NonNegativeInt
+    not_after: AwareDatetime
     action: ComputerAction = Field(repr=False)
 
 

@@ -38,13 +38,15 @@ class ResourceScope(ResourceContract):
     """Durable owner facts, independent of a conversation, run or machine.
 
 ``principal_id`` is the authenticated user's/operator's stable identity;
-``agent_id`` is the owning agent. Neither causation nor a context link grants
-access to this scope. A host may grant sharing separately.
+``agent_id`` is the optional owning agent. None is the principal's own namespace
+for uploads made without an agent; it is never a wildcard or permission to read
+agent-owned artifacts. Hosts map OperatorContext.acting_agent_id exactly, and
+must not invent an agent or infer ownership from provenance/context links.
 """
 
     tenant_id: Identifier
     principal_id: Identifier
-    agent_id: Identifier
+    agent_id: Identifier | None = None
 
 
 class ResourceError(Exception):
