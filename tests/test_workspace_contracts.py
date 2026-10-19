@@ -174,3 +174,10 @@ def test_export_status_recovers_the_original_frozen_snapshot():
                              ("export", "complete"), ("export", "aborting"), ("export", "aborted")):
         with pytest.raises(ValidationError, match="direction"):
             WorkspaceTransferStatus(**(values | {"direction": direction}), state=state)
+
+
+def test_artifact_staging_requires_the_publication_identity():
+    from kestrel_sdk.artifacts import ArtifactService
+    parameter = inspect.signature(ArtifactService.stage).parameters["publication_key"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is inspect.Parameter.empty

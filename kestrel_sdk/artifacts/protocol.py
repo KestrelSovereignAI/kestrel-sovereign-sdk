@@ -27,10 +27,18 @@ publication_status(None) means no receipt is currently visible; the original
 commit may still finish. Retain staging and reconcile/retry only the identical
 commit with its original key. None never authorizes a new key or discarding
 unresolved content.
+Stage binds each file to the future commit's publication_key (idempotency_key).
+An identical key/path/content retry is idempotent; a changed file at that key/path
+conflicts while the staging binding is live. Hosts may expire uncommitted
+staging; callers must retain original bytes and restage the same file with its
+original key before retrying. Commit can consume only that publication's staged files. Completing
+or retiring one publication must not consume another publication's staging.
+Once a publication key is committed or erased, it cannot accept new staging.
 """
 
     async def stage(
-        self, context: OperatorContext, content: bytes, *, path: str, media_type: str
+        self, context: OperatorContext, content: bytes, *, publication_key: str,
+        path: str, media_type: str
     ) -> ArtifactFile: ...
     async def commit(
         self, context: OperatorContext, request: ArtifactCommit

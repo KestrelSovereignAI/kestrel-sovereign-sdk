@@ -19,6 +19,8 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Bind staged artifact files to the future publication key, so completing one
+  save cannot consume another pending save’s bytes (#86).
 - Replace feature-level draft Agent Cards with `Feature.get_agent_skills()`,
   returning official A2A SDK messages from the currently exposed tool schemas.
   A2A remains an optional dependency. Tool decoration no longer duplicates

@@ -103,7 +103,15 @@ maps `tenant_id`, `principal_id` and optional `acting_agent_id` exactly into
 `ResourceScope`. An absent agent selects a distinct principal-owned namespace,
 never a wildcard over agent artifacts. The host owns authorization, quotas, private storage
 and grants. Stage returns a file digest/size/path, not public read permission.
-Commit verifies every required staged blob, then commits revision metadata and
+Stage takes a `publication_key`, identical to the future commit's idempotency
+key. It binds the exact path, digest, size and media type to that save attempt;
+identical retries reuse staging and a changed file at the same key/path
+conflicts while the staging binding is live. Hosts may expire uncommitted
+staging; callers retain original bytes and restage identical files under the
+original key before retrying. A completed or erased publication key cannot
+accept new staging.
+Commit verifies every required file was staged for that exact publication,
+then commits revision metadata and
 idempotency state atomically. Return a `PublicationReceipt` only after durable
 acceptance. `publication_status` reconciles a lost response under the same owner
 and key. `ArtifactCommit.digest()` canonically binds all commit fields, using
