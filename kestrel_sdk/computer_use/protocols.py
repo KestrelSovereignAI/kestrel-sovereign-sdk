@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
 from kestrel_sdk.resources import Identifier, ResourceScope
@@ -48,7 +49,7 @@ reusing an action ID with different content is a conflict. Unknown actions
 are reconciled with action_status, never automatically replayed. control fences
 accepted work before takeover/handback and suspends agent observations. A lost
 connection leaves custody with the host until physical retirement is proven.
-Entry points return a zero-argument factory producing this protocol. open checks
+Entry points resolve to ComputerDriverFactory. open checks
 connection.driver_id == self.driver_id, matching lease IDs, a live connection,
 and request.expires_at <= connection.expires_at before sending any credential.
 An action deadline is checked immediately before the effect, not only ingress.
@@ -72,3 +73,22 @@ An action deadline is checked immediately before the effect, not only ingress.
     async def control(
         self, session: ComputerSession, request: ControlRequest
     ) -> ComputerSession: ...
+
+
+@runtime_checkable
+class EnvironmentProviderFactory(Protocol):
+    """Entry-point callable; settings are trusted private host configuration.
+
+Each package validates its own settings and obtains its credentials through
+this explicit construction boundary. Settings never come from model intent,
+are not wire records, and must not be logged or echoed on validation failure.
+"""
+
+    def __call__(self, *, settings: Mapping[str, object]) -> EnvironmentProvider: ...
+
+
+@runtime_checkable
+class ComputerDriverFactory(Protocol):
+    """Entry-point callable; connection credentials arrive separately in open."""
+
+    def __call__(self, *, settings: Mapping[str, object]) -> ComputerDriver: ...

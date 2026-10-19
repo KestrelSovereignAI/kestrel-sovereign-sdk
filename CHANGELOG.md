@@ -2,10 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
-## 0.40.0 — Unreleased
+## 0.41.0 — Unreleased
 
 ### Added
 
+- Bounded workspace transfer contracts and explicit provider/driver configuration
+  factories for portable saved-output import/export (#86).
 - Versioned visual computer-use contracts: separate environment provisioning
   and driver protocols, owner scopes, bounded leases, pinned image requests,
   control epochs, observations and action receipts. No browser/cloud runtime
@@ -15,6 +17,11 @@ All notable changes to this project are documented in this file.
   artifacts have independent identity and lifetime; run/session provenance is
   optional. Existing operator-run metadata remains a separate consumer until
   its coordinated host migration.
+
+- Bind staged artifact files to the future publication key, so completing one
+  save cannot consume another pending save’s bytes (#86).
+
+## 0.40.0 — Tagged; publication pending
 
 ### Changed
 

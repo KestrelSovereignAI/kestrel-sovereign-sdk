@@ -56,7 +56,8 @@ class ArtifactFile(ResourceContract):
             or any(char in value for char in ':*?"<>|')
             or any(part in {"", ".", ".."} for part in parts)
             or any(part != part.strip() or part.endswith(".") for part in parts)
-            or any(part.split(".")[0].casefold() in _RESERVED_NAMES for part in parts)
+            or any(part.split(".")[0].rstrip(" ").casefold() in _RESERVED_NAMES for part in parts)
+            or "\u200c" in value or "\u200d" in value
             or unicodedata.normalize("NFC", value) != value
         ):
             raise ValueError("artifact path must be a contained relative POSIX path")
@@ -107,8 +108,11 @@ class ArtifactCommit(ResourceContract):
     """Publish staged content using compare-and-swap, not a blind overwrite.
 
 A new artifact omits artifact_id and expected_revision_id. An update requires
-both. The service binds the idempotency key to the exact request and owner;
-reusing a key with different content is a conflict, including across restarts.
+both. Durable acceptance binds the idempotency key to the exact request and
+owner; reuse with different content then conflicts, including across restarts.
+A confirmed rolled-back compare-and-swap rejection does not bind the commit
+key; the caller may rebase it only after all attempts with that key are resolved.
+An unknown outcome must be reconciled before changing any request field.
 """
 
     idempotency_key: Identifier
@@ -140,6 +144,12 @@ class ArtifactRevision(ResourceContract):
     manifest: ArtifactManifest
     provenance: ArtifactProvenance
     committed_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def distinct_parent(self) -> Self:
+        if self.parent_revision_id == self.ref.revision_id:
+            raise ValueError("artifact revision cannot be its own parent")
+        return self
 
 
 class ArtifactRepresentation(ResourceContract):
