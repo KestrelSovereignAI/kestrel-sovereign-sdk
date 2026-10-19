@@ -48,6 +48,15 @@ omits the owner, endpoint, API key, and secret headers. Host code may read the
 `InferenceRoute` secret values in memory to configure `LLMService`; providers
 must never put credentials in public metadata or failure messages.
 
+## Visual computer use and durable artifacts
+
+`kestrel_sdk.computer_use` separates environment provisioning from visual
+session control and existing inference routing. `kestrel_sdk.artifacts`
+defines saved deliverables with immutable revisions, conflict-aware publication
+and ownership independent of the producing run or computer. These are typed
+contracts, not enabled runtime capabilities. See the
+[contract and host-enforcement guide](docs/computer-use.md).
+
 ## Installation
 
 ```bash

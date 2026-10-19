@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## 0.40.0 — Unreleased
 
+### Added
+
+- Versioned visual computer-use contracts: separate environment provisioning
+  and driver protocols, owner scopes, bounded leases, pinned image requests,
+  control epochs, observations and action receipts. No browser/cloud runtime
+  dependencies are added. These types do not enable computer access themselves.
+- Producer-neutral artifact references, immutable manifests/revisions,
+  compare-and-swap publication and an authenticated service protocol. Saved
+  artifacts have independent identity and lifetime; run/session provenance is
+  optional. Existing operator-run metadata remains a separate consumer until
+  its coordinated host migration.
+
 ### Changed
 
 - Replace feature-level draft Agent Cards with `Feature.get_agent_skills()`,
