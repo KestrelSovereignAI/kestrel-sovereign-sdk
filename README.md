@@ -75,6 +75,8 @@ Install `kestrel-sovereign-sdk[a2a]` when consuming
 messages derived from the feature's currently exposed tool schemas. Disabled
 tools are excluded, and each call returns fresh messages. Ordinary feature
 imports, tool decoration and execution do not import the optional A2A SDK.
+Missing required skill fields fail through the official SDK validator before
+any skill list is returned.
 
 SDK 0.40 removes the handwritten draft protocol models under `kestrel_sdk.a2a`
 and the feature-level `get_agent_card()` method. Use the official `a2a.types`

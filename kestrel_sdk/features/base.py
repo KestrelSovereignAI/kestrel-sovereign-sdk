@@ -474,18 +474,21 @@ class Feature(ABC):
         Card and transport URLs; a feature contributes capabilities only.
         """
         from a2a.types import AgentSkill
+        from a2a.utils.proto_utils import validate_proto_required_fields
 
         skills = []
         for exposed_tool in self.get_tools():
             schema = exposed_tool.schema
-            skills.append(AgentSkill(
+            skill = AgentSkill(
                 id=schema.name,
                 name=schema.name,
                 description=schema.description,
                 tags=[schema.category.value],
                 input_modes=["application/json"],
                 output_modes=["application/json"],
-            ))
+            )
+            validate_proto_required_fields(skill)
+            skills.append(skill)
         return skills
 
     def get_skill_for_command(self, command: str) -> Optional[str]:

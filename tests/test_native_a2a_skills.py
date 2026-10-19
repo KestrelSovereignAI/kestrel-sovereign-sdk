@@ -9,7 +9,7 @@ import sys
 import pytest
 from google.protobuf.json_format import MessageToDict
 
-from a2a.types import AgentSkill
+from a2a.types import AgentSkill, InvalidParamsError
 from kestrel_sdk.features.base import Feature, tool
 from kestrel_sdk.tools.base import ToolCategory
 
@@ -76,6 +76,19 @@ def test_empty_exposure_has_no_skills() -> None:
     feature = SkillFeature(agent=None)
     feature.disabled_skills = {"save_note", "read_note"}
     assert feature.get_agent_skills() == []
+
+
+@pytest.mark.parametrize("name,description", [("", "Valid description"), ("valid", "")])
+def test_invalid_required_skill_fields_fail_with_the_native_error(name: str, description: str) -> None:
+    class InvalidFeature(SkillFeature):
+        @tool(name=name, description=description)
+        async def invalid(self) -> dict:
+            return {}
+
+    with pytest.raises(InvalidParamsError) as error:
+        InvalidFeature(agent=None).get_agent_skills()
+    expected = "description" if not description else "id"
+    assert expected in {item["field"] for item in error.value.data["errors"]}
 
 
 def test_features_do_not_publish_fake_agent_cards() -> None:

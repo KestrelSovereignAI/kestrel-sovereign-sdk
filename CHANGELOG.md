@@ -10,6 +10,8 @@ All notable changes to this project are documented in this file.
   returning official A2A SDK messages from the currently exposed tool schemas.
   A2A remains an optional dependency. Tool decoration no longer duplicates
   schema metadata in a protocol model.
+- Validate required skill fields with the official SDK before returning a
+  capability list; invalid metadata raises the native validation error.
 - Remove the handwritten draft `kestrel_sdk.a2a` wire types. Hosts and consumers
   must use the official `a2a.types` models and upgrade together.
 
