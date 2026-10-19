@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.0 — Unreleased
+
+### Changed
+
+- Replace feature-level draft Agent Cards with `Feature.get_agent_skills()`,
+  returning official A2A SDK messages from the currently exposed tool schemas.
+  A2A remains an optional dependency. Tool decoration no longer duplicates
+  schema metadata in a protocol model.
+- Remove the handwritten draft `kestrel_sdk.a2a` wire types. Hosts and consumers
+  must use the official `a2a.types` models and upgrade together.
+
 ## 0.39.2 — 2026-10-18
 
 ### Fixed

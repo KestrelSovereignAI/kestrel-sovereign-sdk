@@ -66,6 +66,21 @@ uv pip install "kestrel-sovereign-sdk[crypto] @ git+https://github.com/KestrelSo
 - `idna>=3.20,<4` for canonical IDNA 2008 host identity
 - Optional: `cryptography>=42.0` (via `[crypto]` extra)
 - Optional native HTTP clients: `[httpx]` or `[httpx2]`
+- Optional native A2A models: `[a2a]`
+
+### A2A skill contributions
+
+Install `kestrel-sovereign-sdk[a2a]` when consuming
+`Feature.get_agent_skills()`. It returns official `a2a.types.AgentSkill`
+messages derived from the feature's currently exposed tool schemas. Disabled
+tools are excluded, and each call returns fresh messages. Ordinary feature
+imports, tool decoration and execution do not import the optional A2A SDK.
+
+SDK 1.0 removes the handwritten draft protocol models under `kestrel_sdk.a2a`
+and the feature-level `get_agent_card()` method. Use the official `a2a.types`
+models directly. The serving agent owns its signed Agent Card, transport URLs
+and interface configuration; features contribute skills to that card. Upgrade
+the host and its consumers together for this breaking change.
 
 ### Outbound HTTP
 
