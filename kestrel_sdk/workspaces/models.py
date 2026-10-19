@@ -131,7 +131,7 @@ class WorkspaceTransferStatus(ResourceContract):
     snapshot: WorkspaceSnapshot | None = None
 
     @model_validator(mode="after")
-    def confirmed_import(self) -> Self:
+    def consistent_lifecycle(self) -> Self:
         if ((self.direction == "export" and self.state in {"complete", "aborting", "aborted"})
                 or (self.direction == "import" and self.state in {"releasing", "released"})):
             raise ValueError("transfer state does not apply to this direction")
@@ -144,7 +144,7 @@ class WorkspaceTransferStatus(ResourceContract):
             raise ValueError("materialization receipt belongs to another transfer")
         needs_snapshot = self.direction == "export" and self.state in {"ready", "transferring"}
         if needs_snapshot != (self.snapshot is not None):
-            raise ValueError("ready export requires its original frozen snapshot")
+            raise ValueError("snapshot is required only for ready/transferring exports")
         if self.snapshot is not None:
             request = self.snapshot.request
             if (request.transfer_id, request.session_id, request.digest()) != (

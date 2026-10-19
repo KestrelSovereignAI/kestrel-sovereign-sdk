@@ -163,6 +163,9 @@ def test_export_status_recovers_the_original_frozen_snapshot():
     recovered = WorkspaceTransferStatus.model_validate_json(status.model_dump_json())
     assert recovered.snapshot.snapshot_id == "original"
     assert recovered.snapshot.manifest == MANIFEST
+    for change in ({"transfer_id": "another"}, {"session_id": "another"}):
+        with pytest.raises(ValidationError, match="another transfer"):
+            WorkspaceTransferStatus(**(values | change), state="ready", snapshot=snapshot)
     for change in ({"transfer_id": "another"}, {"session_id": "another"}, {"control_epoch": 3}):
         with pytest.raises(ValidationError, match="another transfer"):
             WorkspaceTransferStatus(**values, state="ready", snapshot=snapshot.model_copy(

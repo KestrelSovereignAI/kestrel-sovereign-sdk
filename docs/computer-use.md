@@ -160,10 +160,14 @@ content conflict; unknown outcomes reconcile the same ID. Export status carries
 the original snapshot in ready/transferring state. Identical `prepare_export`
 retries return that same snapshot and never freeze again, even if processes in
 the workspace have since changed files. Once released, the same prepare ID
-raises `ResourceNotFound`. Export retirement uses releasing/released; import
+raises `ResourceNotFound`; while releasing it raises `ResourceConflict`.
+An identical `prepare_import` retry after complete returns the original status
+and receipt without reinstalling; while aborting it raises `ResourceConflict`,
+and after aborted it raises `ResourceNotFound` without creating staging. Current
+metadata-read authority is still required for reconciliation.
+Export retirement uses releasing/released; import
 retirement uses aborting/aborted; only imports have a complete state.
-Exports freeze a
-manifest with verified bytes; bounded `SecretBytes` reads do not expose content
+Exports freeze a manifest with verified bytes; bounded `SecretBytes` reads do not expose content
 through generic representations. Materialization verifies every manifest file
 and atomically installs the complete source revision in a new target. An
 existing target conflicts. A complete import requires a

@@ -33,6 +33,12 @@ None means no currently visible record, not proof the first call cannot finish.
 An identical prepare_export retry returns the original frozen snapshot, never
 freezes again; status also carries that snapshot when ready/transferring. After
 release, the same prepare ID raises ResourceNotFound instead of exporting again.
+prepare_export during releasing raises ResourceConflict. An identical
+prepare_import retry after complete returns the original complete status and
+receipt without writing/installing again; aborting raises ResourceConflict,
+and aborted raises ResourceNotFound without allocating new staging. These are
+reconciliation results subject to current metadata-read authority, not new data
+operations or an exemption from revocation.
 Exports progress preparing -> ready/transferring -> releasing -> released;
 imports progress preparing -> ready/transferring -> complete or aborting ->
 aborted. Unknown requires reconciliation, never an inferred terminal outcome.
