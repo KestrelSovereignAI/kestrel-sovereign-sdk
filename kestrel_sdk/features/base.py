@@ -39,8 +39,6 @@ from kestrel_sdk.tools.base import (
     AgentTool,
     coerce_json_value,
 )
-from kestrel_sdk.a2a.agent_card import AgentCard, AgentSkill, AgentCapabilities
-from kestrel_sdk.a2a.types import Task, TaskState, TaskStatus, Artifact, DataPart, Message, TextPart
 from kestrel_sdk.features._contribution_support import (
     contribution_annotation as _contribution_annotation,
     implementation_contribution_owner,
@@ -48,6 +46,8 @@ from kestrel_sdk.features._contribution_support import (
 from kestrel_sdk.features.ui import UIContributions
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from a2a.types import AgentSkill, Task
+
     from kestrel_sdk.features.contributions import (
         ContextClauseContributions,
         FeaturePermissionDefaults,
@@ -467,36 +467,29 @@ class Feature(ABC):
     # A2A Protocol Implementation
     # =========================================================================
 
-    def get_agent_card(self) -> AgentCard:
-        """Generate an AgentCard for this Feature."""
-        skills = []
-        for tool in self.get_tools():
-            if hasattr(tool, 'agent_skill') and tool.agent_skill is not None:
-                skills.append(tool.agent_skill)
-            else:
-                schema = tool.schema
-                skills.append(AgentSkill(
-                    id=schema.name,
-                    name=schema.name,
-                    description=schema.description,
-                    tags=[schema.category.value] if schema.category else None,
-                    inputModes=["application/json"],
-                    outputModes=["application/json"],
-                    category=schema.category.value if schema.category else None,
-                ))
+    def get_agent_skills(self) -> list[AgentSkill]:
+        """Contribute native A2A skills from the currently exposed tool schemas.
 
-        return AgentCard(
-            name=self.tool_name,
-            description=self.tool_description,
-            url=f"/agents/{self.tool_name}",
-            version="1.0.0",
-            capabilities=AgentCapabilities(
-                streaming=False,
-                pushNotifications=False,
-                stateTransitionHistory=False,
-            ),
-            skills=skills,
-        )
+        Requires the ``a2a`` extra. The serving agent owns its signed Agent
+        Card and transport URLs; a feature contributes capabilities only.
+        """
+        from a2a.types import AgentSkill
+        from a2a.utils.proto_utils import validate_proto_required_fields
+
+        skills = []
+        for exposed_tool in self.get_tools():
+            schema = exposed_tool.schema
+            skill = AgentSkill(
+                id=schema.name,
+                name=schema.name,
+                description=schema.description,
+                tags=[schema.category.value],
+                input_modes=["application/json"],
+                output_modes=["application/json"],
+            )
+            validate_proto_required_fields(skill)
+            skills.append(skill)
+        return skills
 
     def get_skill_for_command(self, command: str) -> Optional[str]:
         """Find the skill that handles a given command prefix."""
@@ -548,14 +541,11 @@ class Feature(ABC):
                 if schema_data["name"] in self.disabled_skills:
                     continue
 
-                agent_skill = getattr(method, "_agent_skill", None)
-
                 # Create a dynamic AgentTool wrapper
                 class DynamicTool(AgentTool):
-                    def __init__(self, func, schema_data, agent_skill):
+                    def __init__(self, func, schema_data):
                         self.func = func
                         self._schema_data = schema_data
-                        self.agent_skill = agent_skill
 
                     @property
                     def name(self) -> str:
@@ -654,7 +644,7 @@ class Feature(ABC):
                             response["parts"] = list(pending_parts)
                         return response
 
-                tools.append(DynamicTool(method, schema_data, agent_skill))
+                tools.append(DynamicTool(method, schema_data))
         return tools
 
 
@@ -755,17 +745,6 @@ def tool(name: str, description: str, category: ToolCategory = ToolCategory.SYST
             "parameters": parameters,
             "command_prefix": command_prefix
         }
-
-        # Also create AgentSkill metadata for A2A protocol — single source of truth
-        func._agent_skill = AgentSkill(
-            id=name,
-            name=name,
-            description=description,
-            tags=[category.value] if category else None,
-            inputModes=["application/json"],
-            outputModes=["application/json"],
-            category=category.value if category else None,
-        )
 
         return func
     return decorator

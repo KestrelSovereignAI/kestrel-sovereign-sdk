@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 139 tracked files (125 `.py`, 5 `.md`, 9 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 137 tracked files (123 `.py`, 5 `.md`, 9 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -40,11 +40,6 @@ Repo entry points and standard project files.
   - `class JSONTypeError`; `class JSONLimitError`; `class JSONLimits`; `class FrozenJSON`; `def freeze_json(value)`; `def thaw_json(value)`; `def hashable_json(value)`; `def canonical_json_bytes(value)`
 - **kestrel_sdk/_validation.py** — Validation helpers shared by public SDK contract modules.
   - `def stable_token(value, field_name)`; `def non_empty_text(value, field_name)`; `def browser_safe_string(value, field_name)`; `def semantic_version(value, field_name)`; `def semantic_version_parts(value)`; `def frozen_tokens(values, field_name)`; `def unique_tuple(values, field_name)`
-- **kestrel_sdk/a2a/__init__.py** — Kestrel SDK — A2A Protocol interfaces.
-- **kestrel_sdk/a2a/agent_card.py** — Agent Card Types for A2A Protocol.
-  - `class AgentProvider`; `class AgentCapabilities`; `class AgentAuthentication`; `class AgentSkill`; `class AgentCard`
-- **kestrel_sdk/a2a/types.py** — A2A Protocol Types for Kestrel.
-  - `class JSONRPCMessage`; `class JSONRPCRequest`; `class JSONRPCError`; `class JSONRPCResponse`; `class TaskState`; `class TextPart`; `class FileContent`; `class FilePart`; `…`
 - **kestrel_sdk/channels/__init__.py** — Channel adapter contracts for messaging integrations.
 - **kestrel_sdk/channels/base.py** — Abstract base class for channel adapter packages.
   - `class ChannelAdapter`
@@ -234,6 +229,8 @@ Repo entry points and standard project files.
   - `async def test_cancelled_stop_retains_detached_child_and_delivers_first_cancellation(monkeypatch)`; `async def test_stop_never_reaped_process_uses_only_signal_phase_observations(monkeypatch)`; `async def test_stop_does_not_reobserve_process_after_prior_close_task(monkeypatch)`; `async def test_stop_reobserves_process_after_client_close_can_unblock_waiter(monkeypatch)`; `async def test_stop_timeout_does_not_fence_start_that_settles_before_timeout_update(monkeypatch)`; `async def test_stop_preserves_nested_timeout_cancellation_counts(monkeypatch)`; `async def test_stop_nested_timeout_and_external_cancels_continue_after_catch(monkeypatch)`; `async def test_start_rejects_while_a_detached_child_has_unresolved_retirement(monkeypatch)`; `…`
 - **tests/test_llm_contract.py** — Tests for the LLM provider contract.
   - `class TestContractVersion`; `class TestToolCall`; `class TestLLMResponse`; `class TestModelCategory`; `class TestModelInfo`; `class TestProviderInfo`; `class TestProviderCapabilities`; `class TestBackendType`; `…`
+- **tests/test_native_a2a_skills.py** — Features contribute native skills; only the serving agent owns a card.
+  - `class SkillFeature`; `def test_skills_are_official_models_with_native_json()`; `def test_skills_follow_current_tool_exposure_and_are_fresh()`; `def test_skill_metadata_comes_from_current_tool_schema()`; `def test_empty_exposure_has_no_skills()`; `def test_invalid_required_skill_fields_fail_with_the_native_error(name, description)`; `def test_features_do_not_publish_fake_agent_cards()`; `def test_draft_wire_models_are_retired(module)`; `…`
 - **tests/test_operator_contracts.py** — Focused tests for feature-owned operator SDK contracts.
   - `def test_operator_context_rejects_invalid_or_missing_tenant(tenant_id)`; `def test_operator_context_requires_tenant_field()`; `def test_operator_context_normalizes_collections_and_is_frozen()`; `def test_operator_context_helpers_fail_closed_for_unknown_values()`; `def test_operator_context_has_bounded_freshness_and_agent_attribution()`; `def test_service_descriptors_are_versioned_and_scope_is_explicit()`; `def test_stable_service_requirement_uses_compatible_major_and_minimum()`; `def test_service_requirement_rejects_non_stable_versions(version)`; `…`
 - **tests/test_outbound_http.py** — SSRF guard (#1727): block server-side fetches to non-public addresses.
