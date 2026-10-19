@@ -181,3 +181,15 @@ def test_artifact_staging_requires_the_publication_identity():
     parameter = inspect.signature(ArtifactService.stage).parameters["publication_key"]
     assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
     assert parameter.default is inspect.Parameter.empty
+
+
+def test_artifact_staging_key_accepts_only_publishable_identifiers():
+    from typing import get_type_hints
+    from pydantic import TypeAdapter
+    from kestrel_sdk.artifacts import ArtifactService
+    key_type = get_type_hints(ArtifactService.stage, include_extras=True)["publication_key"]
+    adapter = TypeAdapter(key_type)
+    assert adapter.validate_python("save-1") == "save-1"
+    for key in ("", "not publishable", "x" * 300):
+        with pytest.raises(ValidationError):
+            adapter.validate_python(key)

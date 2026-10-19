@@ -108,8 +108,11 @@ class ArtifactCommit(ResourceContract):
     """Publish staged content using compare-and-swap, not a blind overwrite.
 
 A new artifact omits artifact_id and expected_revision_id. An update requires
-both. The service binds the idempotency key to the exact request and owner;
-reusing a key with different content is a conflict, including across restarts.
+both. Durable acceptance binds the idempotency key to the exact request and
+owner; reuse with different content then conflicts, including across restarts.
+A confirmed rolled-back compare-and-swap rejection does not bind the commit
+key; the caller may rebase it only after all attempts with that key are resolved.
+An unknown outcome must be reconciled before changing any request field.
 """
 
     idempotency_key: Identifier

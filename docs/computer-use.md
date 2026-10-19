@@ -103,21 +103,22 @@ maps `tenant_id`, `principal_id` and optional `acting_agent_id` exactly into
 `ResourceScope`. An absent agent selects a distinct principal-owned namespace,
 never a wildcard over agent artifacts. The host owns authorization, quotas, private storage
 and grants. Stage returns a file digest/size/path, not public read permission.
-Stage takes a `publication_key`, identical to the future commit's idempotency
-key. It binds the exact path, digest, size and media type to that save attempt;
+Stage validates `publication_key` as an `Identifier`, identical to the future
+commit's idempotency key. It binds the exact path, digest, size and media type to that save attempt;
 identical retries reuse staging and a changed file at the same key/path
 conflicts while the staging binding is live. Hosts may expire uncommitted
 staging; callers retain original bytes and restage identical files under the
-original key before retrying. A completed or erased publication key cannot
-accept new staging.
+original key before retrying. A completed or erased publication key rejects
+staging with `ResourceConflict`, including an identical restage. Reconcile with
+`publication_status` or retry the identical commit; this staging conflict alone
+does not mean publication failed.
 Commit verifies every required file was staged for that exact publication,
-then commits revision metadata and
-idempotency state atomically. Return a `PublicationReceipt` only after durable
+then commits revision metadata and idempotency state atomically. Return a `PublicationReceipt` only after durable
 acceptance. `publication_status` reconciles a lost response under the same owner
 and key. `ArtifactCommit.digest()` canonically binds all commit fields, using
 an order-independent manifest digest. The receipt's `request_sha256` allows
 reconciliation to verify the same title, parent, provenance and files. Reuse
-with another payload conflicts, even after restart.
+of a durably accepted key with another payload conflicts, even after restart.
 
 A status of `None` means no receipt is currently visible; an in-flight commit
 may still complete. Retain staging and reconcile/retry the identical commit
@@ -126,7 +127,13 @@ that observation alone.
 
 New artifacts omit both artifact ID and expected revision. Updates require
 both; the host compares the current head inside the commit transaction. A
-conflict keeps recoverable staging according to bounded retention. A receipt
+confirmed rolled-back compare-and-swap conflict does not bind the commit key
+and keeps staging only for bounded recovery. Once all attempts with that key
+are resolved, the caller may rebase `expected_revision_id` with the same key
+and staged files. Choosing a new publication key requires restaging every file
+under that key. Retain source bytes or the frozen workspace export until saved
+or explicitly discarded; do not rely on host staging surviving its expiry.
+Unknown outcomes never authorize changing the request. A receipt
 records historical publication, not exemption from future erasure or access
 checks. Independent reads verify current policy and byte integrity.
 
