@@ -139,6 +139,14 @@ Unknown outcomes never authorize changing the request. A receipt
 records historical publication, not exemption from future erasure or access
 checks. Independent reads verify current policy and byte integrity.
 
+Editors resolve a conflict against `ArtifactService.head(context, artifact_id)`.
+It returns the committed current revision in the caller's exact owner namespace;
+missing or deleted artifacts raise `ResourceNotFound`. History ordering is for
+browsing and cannot establish the head: clocks can move backward or tie. Head
+reads remain subject to current access/privacy policy and grant no write lock.
+The next publication must still compare that revision using
+`expected_revision_id`, and a concurrent writer can cause another conflict.
+
 Manifest paths are contained POSIX logical paths. Ingestion/materialization
 must additionally reject symlinks, platform path aliases and archive tricks
 using actual filesystem checks. Multi-file contract support does not assert
@@ -194,14 +202,6 @@ A snapshot/materialization receipt does not prove a saved artifact. Only
 `ArtifactService.commit` returns durable publication evidence. Releasing an
 export, aborting import staging, destroying a machine and deleting a canonical
 artifact are separate lifecycle operations.
-
-Editors resolve a conflict against `ArtifactService.head(context, artifact_id)`.
-It returns the committed current revision in the caller's exact owner namespace;
-missing or deleted artifacts raise `ResourceNotFound`. History ordering is for
-browsing and cannot establish the head: clocks can move backward or tie. Head
-reads remain subject to current access/privacy policy and grant no write lock.
-The next publication must still compare that revision using
-`expected_revision_id`, and a concurrent writer can cause another conflict.
 
 ## Coordinated delivery
 
