@@ -172,6 +172,42 @@ default — which `@tool` records as the new `ToolParameter.nullable` field. A
 `null` sent for a required `count: int`, or for `max_results: int = 30`, is
 refused with the same named failure instead of reaching the method.
 
+### Command arguments
+
+`AgentTool.parse_command_args` binds the words after a tool's
+`command_prefix` to its parameters. Each parameter takes one value, so a value
+containing spaces must be quoted or passed by name:
+
+```text
+!strategy-search "context window bloat"
+!strategy-search query="context window bloat" kind=blockers
+!schedule deadline 2026-08-26T12:00:00+00:00 self_followup '{"intent": "x y"}'
+```
+
+- A value that starts with `"` or `'` runs to the matching closing quote. Inside
+  double quotes, `\"` and `\\` stand for a quote and a backslash. Single quotes
+  keep everything literally, which makes them the natural way to pass JSON.
+- `name=value` binds by name only when `name` is exactly a declared parameter.
+  Any other `a=b` word is a positional value, and so is any quoted token.
+  Positional values come first, then `name=value`.
+- A quote inside an unquoted word is ordinary text, so `don't` and
+  `{"repo":"x"}` arrive verbatim.
+
+When the input cannot be bound, the method raises `CommandParseError`
+(`kestrel_sdk.tools`, a `ValueError`). This covers an unbalanced quote, more
+values than parameters, a parameter given twice, a positional value after
+`name=value`, and an `object` or `array` value that is not JSON of that shape.
+Its message names the command and the actual problem. For a tool
+`search(query: str, limit: int = 10)`, `!search context window bloat` fails
+with `!search: too many arguments: it takes at most 2 positional values (query,
+limit) but got 3 ('context', 'window', 'bloat'); quote multi-word values or use
+name=value`. Callers should show that message as the command's failure.
+
+Only words beyond the last parameter can be detected. Unquoted words that fit
+the declared parameters still bind one per parameter, so on
+`search(query, kind, limit)` the line `!search context window` binds
+`kind="window"`. Quote the value or pass it by name.
+
 ## Operator execution contracts
 
 `kestrel_sdk.operator` is the public contract surface for feature-owned
