@@ -28,6 +28,11 @@ publication_status(None) means no receipt is currently visible; the original
 commit may still finish. Retain staging and reconcile/retry only the identical
 commit with its original key. None never authorizes a new key or discarding
 unresolved content.
+head returns the authoritative current revision in the exact authenticated
+owner namespace, or ResourceNotFound for an absent/deleted artifact. It must
+read the committed head pointer, never infer it from history timestamps or
+revision IDs. The returned revision is a snapshot, not a reservation: commit
+still compares expected_revision_id because another writer may advance it.
 Stage validates publication_key as Identifier, matching the future commit's
 idempotency_key, and binds each file to that publication.
 An identical key/path/content retry is idempotent; a changed file at that key/path
@@ -62,6 +67,9 @@ retain an authorized bounded copy. Host staging can expire. An unknown outcome n
     ) -> PublicationReceipt | None: ...
     async def get(
         self, context: OperatorContext, ref: ArtifactRef
+    ) -> ArtifactRevision: ...
+    async def head(
+        self, context: OperatorContext, artifact_id: Identifier
     ) -> ArtifactRevision: ...
     async def read(
         self, context: OperatorContext, ref: ArtifactRef, path: str

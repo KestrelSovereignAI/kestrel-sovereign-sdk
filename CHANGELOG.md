@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Authoritative `ArtifactService.head` lookup for conflict resolution; history
+  timestamps and revision IDs are not a substitute for the committed head.
 - Bounded workspace transfer contracts and explicit provider/driver configuration
   factories for portable saved-output import/export (#86).
 - Versioned visual computer-use contracts: separate environment provisioning

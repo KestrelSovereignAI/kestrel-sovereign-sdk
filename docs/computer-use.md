@@ -15,7 +15,7 @@ caller-supplied scope or provenance is never authority.
 | --- | --- | --- |
 | Provisioning | `EnvironmentProvider` | Quote, idempotent acquire, inspect, release, authenticated host connection |
 | Interaction | `ComputerDriver` | Open/status, observe, action/status, fenced pause/takeover/resume/close |
-| Persistence | `ArtifactService` | Stage, commit/status, read/history/list, link/unlink/delete |
+| Persistence | `ArtifactService` | Stage, commit/status, head/read/history/list, link/unlink/delete |
 | Inference | Existing LLM contracts | Model/vision routing after host privacy checks |
 
 Environment providers use `kestrel_sovereign.environment_providers`; drivers
@@ -138,6 +138,14 @@ broker retains an authorized bounded copy. Host staging may expire.
 Unknown outcomes never authorize changing the request. A receipt
 records historical publication, not exemption from future erasure or access
 checks. Independent reads verify current policy and byte integrity.
+
+Editors resolve a conflict against `ArtifactService.head(context, artifact_id)`.
+It returns the committed current revision in the caller's exact owner namespace;
+missing or deleted artifacts raise `ResourceNotFound`. History ordering is for
+browsing and cannot establish the head: clocks can move backward or tie. Head
+reads remain subject to current access/privacy policy and grant no write lock.
+The next publication must still compare that revision using
+`expected_revision_id`, and a concurrent writer can cause another conflict.
 
 Manifest paths are contained POSIX logical paths. Ingestion/materialization
 must additionally reject symlinks, platform path aliases and archive tricks
