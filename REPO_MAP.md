@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 137 tracked files (123 `.py`, 5 `.md`, 9 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 150 tracked files (135 `.py`, 6 `.md`, 9 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -32,6 +32,7 @@ Repo entry points and standard project files.
 ## `docs/`
 
 - **docs/code_reviews/claude-pr-24.md** — Claude Review: PR #24 — - PR: https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk/pull/24 - Reviewed: 2026-05-26T16:42:09Z
+- **docs/computer-use.md** — Visual computer use and saved artifacts (contract version 1) — Parent: [Core #3703](https://github.com/KestrelSovereignAI/kestrel-sovereign/issues/3703).
 
 ## `kestrel_sdk/`
 
@@ -40,11 +41,21 @@ Repo entry points and standard project files.
   - `class JSONTypeError`; `class JSONLimitError`; `class JSONLimits`; `class FrozenJSON`; `def freeze_json(value)`; `def thaw_json(value)`; `def hashable_json(value)`; `def canonical_json_bytes(value)`
 - **kestrel_sdk/_validation.py** — Validation helpers shared by public SDK contract modules.
   - `def stable_token(value, field_name)`; `def non_empty_text(value, field_name)`; `def browser_safe_string(value, field_name)`; `def semantic_version(value, field_name)`; `def semantic_version_parts(value)`; `def frozen_tokens(values, field_name)`; `def unique_tuple(values, field_name)`
+- **kestrel_sdk/artifacts/__init__.py** — Provider-neutral saved deliverables with independent identity and lifetime.
+- **kestrel_sdk/artifacts/models.py** — Logical deliverables, immutable content manifests and publication receipts.
+  - `class ArtifactRef`; `class ArtifactFile`; `class ArtifactManifest`; `class ArtifactProvenance`; `class ArtifactCommit`; `class ArtifactRevision`; `class ArtifactRepresentation`; `class ArtifactPage`; `…`
+- **kestrel_sdk/artifacts/protocol.py** — Shared artifact operations for tools, uploads, workflows and computer use.
+  - `class ArtifactService`
 - **kestrel_sdk/channels/__init__.py** — Channel adapter contracts for messaging integrations.
 - **kestrel_sdk/channels/base.py** — Abstract base class for channel adapter packages.
   - `class ChannelAdapter`
 - **kestrel_sdk/channels/models.py** — Shared models for channel adapter packages.
   - `class MessageDirection`; `class DeliveryStatus`; `class ChannelMessage`; `class DeliveryReceipt`; `class ChannelConfig`
+- **kestrel_sdk/computer_use/__init__.py** — Public visual computer-use contracts; no provider/browser runtime imports.
+- **kestrel_sdk/computer_use/models.py** — Provider-neutral environments, computer sessions and visual action records.
+  - `class EnvironmentCapabilities`; `class EnvironmentRequest`; `class EnvironmentQuote`; `class EnvironmentLease`; `class DriverConnection`; `class SessionRequest`; `class ComputerSession`; `class ScreenFrame`; `…`
+- **kestrel_sdk/computer_use/protocols.py** — Provisioning and interaction are independent plugin boundaries.
+  - `class EnvironmentProvider`; `class ComputerDriver`; `class EnvironmentProviderFactory`; `class ComputerDriverFactory`
 - **kestrel_sdk/config/__init__.py** — Kestrel SDK — Configuration constants and defaults.
 - **kestrel_sdk/config/constants.py** — Kestrel Configuration Constants.
   - `class Currency`
@@ -120,6 +131,8 @@ Repo entry points and standard project files.
 - **kestrel_sdk/payer_policy.py** — PayerPolicy — declarative model of who pays for which metered resource.
   - `class ResourceClass`; `class PayerKind`; `class SupportStatus`; `def status_for(resource_class, vendor, kind)`; `def is_offerable(resource_class, vendor, kind)`; `def supported_kinds_for(resource_class, vendor)`; `class KeyResolverProtocol`; `class ResolvedResource`; `…`
 - **kestrel_sdk/py.typed** — —
+- **kestrel_sdk/resources.py** — Immutable resource facts shared by environments and durable artifacts.
+  - `class ResourceContract`; `class ResourceScope`; `class ResourceError`; `class ResourceNotFound`; `class ResourceConflict`; `class ResourceUnsupported`; `class ResourceOutcomeUnknown`
 - **kestrel_sdk/security/__init__.py** — Kestrel SDK — Security interfaces, outbound policy and encryption helpers.
 - **kestrel_sdk/security/aead.py** — AEAD container — versioned AES-256-GCM with Fernet-compatible read path.
   - `class AEADCipher`
@@ -176,6 +189,11 @@ Repo entry points and standard project files.
   - `class VoiceInfo`; `class VoiceConfig`; `class PersonalityFingerprint`; `def match_voice(personality, available_voices)`; `def split_sentences(text)`; `class TTSProvider`; `class STTProvider`
 - **kestrel_sdk/voice/conversation_base.py** — ConversationProvider — speech-to-speech provider contract.
   - `class AudioFormat`; `class TurnDetectionConfig`; `class ToolDef`; `class RealtimeTransport`; `class ConversationCapabilities`; `class EphemeralClientSecret`; `class RealtimeClientSession`; `class VoiceToolCall`; `…`
+- **kestrel_sdk/workspaces/__init__.py** — Optional bounded transfer between a leased workspace and saved artifacts.
+- **kestrel_sdk/workspaces/models.py** — Bounded workspace transfer records.
+  - `class TransferLimits`; `class WorkspaceRequest`; `class WorkspaceExportRequest`; `class WorkspaceSnapshot`; `class WorkspaceImportRequest`; `class WorkspaceMaterialization`; `class WorkspaceTransferStatus`
+- **kestrel_sdk/workspaces/protocol.py** — Optional authenticated file transfer extension of a computer driver.
+  - `class WorkspaceTransfer`; `class WorkspaceTransferProvider`
 
 ## `scripts/`
 
@@ -187,6 +205,8 @@ Repo entry points and standard project files.
 - **tests/__init__.py** — —
 - **tests/test_channel_delivery_contracts.py** — —
   - `class EchoChannel`; `class EchoDeliveryProvider`; `def test_async_channel_contract()`; `def test_async_delivery_contract()`; `def test_output_event_envelope_serializes_destination()`; `def test_entry_point_group_constants_are_stable()`
+- **tests/test_computer_artifact_contracts.py** — Untrusted boundary and cross-producer invariants, without runtime imports.
+  - `def environment()`; `def source(path, content)`; `def test_wire_round_trip_is_strict_frozen_and_provider_neutral()`; `def test_quote_digest_binds_constraints_without_set_or_timezone_ambiguity()`; `def test_environment_constraints_cannot_be_silently_weakened(changes)`; `def test_failed_or_lost_environment_is_not_physical_release()`; `def test_control_state_cannot_claim_agent_authority_after_handoff(state, controller)`; `def test_action_envelope_rejects_invented_or_malformed_actions()`; `…`
 - **tests/test_conformance.py** — Tests for kestrel_sdk.testing — the plugin-author conformance helpers.
   - `class TestDrainStreamingWithToolsHappy`; `class TestDrainStreamingWithToolsViolations`; `class TestDrainStreamingTextOnly`; `class TestAssertToolCallStartedContract`; `class TestAssertResponseContract`
 - **tests/test_constitution_injection_fields.py** — SDK Phase 1.1A — SourceRegistration constitutional-injection fields.
@@ -267,3 +287,5 @@ Repo entry points and standard project files.
   - `async def test_single_tool_providers_remain_batch_compatible()`; `async def test_parallel_provider_can_commit_one_batch()`; `def test_conversation_capabilities_serialize_specialized_tools()`; `def test_legacy_provider_gets_conservative_capabilities()`; `def test_provider_scoped_voices_do_not_leak_between_catalogs()`; `def test_provider_scoped_voice_keys_are_normalized()`; `def test_transcript_updates_can_declare_cumulative_corrections()`; `def test_legacy_tts_provider_gets_format_capabilities()`; `…`
 - **tests/test_waitable.py** — Tests for the Waitable provider contract.
   - `class TestOutcome`; `class TestWaitStatus`; `class TestWaitableProtocol`; `class TestMonitorableWaitable`
+- **tests/test_workspace_contracts.py** — Transfer bounds, identity and source/receipt integrity at the SDK boundary.
+  - `def request()`; `def test_export_snapshot_is_exact_and_within_admitted_bounds()`; `def test_transfer_identity_binds_source_epoch_destination_limits_and_canonical_order()`; `def test_completed_materialization_needs_correlated_receipt()`; `def test_entrypoint_factories_have_an_explicit_private_configuration_channel()`; `def test_key_and_url_reject_control_and_display_spoofing(value)`; `def test_artifact_paths_reject_remaining_visual_and_device_aliases(path)`; `def test_screen_and_session_require_bounded_visual_capability()`; `…`
