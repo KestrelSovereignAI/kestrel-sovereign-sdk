@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 150 tracked files (135 `.py`, 6 `.md`, 9 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 151 tracked files (136 `.py`, 6 `.md`, 9 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -170,7 +170,7 @@ Repo entry points and standard project files.
   - `class VectorSearchBackend`
 - **kestrel_sdk/tools/__init__.py** — Kestrel SDK — Tool interfaces.
 - **kestrel_sdk/tools/base.py** — Base classes and interfaces for Kestrel agent tools.
-  - `def coerce_json_value(value, param_type, nullable)`; `class ToolCategory`; `class ToolParameter`; `class ToolSchema`; `class AgentTool`; `class ToolExecutionError`
+  - `def coerce_json_value(value, param_type, nullable)`; `class ToolCategory`; `class ToolParameter`; `class ToolSchema`; `class CommandParseError`; `class AgentTool`; `class ToolExecutionError`
 - **kestrel_sdk/tools/parts.py** — Pending typed-parts buffer for the tool call currently executing.
   - `def tool_result_parts_buffer()`; `def current_tool_result_parts()`
 - **kestrel_sdk/tools/result.py** — Tool result envelope contract.
@@ -205,6 +205,8 @@ Repo entry points and standard project files.
 - **tests/__init__.py** — —
 - **tests/test_channel_delivery_contracts.py** — —
   - `class EchoChannel`; `class EchoDeliveryProvider`; `def test_async_channel_contract()`; `def test_async_delivery_contract()`; `def test_output_event_envelope_serializes_destination()`; `def test_entry_point_group_constants_are_stable()`
+- **tests/test_command_argument_binding.py** — ``!command`` argument binding: quoting, ``name=value`` and named failures (#73).
+  - `def feature()`; `class TestFreeTextFirstParameter`; `class TestJsonArgumentWithSpaces`; `class TestNameValueBinding`; `class TestQuoting`; `class TestArgumentCount`
 - **tests/test_computer_artifact_contracts.py** — Untrusted boundary and cross-producer invariants, without runtime imports.
   - `def environment()`; `def source(path, content)`; `def test_wire_round_trip_is_strict_frozen_and_provider_neutral()`; `def test_quote_digest_binds_constraints_without_set_or_timezone_ambiguity()`; `def test_environment_constraints_cannot_be_silently_weakened(changes)`; `def test_failed_or_lost_environment_is_not_physical_release()`; `def test_control_state_cannot_claim_agent_authority_after_handoff(state, controller)`; `def test_action_envelope_rejects_invented_or_malformed_actions()`; `…`
 - **tests/test_conformance.py** — Tests for kestrel_sdk.testing — the plugin-author conformance helpers.
