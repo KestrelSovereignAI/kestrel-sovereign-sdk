@@ -11,7 +11,7 @@ try:
 
     from jwt import api_jws
     from jwt.api_jwk import PyJWK
-    from jwt.exceptions import PyJWTError
+    from jwt.exceptions import PyJWKError, PyJWTError
     from jwt.utils import base64url_encode
 except ImportError as e:
     raise ImportError(
@@ -118,6 +118,8 @@ def create_signature_verifier(
     Args:
         key_provider: A callable that accepts a key ID (kid) and a JWK Set URL (jku) and returns the verification key.
                       This function is responsible for fetching the correct key for a given signature.
+                      Raise PyJWKError for an unknown or untrusted key to try the next signature.
+                      Other provider errors, including network failures, propagate to the caller.
         algorithms: A list of acceptable algorithms (e.g., ['ES256', 'RS256']) for verification used to prevent algorithm confusion attacks.
 
     Returns:
@@ -158,9 +160,14 @@ def create_signature_verifier(
             except (PyJWTError, UnicodeError, RecursionError):
                 continue
 
-            # Key-provider/network failures remain visible to the caller.
             try:
                 verification_key = key_provider(kid, jku)
+            except PyJWKError:
+                continue
+            # Only peer-controlled verification failures belong to this
+            # boundary. Key providers run outside it so their lookup/network
+            # ValueError/TypeError failures cannot be mistaken for bad keys.
+            try:
                 jwt.decode(
                     jwt=token,
                     key=verification_key,
@@ -168,7 +175,7 @@ def create_signature_verifier(
                 )
                 # Found a valid signature, exit the loop and function
                 break
-            except PyJWTError:
+            except (PyJWTError, TypeError, ValueError):
                 continue
         else:
             # This block runs only if the loop completes without a break

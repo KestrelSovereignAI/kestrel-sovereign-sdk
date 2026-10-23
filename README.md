@@ -91,6 +91,12 @@ decoding and HTTP authorization regressions under `tests/native_a2a`, including
 independent canonicalization vectors. These are SDK regressions, not a claim
 that Kestrel has passed the full A2A TCK.
 
+Signature key providers return a key or raise PyJWT `PyJWKError` for an unknown
+or untrusted key so verification can try the next signature. Other lookup
+errors, including `PyJWKClientConnectionError`, propagate to the caller. A
+peer-controlled mismatch between a signature algorithm and a returned key
+rejects that signature while allowing a later valid signature to verify.
+
 No runtime module alias, monkey patch, private protocol or signature fallback is
 installed. A separately installed `a2a` Python package does not supply Kestrel's
 SDK implementation. Full host conformance and interoperability remain host gates.

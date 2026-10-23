@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## 0.42.0 — 2026-10-23
+## 0.42.0
 
 ### Added
 
@@ -26,7 +26,9 @@ All notable changes to this project are documented in this file.
   a transport instead of automatically selecting upstream 0.3 compatibility code.
 - Agent Card discovery uses the same bounded-error JSON/Protobuf decoder as
   native responses. A malformed signature cannot hide a later valid signature;
-  verification-key provider failures remain visible to the caller.
+  verification-key lookup failures remain visible to the caller. Providers reject
+  individual unknown or untrusted keys with `PyJWKError`; other lookup failures
+  propagate rather than being mistaken for invalid signatures.
 
 - `AgentTool.parse_command_args` now binds `!command` arguments differently
   (#73, kestrel-sovereign#3118). Previously it split the text on whitespace

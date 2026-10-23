@@ -20,6 +20,7 @@ from kestrel_sdk.native_a2a.types import AgentCard, AgentCardSignature
 from kestrel_sdk.native_a2a.utils import signing
 from google.protobuf import json_format
 from jwt import PyJWK
+from jwt.exceptions import PyJWKClientConnectionError, PyJWKError
 
 
 _HERE = Path(__file__).parent
@@ -139,13 +140,116 @@ def test_malformed_only_signature_has_a_verification_error(
         _VERIFY(card)
 
 
-def test_verifier_does_not_swallow_key_provider_failures() -> None:
-    failure = ValueError('verification key store unavailable')
+@pytest.mark.parametrize(
+    'failure',
+    [
+        ValueError('verification key store unavailable'),
+        PyJWKClientConnectionError('verification key endpoint unavailable'),
+    ],
+)
+def test_verifier_does_not_swallow_key_provider_failures(
+    failure: Exception,
+) -> None:
 
     def provider(kid: str | None, jku: str | None) -> bytes:
         raise failure
 
     verify = signing.create_signature_verifier(provider, ['ES256'])
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(type(failure)) as caught:
         verify(_card(_ACCEPT[0]['served_card']))
     assert caught.value is failure
+
+
+@pytest.mark.parametrize('hostile_algorithm', ['HS256', 'RS256'])
+@pytest.mark.parametrize('valid_follows', [False, True])
+def test_hostile_key_family_does_not_hide_independent_ec_signature(
+    hostile_algorithm: str,
+    valid_follows: bool,
+) -> None:
+    card = _card(_ACCEPT[0]['served_card'])
+    good = list(card.signatures)
+    del card.signatures[:]
+    header = json.dumps(
+        {'alg': hostile_algorithm, 'kid': _VECTORS['test_key']['jwk']['kid']}
+    ).encode()
+    card.signatures.append(
+        AgentCardSignature(
+            protected=base64.urlsafe_b64encode(header).rstrip(b'=').decode(),
+            signature='AAAA',
+        )
+    )
+    if valid_follows:
+        card.signatures.extend(good)
+    key = PyJWK(_VECTORS['test_key']['jwk']).key
+    verify = signing.create_signature_verifier(
+        lambda kid, jku: key, ['ES256', hostile_algorithm]
+    )
+    if valid_follows:
+        verify(card)
+    else:
+        with pytest.raises(signing.InvalidSignaturesError):
+            verify(card)
+
+
+@pytest.mark.parametrize('valid_follows', [False, True])
+def test_hostile_asymmetric_header_does_not_hide_valid_secret_signature(
+    valid_follows: bool,
+) -> None:
+    card = _card(_ACCEPT[0]['served_card'])
+    del card.signatures[:]
+    key = b'a-real-test-secret-of-at-least-forty-eight-bytes-for-hs384'
+    signed = signing.create_agent_card_signer(
+        key,
+        {
+            'alg': 'HS384',
+            'kid': 'key1',
+            'typ': 'JOSE',
+            'jku': None,
+        },
+    )(card)
+    good = list(signed.signatures)
+    del signed.signatures[:]
+    signed.signatures.append(
+        AgentCardSignature(
+            protected=base64.urlsafe_b64encode(b'{"alg":"ES256","kid":"key1"}')
+            .rstrip(b'=')
+            .decode(),
+            signature='AAAA',
+        )
+    )
+    if valid_follows:
+        signed.signatures.extend(good)
+    verify = signing.create_signature_verifier(
+        lambda kid, jku: key, ['HS256', 'HS384', 'ES256', 'RS256']
+    )
+    if valid_follows:
+        verify(signed)
+    else:
+        with pytest.raises(signing.InvalidSignaturesError):
+            verify(signed)
+
+
+def test_provider_explicitly_rejects_one_key_then_verifies_independent_signature() -> (
+    None
+):
+    card = _card(_ACCEPT[0]['served_card'])
+    good = list(card.signatures)
+    del card.signatures[:]
+    card.signatures.append(
+        AgentCardSignature(
+            protected=base64.urlsafe_b64encode(
+                b'{"alg":"ES256","kid":"untrusted"}'
+            )
+            .rstrip(b'=')
+            .decode(),
+            signature='AAAA',
+        )
+    )
+    card.signatures.extend(good)
+
+    def provider(kid: str | None, jku: str | None) -> PyJWK:
+        if kid == 'untrusted':
+            raise PyJWKError('untrusted signing key')
+        return PyJWK(_VECTORS['test_key']['jwk'])
+
+    signing.create_signature_verifier(provider, ['ES256'])(card)

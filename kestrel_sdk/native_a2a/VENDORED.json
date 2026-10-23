@@ -3,7 +3,7 @@
   "protocol": "1.0.1",
   "base_release": "1.2.3",
   "base_commit": "44b2f761a99123370237afe6c828f4cd2a50c402",
-  "reviewed_source_tree": "ebc7dd1a19fe75414592a401c67be8a83536ce45",
+  "reviewed_source_tree": "22cbc3e0dd1b79b2886301afc7fb4564210b30ba",
   "namespace": "kestrel_sdk.native_a2a",
   "modifications": "Reviewed signing, HTTP authorization, client ownership, discovery/response decoding and native-only client selection fixes in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
   "files": {
@@ -678,8 +678,8 @@
       "namespace_modified": false
     },
     "utils/signing.py": {
-      "upstream_sha256": "ba3824300910b0d077522b60b723fcb0b5840321888a81d0165763230e756697",
-      "vendored_sha256": "0b0573aac25d347d1277cef41c7b6639a6bec8c10299945529957975979e59a8",
+      "upstream_sha256": "6bcfbd171a7f66ff59298404248526ee87539ac9de034bb4549a5d3bdaccb891",
+      "vendored_sha256": "f33f9bc34af0c79e5813756db6c0b33504e3185fb95c19c86afb6b968487b946",
       "namespace_modified": true
     },
     "utils/task.py": {
@@ -701,7 +701,7 @@
   "provenance_sha256": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
     "UPSTREAM-PYPROJECT.toml": "5cdf8fdd9f297018cba28c9f91308f122264cab237acc41ee7c54bbb1f6ee776",
-    "UPSTREAM.patch": "519adf27bafd8f61fd3bc5a988928a013f5ba78f2d643542dafd9a36117386e2",
+    "UPSTREAM.patch": "4c8576a8db578951ae766713fc7543a1629e0400a56cb7dfe2b060ccbb59e53f",
     "NOTICE": "4924afe3dab57b45b0ae6ed34529d8231904adf8d7eeb35be6b12546be7cd8c0"
   }
 }

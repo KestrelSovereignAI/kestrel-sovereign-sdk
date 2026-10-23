@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 313 tracked files (280 `.py`, 8 `.md`, 25 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 316 tracked files (283 `.py`, 8 `.md`, 25 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -454,8 +454,14 @@ Repo entry points and standard project files.
 ## `tests/`
 
 - **tests/__init__.py** — —
+- **tests/native_a2a/client/test_card_resolver.py** — —
+  - `def mock_httpx_client()`; `def base_url()`; `def resolver(mock_httpx_client, base_url)`; `def mock_response()`; `def valid_agent_card_data()`; `class TestA2ACardResolverInit`; `class TestGetAgentCard`; `class TestParseAgentCard`
 - **tests/native_a2a/client/test_client_factory.py** — Tests for the ClientFactory.
   - `def test_factory_rejects_unsupported_protocol_before_opening_client(binding, version)`; `async def test_factory_selects_native_binding_after_unsupported_first_binding(client_preference)`; `def base_agent_card()`; `def test_client_factory_selects_preferred_transport(base_agent_card)`; `def test_client_factory_selects_secondary_transport_url(base_agent_card)`; `def test_client_factory_server_preference(base_agent_card)`; `def test_client_factory_prefers_1_0_ignoring_patch_version(base_agent_card, v1_version)`; `def test_client_factory_no_compatible_transport(base_agent_card)`; `…`
+- **tests/native_a2a/client/test_client_factory_grpc.py** — Tests for GRPC transport selection in ClientFactory.
+  - `def grpc_agent_card()`; `def test_grpc_priority_1_0(grpc_agent_card)`; `def test_grpc_unsupported_versions_are_rejected(grpc_agent_card)`; `def test_grpc_priority_lt_0_3_raises_value_error(grpc_agent_card)`; `def test_grpc_invalid_version_raises_value_error(grpc_agent_card)`; `def test_grpc_unspecified_version_uses_grpc_transport(grpc_agent_card)`
+- **tests/native_a2a/client/test_discovery_validation.py** — Peer-controlled discovery uses the same decoder as native responses.
+  - `async def test_discovery_normalizes_peer_decoding_errors(body)`; `async def test_discovery_preserves_forward_fields_without_mutating_the_card()`; `async def test_discovery_does_not_misclassify_verifier_failures(error)`
 - **tests/native_a2a/client/test_errors.py** — —
   - `class TestA2AClientError`; `class TestClientErrorRepr`
 - **tests/native_a2a/client/transports/test_http_helpers.py** — —
@@ -480,7 +486,7 @@ Repo entry points and standard project files.
 - **tests/native_a2a/utils/test_signing.py** — —
   - `def create_key_provider(verification_key)`; `def sample_agent_card()`; `def test_signer_and_verifier_symmetric(sample_agent_card)`; `def test_signer_and_verifier_symmetric_multiple_signatures(sample_agent_card)`; `def test_signer_and_verifier_asymmetric(sample_agent_card)`; `def test_canonicalize_agent_card(sample_agent_card)`; `def test_canonicalize_agent_card_preserves_false_capability(sample_agent_card)`; `def test_canonicalize_agent_card_warns_about_missing_required_fields(caplog)`
 - **tests/native_a2a/utils/test_signing_interop.py** — Cross-SDK Agent Card signature tests.
-  - `def test_vector_corpus_is_complete()`; `def test_card_signed_by_any_sdk_verifies(vector)`; `def test_card_canonical_bytes_are_the_shared_form(vector)`; `def test_card_edited_after_signing_is_rejected(vector)`; `def test_malformed_signature_does_not_hide_independent_valid_signature(vector, protected)`; `def test_malformed_only_signature_has_a_verification_error(protected)`; `def test_verifier_does_not_swallow_key_provider_failures()`
+  - `def test_vector_corpus_is_complete()`; `def test_card_signed_by_any_sdk_verifies(vector)`; `def test_card_canonical_bytes_are_the_shared_form(vector)`; `def test_card_edited_after_signing_is_rejected(vector)`; `def test_malformed_signature_does_not_hide_independent_valid_signature(vector, protected)`; `def test_malformed_only_signature_has_a_verification_error(protected)`; `def test_verifier_does_not_swallow_key_provider_failures(failure)`; `def test_hostile_key_family_does_not_hide_independent_ec_signature(hostile_algorithm, valid_follows)`; `…`
 - **tests/native_a2a/utils/test_signing_presence.py** — Agent Card field-presence rules from A2A 1.0 section 8.4.1.
   - `def test_public_signing_obeys_field_presence(case)`; `def test_explicit_empty_optional_field_is_signed(field)`
 - **tests/test_channel_delivery_contracts.py** — —
