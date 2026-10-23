@@ -1,0 +1,436 @@
+# Modified by Kestrel: isolated SDK namespace; see kestrel_sdk/native_a2a/VENDORED.json.
+"""Tests for kestrel_sdk.native_a2a.utils.proto_utils module.
+
+This module tests the proto utilities including to_stream_response and dictionary normalization.
+"""
+
+import logging
+
+from typing import Any, cast
+
+import httpx
+import pytest
+
+from kestrel_sdk.native_a2a.types.a2a_pb2 import (
+    AgentSkill,
+    ListTasksRequest,
+    Message,
+    Part,
+    Role,
+    StreamResponse,
+    Task,
+    TaskArtifactUpdateEvent,
+    TaskState,
+    TaskStatus,
+    TaskStatusUpdateEvent,
+)
+from kestrel_sdk.native_a2a.utils import proto_utils
+from kestrel_sdk.native_a2a.utils.errors import InvalidParamsError
+from google.protobuf.descriptor import FieldDescriptor
+from google.protobuf.json_format import MessageToDict, Parse, ParseError
+from google.protobuf.message import Message as ProtobufMessage
+from google.protobuf.timestamp_pb2 import Timestamp
+from starlette.datastructures import QueryParams
+
+
+class TestToStreamResponse:
+    """Tests for to_stream_response function."""
+
+    def test_stream_response_with_task(self):
+        """Test to_stream_response with a Task event."""
+        task = Task(
+            id='task-1',
+            context_id='ctx-1',
+            status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+        )
+        result = proto_utils.to_stream_response(task)
+
+        assert isinstance(result, StreamResponse)
+        assert result.HasField('task')
+        assert result.task.id == 'task-1'
+
+    def test_stream_response_with_message(self):
+        """Test to_stream_response with a Message event."""
+        message = Message(
+            message_id='msg-1',
+            role=Role.ROLE_AGENT,
+            parts=[Part(text='Hello')],
+        )
+        result = proto_utils.to_stream_response(message)
+
+        assert isinstance(result, StreamResponse)
+        assert result.HasField('message')
+        assert result.message.message_id == 'msg-1'
+
+    def test_stream_response_with_status_update(self):
+        """Test to_stream_response with a TaskStatusUpdateEvent."""
+        status_update = TaskStatusUpdateEvent(
+            task_id='task-1',
+            context_id='ctx-1',
+            status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+        )
+        result = proto_utils.to_stream_response(status_update)
+
+        assert isinstance(result, StreamResponse)
+        assert result.HasField('status_update')
+        assert result.status_update.task_id == 'task-1'
+
+    def test_stream_response_with_artifact_update(self):
+        """Test to_stream_response with a TaskArtifactUpdateEvent."""
+        artifact_update = TaskArtifactUpdateEvent(
+            task_id='task-1',
+            context_id='ctx-1',
+        )
+        result = proto_utils.to_stream_response(artifact_update)
+
+        assert isinstance(result, StreamResponse)
+        assert result.HasField('artifact_update')
+        assert result.artifact_update.task_id == 'task-1'
+
+
+class TestDictSerialization:
+    """Tests for serialization utility functions."""
+
+    def test_make_dict_serializable(self):
+        """Test the make_dict_serializable utility function."""
+
+        class CustomObject:
+            def __str__(self):
+                return 'custom_str'
+
+        test_data = {
+            'string': 'hello',
+            'int': 42,
+            'float': 3.14,
+            'bool': True,
+            'none': None,
+            'custom': CustomObject(),
+            'list': [1, 'two', CustomObject()],
+            'tuple': (1, 2, CustomObject()),
+            'nested': {'inner_custom': CustomObject(), 'inner_normal': 'value'},
+        }
+
+        result = proto_utils.make_dict_serializable(test_data)
+
+        assert result['string'] == 'hello'
+        assert result['int'] == 42
+        assert result['float'] == 3.14
+        assert result['bool'] is True
+        assert result['none'] is None
+
+        assert result['custom'] == 'custom_str'
+        assert result['list'] == [1, 'two', 'custom_str']
+        assert result['tuple'] == [1, 2, 'custom_str']
+        assert result['nested']['inner_custom'] == 'custom_str'
+        assert result['nested']['inner_normal'] == 'value'
+
+    def test_normalize_large_integers_to_strings(self):
+        """Test the normalize_large_integers_to_strings utility function."""
+
+        test_data = {
+            'small_int': 42,
+            'large_int': 9999999999999999999,
+            'negative_large': -9999999999999999999,
+            'float': 3.14,
+            'string': 'hello',
+            'list': [123, 9999999999999999999, 'text'],
+            'nested': {'inner_large': 9999999999999999999, 'inner_small': 100},
+        }
+
+        result = proto_utils.normalize_large_integers_to_strings(test_data)
+
+        assert result['small_int'] == 42
+        assert isinstance(result['small_int'], int)
+
+        assert result['large_int'] == '9999999999999999999'
+        assert isinstance(result['large_int'], str)
+        assert result['negative_large'] == '-9999999999999999999'
+        assert isinstance(result['negative_large'], str)
+
+        assert result['float'] == 3.14
+        assert result['string'] == 'hello'
+        assert result['list'] == [123, '9999999999999999999', 'text']
+        assert result['nested']['inner_large'] == '9999999999999999999'
+        assert result['nested']['inner_small'] == 100
+
+    def test_parse_string_integers_in_dict(self):
+        """Test the parse_string_integers_in_dict utility function."""
+
+        test_data = {
+            'regular_string': 'hello',
+            'numeric_string_small': '123',
+            'numeric_string_large': '9999999999999999999',
+            'negative_large_string': '-9999999999999999999',
+            'float_string': '3.14',
+            'mixed_string': '123abc',
+            'int': 42,
+            'list': ['hello', '9999999999999999999', '123'],
+            'nested': {
+                'inner_large_string': '9999999999999999999',
+                'inner_regular': 'value',
+            },
+        }
+
+        result = proto_utils.parse_string_integers_in_dict(test_data)
+
+        assert result['regular_string'] == 'hello'
+        assert result['numeric_string_small'] == '123'
+        assert result['float_string'] == '3.14'
+        assert result['mixed_string'] == '123abc'
+
+        assert result['numeric_string_large'] == 9999999999999999999
+        assert isinstance(result['numeric_string_large'], int)
+        assert result['negative_large_string'] == -9999999999999999999
+        assert isinstance(result['negative_large_string'], int)
+
+        assert result['int'] == 42
+        assert result['list'] == ['hello', 9999999999999999999, '123']
+        assert result['nested']['inner_large_string'] == 9999999999999999999
+
+
+class TestFieldIsRepeatedFallback:
+    """Test _field_is_repeated handles both old and new protobuf descriptor APIs."""
+
+    def test_uses_is_repeated_when_available(self):
+        """protobuf>=6.31 exposes is_repeated; the helper should use it directly."""
+
+        class FakeField:
+            is_repeated = True
+            label = 3
+
+        assert proto_utils._field_is_repeated(FakeField())
+
+        class FakeFieldNotRepeated:
+            is_repeated = False
+            label = 1
+
+        assert not proto_utils._field_is_repeated(FakeFieldNotRepeated())
+
+    def test_falls_back_to_label_when_is_repeated_missing(self):
+        """protobuf<6.31 (floor >=5.29.5) lacks is_repeated; fall back to label."""
+
+        class FakeOldFieldRepeated:
+            label = FieldDescriptor.LABEL_REPEATED
+
+        assert proto_utils._field_is_repeated(FakeOldFieldRepeated())
+
+        class FakeOldFieldOptional:
+            label = FieldDescriptor.LABEL_OPTIONAL
+
+        assert not proto_utils._field_is_repeated(FakeOldFieldOptional())
+
+
+class TestRestParams:
+    """Unit tests for REST parameter conversion."""
+
+    def test_rest_params_roundtrip(self):
+        """Test the comprehensive roundtrip conversion for REST parameters."""
+
+        original = ListTasksRequest(
+            tenant='tenant-1',
+            context_id='ctx-1',
+            status=TaskState.TASK_STATE_WORKING,
+            page_size=10,
+            include_artifacts=True,
+            status_timestamp_after=Parse('"2024-03-09T16:00:00Z"', Timestamp()),
+            history_length=5,
+        )
+
+        query_params = self._message_to_rest_params(original)
+
+        assert dict(query_params) == {
+            'tenant': 'tenant-1',
+            'contextId': 'ctx-1',
+            'status': 'TASK_STATE_WORKING',
+            'pageSize': '10',
+            'includeArtifacts': 'true',
+            'statusTimestampAfter': '2024-03-09T16:00:00Z',
+            'historyLength': '5',
+        }
+
+        converted = ListTasksRequest()
+        proto_utils.parse_params(QueryParams(query_params), converted)
+
+        assert converted == original
+
+    @pytest.mark.parametrize(
+        'query_string',
+        [
+            'id=skill-1&tags=tag1&tags=tag2&tags=tag3',
+            'id=skill-1&tags=tag1,tag2,tag3',
+        ],
+    )
+    def test_repeated_fields_parsing(self, query_string: str):
+        """Test parsing of repeated fields using different query string formats."""
+        query_params = QueryParams(query_string)
+
+        converted = AgentSkill()
+        proto_utils.parse_params(query_params, converted)
+
+        assert converted == AgentSkill(
+            id='skill-1', tags=['tag1', 'tag2', 'tag3']
+        )
+
+    def _message_to_rest_params(self, message: ProtobufMessage) -> QueryParams:
+        """Converts a message to REST query parameters."""
+        rest_dict = MessageToDict(message)
+        return httpx.Request(
+            'GET', 'http://api.example.com', params=rest_dict
+        ).url.params
+
+
+class TestValidateProtoRequiredFields:
+    """Tests for validate_proto_required_fields function."""
+
+    def test_valid_required_fields(self):
+        """Test with all required fields present."""
+        msg = Message(
+            message_id='msg-1',
+            role=Role.ROLE_USER,
+            parts=[Part(text='hello')],
+        )
+        proto_utils.validate_proto_required_fields(msg)
+
+    def test_missing_required_fields(self):
+        """Test with empty message raising InvalidParamsError containing all errors."""
+        msg = Message()
+        with pytest.raises(InvalidParamsError) as exc_info:
+            proto_utils.validate_proto_required_fields(msg)
+
+        err = exc_info.value
+        errors = err.data.get('errors', []) if err.data else []
+
+        assert {e['field'] for e in errors} == {'message_id', 'role', 'parts'}
+
+    def test_repeated_nested_message_validation(self):
+        """Test _recurse_validation for repeated message fields (Task.history)."""
+        task = Task(
+            id='task-1',
+            context_id='ctx-1',
+            status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+            history=[Message()],  # empty message — missing required fields
+        )
+        with pytest.raises(InvalidParamsError) as exc_info:
+            proto_utils.validate_proto_required_fields(task)
+
+        err = exc_info.value
+        errors = err.data.get('errors', []) if err.data else []
+
+        fields = [e['field'] for e in errors]
+        assert 'history[0].message_id' in fields
+        assert 'history[0].role' in fields
+        assert 'history[0].parts' in fields
+
+    def test_nested_required_fields(self):
+        """Test nested required fields inside TaskStatus."""
+        # Task Status requires 'state'
+        task = Task(id='task-1', status=TaskStatus())
+        with pytest.raises(InvalidParamsError) as exc_info:
+            proto_utils.validate_proto_required_fields(task)
+
+        err = exc_info.value
+        errors = err.data.get('errors', []) if err.data else []
+
+        fields = [e['field'] for e in errors]
+        assert 'status.state' in fields
+
+
+class TestWarnOnMissingRequiredFields:
+    """Tests for warn_on_missing_required_fields function."""
+
+    def test_complete_message_returns_true_without_logging(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        msg = Message(
+            message_id='msg-1',
+            role=Role.ROLE_USER,
+            parts=[Part(text='hello')],
+        )
+        with caplog.at_level(logging.WARNING, logger=proto_utils.__name__):
+            assert proto_utils.warn_on_missing_required_fields(msg, 'test:')
+        assert caplog.records == []
+
+    def test_missing_fields_are_logged_instead_of_raised(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger=proto_utils.__name__):
+            assert not proto_utils.warn_on_missing_required_fields(
+                Message(), 'message passed to test:'
+            )
+        [record] = caplog.records
+        assert record.levelno == logging.WARNING
+        assert record.getMessage() == (
+            'message passed to test: Message is not spec-compliant - '
+            'REQUIRED fields missing or empty: message_id, role, parts. '
+            'This is allowed and does not raise, but it may not verify or '
+            'interoperate across SDKs and could be rejected in a future '
+            'major release. See '
+            'https://a2a-protocol.org/latest/specification/#57-field-presence-and-optionality'
+        )
+
+    def test_non_message_objects_are_not_checked(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger=proto_utils.__name__):
+            assert proto_utils.warn_on_missing_required_fields(
+                cast('Any', object()), 'test:'
+            )
+        assert caplog.records == []
+
+    def test_nested_missing_fields_are_reported_with_their_path(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        task = Task(
+            id='task-1',
+            context_id='ctx-1',
+            status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+            history=[Message()],
+        )
+        with caplog.at_level(logging.WARNING, logger=proto_utils.__name__):
+            assert not proto_utils.warn_on_missing_required_fields(
+                task, 'test:'
+            )
+        assert 'history[0].message_id' in caplog.text
+
+    def test_empty_repeated_field_is_reported(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        msg = Message(message_id='msg-1', role=Role.ROLE_USER, parts=[])
+        with caplog.at_level(logging.WARNING, logger=proto_utils.__name__):
+            assert not proto_utils.warn_on_missing_required_fields(msg, 'test:')
+        assert 'REQUIRED fields missing or empty: parts.' in caplog.text
+
+
+class TestParseLenient:
+    """Spec 5.7: unrecognized fields are ignored (issue #1341)."""
+
+    def test_parses_dict_and_ignores_unrecognized_fields(self) -> None:
+        """Unknown keys are skipped at every depth; known ones still parse."""
+        task = proto_utils.parse_lenient(
+            {
+                'id': 'task-1',
+                'status': {
+                    'state': 'TASK_STATE_COMPLETED',
+                    'someNestedField': 'y',
+                },
+                'someNewField': 'x',
+            },
+            Task(),
+        )
+
+        assert task.id == 'task-1'
+        assert task.status.state == TaskState.TASK_STATE_COMPLETED
+
+    def test_parses_text_and_ignores_unrecognized_fields(self) -> None:
+        """Raw ProtoJSON takes the Parse path rather than ParseDict."""
+        event = proto_utils.parse_lenient(
+            '{"message": {"messageId": "r1"}, "someNewField": "x"}',
+            StreamResponse(),
+        )
+
+        assert event.message.message_id == 'r1'
+
+    def test_malformed_known_field_still_raises(self) -> None:
+        """Leniency covers unknown names, not a known field of the wrong type."""
+        with pytest.raises(ParseError):
+            proto_utils.parse_lenient({'messageId': 5}, Message())

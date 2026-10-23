@@ -1,0 +1,707 @@
+{
+  "repository": "https://github.com/a2aproject/a2a-python",
+  "protocol": "1.0.1",
+  "base_release": "1.2.3",
+  "base_commit": "44b2f761a99123370237afe6c828f4cd2a50c402",
+  "reviewed_source_tree": "22cbc3e0dd1b79b2886301afc7fb4564210b30ba",
+  "namespace": "kestrel_sdk.native_a2a",
+  "modifications": "Reviewed signing, HTTP authorization, client ownership, discovery/response decoding and native-only client selection fixes in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
+  "files": {
+    "__init__.py": {
+      "upstream_sha256": "071fb0057bdade6df2df0a6ee1c09348dc1f6f54defcba348fe7774b2ef09834",
+      "vendored_sha256": "b1c03244255eb736ddd17191aa94ad39a50b2d709d60e5cff38021392dd435dc",
+      "namespace_modified": false
+    },
+    "_base.py": {
+      "upstream_sha256": "58e4d22bc2f8ecc4302bd82dc479c6281d9549a3e2c965e55554e74150186fd3",
+      "vendored_sha256": "db30100fbcc43af434dc77103b5cb4dad277a5ed0e4fc31a0be4d0dfaed3ae09",
+      "namespace_modified": false
+    },
+    "a2a_db_cli.py": {
+      "upstream_sha256": "ac482eb89f5739eb8a14c961feacd7732515d180ff2e8eef29532e187c631297",
+      "vendored_sha256": "037417ec7b35dfe170d455d54e8fda47572e8cf427a00ca6af900f304da9e37f",
+      "namespace_modified": true
+    },
+    "alembic.ini": {
+      "upstream_sha256": "43fd5c2afef38b2b1a46735e80d2487ab8ab1364a973e2acfb46ebd3081622ae",
+      "vendored_sha256": "43fd5c2afef38b2b1a46735e80d2487ab8ab1364a973e2acfb46ebd3081622ae",
+      "namespace_modified": false
+    },
+    "auth/__init__.py": {
+      "upstream_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "vendored_sha256": "4ba86105092009bc752199f8207962375911a0e085a2650829ce575c0b8a5a4b",
+      "namespace_modified": false
+    },
+    "auth/user.py": {
+      "upstream_sha256": "7579bc19d2ecb482ff53165b0af82658cd5fea264b1a646a9a1c61e129d8b825",
+      "vendored_sha256": "51f51018c60b40f5d0f2d1ff39200872ca1cbec24f0253330bf5134fc10637c4",
+      "namespace_modified": false
+    },
+    "client/__init__.py": {
+      "upstream_sha256": "8965d3f70d97cb6e99992826f8bc087df52459637248c0c75dcf768032551846",
+      "vendored_sha256": "453750e54ce5a5c314e1b67525863ac1f441cf15d6ecd31f48ea74146a405c59",
+      "namespace_modified": true
+    },
+    "client/auth/__init__.py": {
+      "upstream_sha256": "214216cd2d33eb00dc2be46d4fef30cd926055b2cc0a7766ae27e7dd40c64630",
+      "vendored_sha256": "07b43f259d2bd1531df56d2498de6830e1f40a276cb1f31536fc776f43d860ac",
+      "namespace_modified": true
+    },
+    "client/auth/credentials.py": {
+      "upstream_sha256": "c9d73333ac441eca48e4c672b01616674714accbc98ad2462b80a89c9ecd49a5",
+      "vendored_sha256": "b5d11085533f11fde600b9abbf6e5f9388c810b93ebd67c59545df6607b44deb",
+      "namespace_modified": true
+    },
+    "client/auth/interceptor.py": {
+      "upstream_sha256": "9fd2aba23f6f4666142d0084cec334b6d856ca12d5e7ed0bca6f11d579fca850",
+      "vendored_sha256": "2d7bbf4be3fb629823dc2ef365611e491a07ac206cf57194fe035b3bf4bf977f",
+      "namespace_modified": true
+    },
+    "client/base_client.py": {
+      "upstream_sha256": "f1fdaa65f584322e0585e146209227e27b1385b21e2170e037098da192763d85",
+      "vendored_sha256": "a2d2ce777f94925791963e4eed18df1b0b3caa65e67948fa4532f22fce88c1e9",
+      "namespace_modified": true
+    },
+    "client/card_resolver.py": {
+      "upstream_sha256": "d304fe5a782316e1b410eabc5dca71da5fd4b5526d11fc0ff50b5ee1fc9d1952",
+      "vendored_sha256": "e11323ed1f93eec5a73dcb41de8ab2eed49a60bb6a771c3c79eadcb49ea91754",
+      "namespace_modified": true
+    },
+    "client/client.py": {
+      "upstream_sha256": "350bfa61a1379f789e2cd04fc0d5f81d6aa63c2ddc3f8402b762c1d94afe1c0d",
+      "vendored_sha256": "ee87b2998f6f7fa1ee9d559413489527fcb9cb351f350f013d066662ac05fa3b",
+      "namespace_modified": true
+    },
+    "client/client_factory.py": {
+      "upstream_sha256": "4972dd40d6f9530b600fa968602b1bb9153fb86e2f6b8f415e46f6b96d7f84f4",
+      "vendored_sha256": "d4f05774c2143bd59852b33209e5efaf466cefb99ecd56ed3d2948710ef4fb61",
+      "namespace_modified": true
+    },
+    "client/errors.py": {
+      "upstream_sha256": "81c5c30a54afd9d272c38da6bd499f519bfd64fc0908c3050c74031556fe892d",
+      "vendored_sha256": "1decd79a6c5ed90af00524f4d4e1a453905578ddfafd2985c51363cb0054ce6f",
+      "namespace_modified": true
+    },
+    "client/interceptors.py": {
+      "upstream_sha256": "daf6ca79b4833d6ebe8c36922cb8fe398ffacd1eff664253003605d5584e55e5",
+      "vendored_sha256": "75202b8ad68f52aae840528f1dbb8c5340e2cd034ad4e6528e32a664ae27c189",
+      "namespace_modified": true
+    },
+    "client/optionals.py": {
+      "upstream_sha256": "151640ddb2cb02a8b788459b95d5c0bca6db3de27af5205929bc78d945aa19c7",
+      "vendored_sha256": "70982498be6712805d6676cde06cad2e5e75b2d45bdef5dce57829639d05aade",
+      "namespace_modified": false
+    },
+    "client/service_parameters.py": {
+      "upstream_sha256": "98286f11448c41eecb97e8a5eed2a45bde292981d931e876c22a562dea18bd03",
+      "vendored_sha256": "d925e4d63e7d323b7a5e93a41b1afad3037ac7b3e337fd7b8fb33b0980dd71fe",
+      "namespace_modified": true
+    },
+    "client/transports/__init__.py": {
+      "upstream_sha256": "dbbaf77faf5eb91804985877ae308bf0744a0a251182e02e2fa04a89833de17c",
+      "vendored_sha256": "06d2d7af33c0d1bdb81ad96efc7f644039c92e9fd18006511b63eaf958a3776d",
+      "namespace_modified": true
+    },
+    "client/transports/base.py": {
+      "upstream_sha256": "4e0b3f6c8b09fccb147a50e2ef86b516d75f079759c1768defb851f7dda32aee",
+      "vendored_sha256": "ed303007b69a1cae553397ac971a23cc03632fc2fd6ce9807f75212b440f73b6",
+      "namespace_modified": true
+    },
+    "client/transports/grpc.py": {
+      "upstream_sha256": "c8bdd24958fbe8f2d79a1572f7a70ead4296c58afccef04886ddc1b8655b19d6",
+      "vendored_sha256": "8bb26626aac00e7cfbbbc0de1af5eebe38c5966225607a1f607cc43b2f1d85ef",
+      "namespace_modified": true
+    },
+    "client/transports/http_helpers.py": {
+      "upstream_sha256": "a2367d9e2e7326619a0a69caf5e97d68ef65024216ad78659fd3625bf094298d",
+      "vendored_sha256": "bd94b11eb61dede42f2927adf81b8d48bdee6f5b3ceca989a4fa0fbada66e5ee",
+      "namespace_modified": true
+    },
+    "client/transports/jsonrpc.py": {
+      "upstream_sha256": "8a7ff2897ffc736be896707c15fc528241051a8dcf4cf4c3bbb0644d4e83662a",
+      "vendored_sha256": "ae073001aaba1df23a9a22e4fea8e8183d68a8cbf3061f80b9319072120aba7e",
+      "namespace_modified": true
+    },
+    "client/transports/response_parsing.py": {
+      "upstream_sha256": "0d038a1d13aac36b09bdcd0d2118115115d6600fc5a56786b8615fcfbd3035ca",
+      "vendored_sha256": "f11b2d540d6fae76701a105e5c3004b3bc547ab24ba4cf3c6b1403798aef3317",
+      "namespace_modified": true
+    },
+    "client/transports/rest.py": {
+      "upstream_sha256": "5dcba9bee82adb014311698503fa497ea9b3dcadc99af42ee3efc0a54419201e",
+      "vendored_sha256": "b58d775d3f1c2d323660df3aa225dbb4a3feafc4147a22a48b30742bbffadd14",
+      "namespace_modified": true
+    },
+    "client/transports/tenant_decorator.py": {
+      "upstream_sha256": "df7b8421d29eec52c0eb6b874718b7b4489b023354709b154a53e467221ea70b",
+      "vendored_sha256": "644acad13681fcebccc0a58d1b14a18c1374f9314305c9b66dd8b43b6a04f9dc",
+      "namespace_modified": true
+    },
+    "compat/__init__.py": {
+      "upstream_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "vendored_sha256": "4ba86105092009bc752199f8207962375911a0e085a2650829ce575c0b8a5a4b",
+      "namespace_modified": false
+    },
+    "compat/v0_3/README.md": {
+      "upstream_sha256": "b24967ff055e6c4ee816703797ee44d321c876271bb50c785c7280048477474a",
+      "vendored_sha256": "acafec6df6f5236bad957fdc02f21e9dbf1a9b8e8323b828164e249711598067",
+      "namespace_modified": true
+    },
+    "compat/v0_3/__init__.py": {
+      "upstream_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "vendored_sha256": "4ba86105092009bc752199f8207962375911a0e085a2650829ce575c0b8a5a4b",
+      "namespace_modified": false
+    },
+    "compat/v0_3/a2a_v0_3.proto": {
+      "upstream_sha256": "814b0dbeca10624344db9668d3a390f43410050995fa42b5f6ee473143680f6e",
+      "vendored_sha256": "814b0dbeca10624344db9668d3a390f43410050995fa42b5f6ee473143680f6e",
+      "namespace_modified": false
+    },
+    "compat/v0_3/a2a_v0_3_pb2.py": {
+      "upstream_sha256": "130db434cbc63aacd10cfccefac0f64a150b106e4d0a6fed09d65a8bc5383d33",
+      "vendored_sha256": "3d6bcce73069b2122ba565bf9b57f63672e890088bc48951bce150fabc3104c2",
+      "namespace_modified": false
+    },
+    "compat/v0_3/a2a_v0_3_pb2.pyi": {
+      "upstream_sha256": "72bd92d94db256e9e39e6141eb3e71a52c2579be4f672b1236ccc7f3e8e3be43",
+      "vendored_sha256": "72bd92d94db256e9e39e6141eb3e71a52c2579be4f672b1236ccc7f3e8e3be43",
+      "namespace_modified": false
+    },
+    "compat/v0_3/a2a_v0_3_pb2_grpc.py": {
+      "upstream_sha256": "bd39211ab6ea6c1ec4b1fbe85e77ae63c0f1a23df1a9aea48a12eb67fc44f921",
+      "vendored_sha256": "ed7fa6d86f6d758ef381e8cd85a2a86b4e56680f45d11306db19dca4eea4edf7",
+      "namespace_modified": false
+    },
+    "compat/v0_3/buf.lock": {
+      "upstream_sha256": "06c19c80cc80b6a5666f01b57ad6a78bdad6630cfcca1fa862681a6a934e59bc",
+      "vendored_sha256": "06c19c80cc80b6a5666f01b57ad6a78bdad6630cfcca1fa862681a6a934e59bc",
+      "namespace_modified": false
+    },
+    "compat/v0_3/buf.yaml": {
+      "upstream_sha256": "f4879fc564729fb43fd270478cf8df6d63ca166b38cd2722a8808b043f3f7391",
+      "vendored_sha256": "f4879fc564729fb43fd270478cf8df6d63ca166b38cd2722a8808b043f3f7391",
+      "namespace_modified": false
+    },
+    "compat/v0_3/context_builders.py": {
+      "upstream_sha256": "470322aa4ff3d76e038f6e460cf97f2b3c872e03056588df20e2f1d789241771",
+      "vendored_sha256": "c3e86c4ad08d9d42cc504f856e241628c161de74b5f3565e72bc2c2a829b72ef",
+      "namespace_modified": true
+    },
+    "compat/v0_3/conversions.py": {
+      "upstream_sha256": "67883576a81d2e989330193d661643311926f742ae7d676487ce3a5513a6c7ff",
+      "vendored_sha256": "cde6f1bb050b4e380458af095aee28c1e0335e18f4c1e0f3f2c115023bbe32f3",
+      "namespace_modified": true
+    },
+    "compat/v0_3/extension_headers.py": {
+      "upstream_sha256": "c9504d278b31e5057ad7ccfab2f93f1b721d213d1fa550031b2540e82934137a",
+      "vendored_sha256": "83f7e6238165a00569af7a3ff936577df58106684358e4862c885d0d05453d5b",
+      "namespace_modified": true
+    },
+    "compat/v0_3/grpc_handler.py": {
+      "upstream_sha256": "a2b888ecde2c47195f235e7329c06f0d3375e194d061d944557be2c0b0e5ff43",
+      "vendored_sha256": "5bd85aa3ec0e1ddee0a699f8b4345ac099f7138d4a1f9eed10bd4c6baa83f114",
+      "namespace_modified": true
+    },
+    "compat/v0_3/grpc_transport.py": {
+      "upstream_sha256": "5cad8190163be751ea6c818b843f3d2c62567a8c29d47661c1e29d943c2a397f",
+      "vendored_sha256": "03aa2d503765b885e26d87177b058c72eb935d0b69750c194094513c049c52cd",
+      "namespace_modified": true
+    },
+    "compat/v0_3/jsonrpc_adapter.py": {
+      "upstream_sha256": "18138657c558ca235f80a2f9a38d154b8e7d51a7a8be045c6912967dd1e28abd",
+      "vendored_sha256": "c0bf4c6087db20dd3d84680a76a7461db234d6e8fe593fbc34e2b6c8664f4490",
+      "namespace_modified": true
+    },
+    "compat/v0_3/jsonrpc_transport.py": {
+      "upstream_sha256": "ad32e7a774eb37bfc18ba603cb9212c77f176cc555b2f9dbe2bdca368be61ae0",
+      "vendored_sha256": "db979aa540669941b03d8648baa4e8b21ca4fec423ce1e13f29fd3995b8e1d6a",
+      "namespace_modified": true
+    },
+    "compat/v0_3/model_conversions.py": {
+      "upstream_sha256": "d5c9699999f8f7cd345b75cd179d16b438c92d5620a726716116dfe690120780",
+      "vendored_sha256": "99d34e1a5f80df49f58d7bbabe213e4328215a440c1b12a6679683864827ca84",
+      "namespace_modified": true
+    },
+    "compat/v0_3/proto_utils.py": {
+      "upstream_sha256": "9e2049c7223edc4da43a3761a87d7a1000dab037e6888e0435bb51a59f4cc254",
+      "vendored_sha256": "1153a865aa90fb871b7bb0d67449345ffeaf3c5a58a20a9d99f363e859cc0719",
+      "namespace_modified": true
+    },
+    "compat/v0_3/request_handler.py": {
+      "upstream_sha256": "6064d5462465c2c3a4ab28a046b610e68c383074c9bdb11836f6cbf24bc3794e",
+      "vendored_sha256": "fd01e4e75b668cfd46995ef6c2772ef1cc1cff9fc75d3f0eabdcedbd16ea0cf5",
+      "namespace_modified": true
+    },
+    "compat/v0_3/rest_adapter.py": {
+      "upstream_sha256": "fed03fc48448205907487f1a14214fae9e14439b924c849c1d812a3aef922f03",
+      "vendored_sha256": "d71da4b59f7b6fa206cd6e7c2d82309f0cf89c358ae9536b2f3e1c7cd8c9c8f3",
+      "namespace_modified": true
+    },
+    "compat/v0_3/rest_handler.py": {
+      "upstream_sha256": "4432eaa4d41abdac369dab8455597e4985dabd64f3cc2300cab414b9baf19dd9",
+      "vendored_sha256": "8870729b55eb959293221a8b17f25164d6db3024b0358a98ee0db5931a38dc76",
+      "namespace_modified": true
+    },
+    "compat/v0_3/rest_transport.py": {
+      "upstream_sha256": "d6da156d5e1c67643498a5207b30f7a570fdc8734625aa9479aa31e17afd3b92",
+      "vendored_sha256": "caf92b6101c63264841fa64711349761f1479ff37c37472ae245350150acdd2e",
+      "namespace_modified": true
+    },
+    "compat/v0_3/types.py": {
+      "upstream_sha256": "9445f481fb4cebb7dccbe2dc6ea2df055773550210cc9773b093a0f95f631a3d",
+      "vendored_sha256": "2a4f99e4e55eb4f2114f0e694b36580f15687310ee659090a1d97a3b8e19c25a",
+      "namespace_modified": true
+    },
+    "compat/v0_3/versions.py": {
+      "upstream_sha256": "f29d96fcde67db58bc0ebd1ffc53baea2fd093a9e9f080c1ee9f0255d4e9669f",
+      "vendored_sha256": "53ef14172374360ca67a3332a00ab1245e435daa3bf1ac30bdd6698cf9bd0a3d",
+      "namespace_modified": true
+    },
+    "extensions/__init__.py": {
+      "upstream_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "vendored_sha256": "4ba86105092009bc752199f8207962375911a0e085a2650829ce575c0b8a5a4b",
+      "namespace_modified": false
+    },
+    "extensions/common.py": {
+      "upstream_sha256": "924cc0651e941fc8689033ef7a3b11f4d1bc26ffcb5196b7ba063fa5238ac77e",
+      "vendored_sha256": "d5c2eee4cba0b859fcaf23422f0b3fc979e6baaa0f18a4de220305ea496e81af",
+      "namespace_modified": true
+    },
+    "helpers/__init__.py": {
+      "upstream_sha256": "8f6dd736c0ebc9c0d08d9f0f9d3706658ea2fb3dd7733ab5bf8baaef03c724d9",
+      "vendored_sha256": "9835575fcee56de152e3a0b5ec25adf6a07ecc1870bca0402534aad631982810",
+      "namespace_modified": true
+    },
+    "helpers/agent_card.py": {
+      "upstream_sha256": "133fe7aeae20a55cc5fdbe267f8edc5d298091ccf8fd20da397ea2cc43810823",
+      "vendored_sha256": "9b1c210640f22ff5734415a34cf9f9e6eab4cf6eb8f9ebefef59b091c7e34a44",
+      "namespace_modified": true
+    },
+    "helpers/proto_helpers.py": {
+      "upstream_sha256": "fa6a16b26b8d1d30bbc842700c5d3c42f6da33b28a2b8688e83892d87ec7baea",
+      "vendored_sha256": "d93b8fc56a1fb292475b1f85878b5460d20319fdb11a98bedd01cdaab4538df7",
+      "namespace_modified": true
+    },
+    "migrations/README.md": {
+      "upstream_sha256": "5592b8036549ce693942fe923f82706b9d6892a309bf42db3be96aa3958eb767",
+      "vendored_sha256": "3aa04cfb496bb900dcc92f1e19f4c5c7aeef4b89f80602f8126c88b9595b97d2",
+      "namespace_modified": true
+    },
+    "migrations/__init__.py": {
+      "upstream_sha256": "9113fab21bdbc3ae34f1d0bb2d951e81518b58424b65f16860dcacd998a2b7f8",
+      "vendored_sha256": "4575eae309d6f3d944798957c54f9929ddedfd4b0c1600d7c9cffd45f7f3161b",
+      "namespace_modified": false
+    },
+    "migrations/env.py": {
+      "upstream_sha256": "f208492c5752507c250545ec1a1fe769aa8efcf56eb17a939a901c5e076f74d4",
+      "vendored_sha256": "75e22770a36425f3645471b29aeb06d33fbe8b096000dc26ef13b6d7f498388d",
+      "namespace_modified": true
+    },
+    "migrations/migration_utils.py": {
+      "upstream_sha256": "292f9e6357867ccce4d441fb113fc6a8a1c4a52dfb7081c659d95bc4fb430ddc",
+      "vendored_sha256": "7b02ab05d8ea5f9e22402636e7526e8a08503412a6dc2c57e143a0b45ad9f9fe",
+      "namespace_modified": false
+    },
+    "migrations/script.py.mako": {
+      "upstream_sha256": "103188753711bbda3ce001644028ca7fb6886515be8702789fef444115ebdd60",
+      "vendored_sha256": "103188753711bbda3ce001644028ca7fb6886515be8702789fef444115ebdd60",
+      "namespace_modified": false
+    },
+    "migrations/versions/38ce57e08137_add_column_protocol_version.py": {
+      "upstream_sha256": "20b3720b5d9b186e6feecd7511b66203f877db45bb548b4b6579cc1230638cf8",
+      "vendored_sha256": "34117bea89ef73be627d8503e91f5022895a3d6f1931995610055b9daac26692",
+      "namespace_modified": true
+    },
+    "migrations/versions/6419d2d130f6_add_columns_owner_last_updated.py": {
+      "upstream_sha256": "c680cc87aab4d5deb8ab3fcb516bda076bc43a2a4cb64e3af2e3b55f13f2d4a4",
+      "vendored_sha256": "c296a1d5a0fc6580bc6d59e8c8a43541d515ab60ba1703f5871bfca7e1c104b4",
+      "namespace_modified": true
+    },
+    "migrations/versions/__init__.py": {
+      "upstream_sha256": "58d0795baadcd4e6e78c176446535790d827cb81650fef2510d071a90eac26d6",
+      "vendored_sha256": "eab50b1c329871299c470da9328cfc7f8350f9168bd0b3cf1bc247590e8290ef",
+      "namespace_modified": false
+    },
+    "migrations/versions/b5e3d1c8a2f7_add_task_version_and_task_events.py": {
+      "upstream_sha256": "332a0b0bd8ab78d25293f487e3c1473ec64c6d451efb6531c997c10c39ad0ca0",
+      "vendored_sha256": "c598f17599b3fb07052b6028647c46e0f3e35c77de3733a508a704ddf59073b5",
+      "namespace_modified": true
+    },
+    "py.typed": {
+      "upstream_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "vendored_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "namespace_modified": false
+    },
+    "server/__init__.py": {
+      "upstream_sha256": "505829ca8c31dbefb0135746911866822e6b03d4db8592dc8f2f416d5e9859f1",
+      "vendored_sha256": "cfb48637cfcf7de666a1519339b7a0e106f26e18f2dfd4ccfed1517921491c36",
+      "namespace_modified": false
+    },
+    "server/agent_execution/__init__.py": {
+      "upstream_sha256": "1452015ff016ebcf17dec3ddea73be9e85f0212c591d405ade71a1ffe93ad79f",
+      "vendored_sha256": "2bd83c0884134cb8439ee2550e00df0fc2ecf0e6c07918817fcfdbd1f8d4f1b9",
+      "namespace_modified": true
+    },
+    "server/agent_execution/active_task.py": {
+      "upstream_sha256": "9d66e08991d829a11d439bc1dad4f8452923d4f80de749ca1af79c1aa337b949",
+      "vendored_sha256": "c0a9eced99f36e7b9c7c42da7387ac38169c4b29fd98577be11682ed5be739ab",
+      "namespace_modified": true
+    },
+    "server/agent_execution/active_task_registry.py": {
+      "upstream_sha256": "f7992a509253ae290fab902c152352213af70fc24ec1709ce46a367bf1fe82a9",
+      "vendored_sha256": "f2620fab69388ca82557cda42fdd3e0b31bcdfcfe2d4a6fe3ba490f908c66f58",
+      "namespace_modified": true
+    },
+    "server/agent_execution/agent_executor.py": {
+      "upstream_sha256": "d5609ff0487616e83c0d632080822757dff48b36fc4f29af1fcc604e3e5aa936",
+      "vendored_sha256": "f362c73d7487b4ad55c6706f23a495d719a83085073940407f2b3bf2e1ad77ba",
+      "namespace_modified": true
+    },
+    "server/agent_execution/context.py": {
+      "upstream_sha256": "1f236c5170220e5c18304da9d4326160489cd4278281535d205ccf7990809631",
+      "vendored_sha256": "85bf0f383e48cd9270b7d6659f60c22da30e01970909cf673d3c3a0a08620c5b",
+      "namespace_modified": true
+    },
+    "server/agent_execution/request_context_builder.py": {
+      "upstream_sha256": "5382a190fbb1d3c9b47ede4be1115d568eb0afd4f4fd608dc815fc46f8e22559",
+      "vendored_sha256": "1f989c68e8030cba14d1f8bf431b153b5d5ad575f8ada5edc4325d56614753e8",
+      "namespace_modified": true
+    },
+    "server/agent_execution/simple_request_context_builder.py": {
+      "upstream_sha256": "d91dd911ab21b4b3f0c5030dfba0cdea5b675677ccbde85273c7928a772f0e9a",
+      "vendored_sha256": "8a0fb0be14b79d7b74aebfba946eb8eaf6c6cedd49c3064f584fe31151090cbc",
+      "namespace_modified": true
+    },
+    "server/cluster/__init__.py": {
+      "upstream_sha256": "258f18fd378ab6b428188289f59a6beee46913b024d50abc5a0e276eabfd4bf7",
+      "vendored_sha256": "eab61d73bd0a1a17aa885ab287c41121bec357639b6729538badbd159625d35d",
+      "namespace_modified": true
+    },
+    "server/cluster/database_event_stream.py": {
+      "upstream_sha256": "c5cd1dbf0a869cd8765f94acddab564b17c10b110280f040c3d217add10be3e3",
+      "vendored_sha256": "d29d07e8bc72069580d9fd646bb83a6805bb7c67581fdef4482b0ade427022ec",
+      "namespace_modified": true
+    },
+    "server/cluster/database_task_store.py": {
+      "upstream_sha256": "680d5e48c58545a5c570318b396f2ea573087898aad48549f4b768a8fe40b416",
+      "vendored_sha256": "1c587b3c20162b32c86203d5e773c3ae58bf188060a078d72270e8c75bc0c638",
+      "namespace_modified": true
+    },
+    "server/cluster/event_stream.py": {
+      "upstream_sha256": "01b8eaba556d17c157f326acaa724b734e27df0a01b23cf5b8a360e591051beb",
+      "vendored_sha256": "4a1b738143696698f6ef00aa676f47e36167b8760e97ba822947304c9be8adb2",
+      "namespace_modified": true
+    },
+    "server/cluster/task_store.py": {
+      "upstream_sha256": "c75dcb36d081526f7a809552dc7bc31630cc5211af9353a634db0c7cbd3173ed",
+      "vendored_sha256": "0cbbae1b11116659442c264e71f3e1862b50e93aea482a36cabcede12aae5446",
+      "namespace_modified": true
+    },
+    "server/cluster/version.py": {
+      "upstream_sha256": "4c943afc212bdd7eb63c658109dc09aa7868e78ea89bc3b2cc5ab5074aeeb820",
+      "vendored_sha256": "c1ab808ffde8b5a3b6fc885caf7262880e8445e818d70e16aa0a2f5e4521b8e0",
+      "namespace_modified": false
+    },
+    "server/context.py": {
+      "upstream_sha256": "7b22e91d11786ec8a1a9c9497fdfb77217a2b351ec62722edca025de652cee60",
+      "vendored_sha256": "f4915ea8d3ffb83a9919481960bd833262c107bf3429008dee43b1ebc0fd22ad",
+      "namespace_modified": true
+    },
+    "server/events/__init__.py": {
+      "upstream_sha256": "7df5039de2a09b53c7f2e32b92c9b2f4f59130771a0e410c044e14564e105bab",
+      "vendored_sha256": "9380be4ff0f41606331d7c67ea5fa3f576bdbb88f3a89663e6f674ad70645f1d",
+      "namespace_modified": true
+    },
+    "server/events/event_consumer.py": {
+      "upstream_sha256": "b7f6247573b9228bebed445501fb0ec64cfe24d925b2d931bbb62b2a1035cfab",
+      "vendored_sha256": "4d7dc082e1609ecdc18b1232e1998b2bfc92f04035616e1b82ec34f6aabee7cc",
+      "namespace_modified": true
+    },
+    "server/events/event_queue.py": {
+      "upstream_sha256": "0575bf83eea8898c0975c13a66b98480f0aedd8c8703b65c5a6a11f858e55158",
+      "vendored_sha256": "93018cb58861a0fc0f019cab607eb069529e8a283695f7d6702f6a2c14506962",
+      "namespace_modified": true
+    },
+    "server/events/event_queue_v2.py": {
+      "upstream_sha256": "dd5960e6a71435539506877de6872c116551c500960814da3b7eb827a963aa9a",
+      "vendored_sha256": "a01cb6388c40fa0191da3ea6699bd437aa30f1fa6d7bd4597df85f71a11ea45f",
+      "namespace_modified": true
+    },
+    "server/events/in_memory_queue_manager.py": {
+      "upstream_sha256": "99c2c9186293ac2a2bc3d8386e0c5fb890035f70b0c2f570eb6ec5f88d050715",
+      "vendored_sha256": "c0ddc39d7c5e75c6908ba17cf9237087ccef5d409e108f21c429d808cf141731",
+      "namespace_modified": true
+    },
+    "server/events/queue_manager.py": {
+      "upstream_sha256": "237fe4289973bf05ef051d2a64aa48923ac854d7c356e99040e91a610296d00a",
+      "vendored_sha256": "ac13d19a33e2aa1c2f2dfea7ad410d81032c71785fbc4da6bdf89681ff2a8746",
+      "namespace_modified": true
+    },
+    "server/id_generator.py": {
+      "upstream_sha256": "ad0f5514be1be8dddfc5b4cd342b7330d33cc6ea1cdbe3ccbc60753c4a61b542",
+      "vendored_sha256": "36daecccdaf3156f39b46f6da13bb8b6cd574bcea27361e463d351ea17166718",
+      "namespace_modified": false
+    },
+    "server/jsonrpc_models.py": {
+      "upstream_sha256": "8aeb0390bb75603f6991fa19b3e548dafd28ca7a651483412308e1f78a9b6d0b",
+      "vendored_sha256": "5a438ef81741e373ad3106ee46686a8202a265dd40c083f36bc2ec65c1daaa0a",
+      "namespace_modified": false
+    },
+    "server/models.py": {
+      "upstream_sha256": "6d2a61ab169d527bd91ef21be52641c11c9d899309d87486a60b31d38144b091",
+      "vendored_sha256": "9efaf7b49a2865529b1b9ff56fab3f9d463625b3e88889dfab39380b4c6f62b2",
+      "namespace_modified": true
+    },
+    "server/owner_resolver.py": {
+      "upstream_sha256": "0bba4ea3b2ca7b432e0d418fc207d8acf4ecce651f4302f63b815ba7a9dba041",
+      "vendored_sha256": "aac79463e798c463f6b90d695d9b57fdace145e1af3a387cffbb89595af45cfa",
+      "namespace_modified": true
+    },
+    "server/request_handlers/__init__.py": {
+      "upstream_sha256": "4d68195d1635c7f7ab4e87255990bd8bcd2e3d00b93ff653cc090432c4b48df1",
+      "vendored_sha256": "bf11553e7b4020b06cb5b5754cc4baaf89efe75821a5175a6cfbeb03fec5eca1",
+      "namespace_modified": true
+    },
+    "server/request_handlers/default_request_handler.py": {
+      "upstream_sha256": "a3fbfeb7527a858f07b17773d9b57bbb7b0b3369a1ad3f09ffa3f22a7def3192",
+      "vendored_sha256": "94886b87757e873eb76eadb1219dba423a505f8fab18c3ce3af1a30e8c496802",
+      "namespace_modified": true
+    },
+    "server/request_handlers/default_request_handler_v2.py": {
+      "upstream_sha256": "7ba7c8e39fcce33c9746b15c30a3ff4455b8eff38b558f922ad69b53ce22b125",
+      "vendored_sha256": "1e8d40364103e785f26e3e69d5ffa7f40987d49854b2aab3518801b011ed0639",
+      "namespace_modified": true
+    },
+    "server/request_handlers/grpc_handler.py": {
+      "upstream_sha256": "1ef0fb47b7265a2494c60e1901aa5ac2fa09fba58b146929262177a22ded4940",
+      "vendored_sha256": "6a8c0758781385f3ef96221aa6cd82d0a141de2febb5660c4cb31bfa7e951c2d",
+      "namespace_modified": true
+    },
+    "server/request_handlers/request_handler.py": {
+      "upstream_sha256": "24deb9c454f71f0e8fdc1b2574725e7037626584fd7a63bc05289ea5a5360fc3",
+      "vendored_sha256": "7edc2c067d991537f7d0df04627211676e90c4f5030ab93d353e23f9a5443b9d",
+      "namespace_modified": true
+    },
+    "server/request_handlers/response_helpers.py": {
+      "upstream_sha256": "e5261ea0e1669390b41fa1296f27064b3abe9dc98b8c63bfd6ccd1578ae582ec",
+      "vendored_sha256": "e98f58a4e59f0d97e634af92ce4fc037a65d587a5886cda8b54aed330fc2ad4b",
+      "namespace_modified": true
+    },
+    "server/routes/__init__.py": {
+      "upstream_sha256": "55760cd71ec6c0d12a0bbb85f761e90310ce875352f564ac3cfd83d2294998c3",
+      "vendored_sha256": "7bf441ea11a6b0b133809bbef9e527120ddcec6d7c7ef8962e12412e10910037",
+      "namespace_modified": true
+    },
+    "server/routes/_jsonrpc_schema.py": {
+      "upstream_sha256": "47fd676b1df84d251694abc296348dd418937e7dd60e308432d70a40ff420f88",
+      "vendored_sha256": "070d95cb928e6a228c054a5c2fa7205a3a4372a13233820be37b07cb347cdc95",
+      "namespace_modified": true
+    },
+    "server/routes/_proto_schema.py": {
+      "upstream_sha256": "51a6d6d2bf827cf7f87a6b2e7358f59fd2fb1de5cedf0c15cde459e609fe53bd",
+      "vendored_sha256": "63478dc768bb9aa8786fea3c4a2fbbde1875060af66769811b931dd372f24e98",
+      "namespace_modified": true
+    },
+    "server/routes/agent_card_routes.py": {
+      "upstream_sha256": "ccd284474afff8abfb00d2b35124478d0417ef2aa1238a63dc558f81748bf413",
+      "vendored_sha256": "e95c8121ea58be594bc0235abcbe064805f282c6ddeefa737b5b64e19d8951b8",
+      "namespace_modified": true
+    },
+    "server/routes/common.py": {
+      "upstream_sha256": "355b1dbe19c89ac64e3602a9ec94fdbe5fa6b2d631a653dd848a9e2a8ee76ec2",
+      "vendored_sha256": "0c73a3ff7b7b7e15f605a5e7bcc2a0335dae94ac5187805b27028bd7e8ce79d2",
+      "namespace_modified": true
+    },
+    "server/routes/fastapi_routes.py": {
+      "upstream_sha256": "02cb62926065f52f79993ab8f3f90059b251be2f41c40f9721f49fe5486a7db3",
+      "vendored_sha256": "f7aeffcc64276f6c2ea404889bff8fb624e419a426c86be0fac5c65bbc2f8062",
+      "namespace_modified": true
+    },
+    "server/routes/jsonrpc_dispatcher.py": {
+      "upstream_sha256": "6376bb675f4c5529ebc75ab986b0803664d938d9429288e3e01a3463785f625e",
+      "vendored_sha256": "40ab7e1b32ae6246da219430b3330c564283ab242cd6a1efdc039a1a47c3f4b5",
+      "namespace_modified": true
+    },
+    "server/routes/jsonrpc_routes.py": {
+      "upstream_sha256": "6de8528c98b49e5ea81a2037c055491d9c040678e97405ad3f335823f0a6c00f",
+      "vendored_sha256": "1f6feba4abdca1e1a1dff104137f9400fab3bb9fdf28c1bd2b37dde05e354464",
+      "namespace_modified": true
+    },
+    "server/routes/rest_dispatcher.py": {
+      "upstream_sha256": "9e441559e4b5bd1ee776554f2b98d83e305a591489d84adfa6378f0f431da77b",
+      "vendored_sha256": "b7fdfe219692775cf5184b3a48682ead3fa88032f07c3623d61563b8047df0d1",
+      "namespace_modified": true
+    },
+    "server/routes/rest_routes.py": {
+      "upstream_sha256": "2c42c9512a69dc227632edf4d08d5b40233a6ed7363b409c5f96a1258b33e9fa",
+      "vendored_sha256": "e76f2eb5378ae290cbb9f4a73ea1bb659db9faf8170163239ebdd8c26629db70",
+      "namespace_modified": true
+    },
+    "server/tasks/__init__.py": {
+      "upstream_sha256": "6c753dba031b7db2f1d1c653531039f1ca7561aeccf4594e56e03c77e5c4af28",
+      "vendored_sha256": "dc446a16597ab6e082c9444027617cde9e5aaedc99a53a98a34e25dcdac43ffe",
+      "namespace_modified": true
+    },
+    "server/tasks/base_push_notification_sender.py": {
+      "upstream_sha256": "2d472bdc1c58e08a31f020b26ff2b2720331d6272fcdd9d02cfd5a32371b5d52",
+      "vendored_sha256": "988fa991effc0ed97a86238357d8ba79e34d3226f2f1281e51e5fd527d0a17d1",
+      "namespace_modified": true
+    },
+    "server/tasks/copying_task_store.py": {
+      "upstream_sha256": "8ad58640b0835fbed39543e80148f8768051fcfe5398a26bec1fa0139190a062",
+      "vendored_sha256": "1c2bb7c829dcdd3bfa13d8d4212f96d3cb6a0cf6332176fd9fdd2494cb69e0af",
+      "namespace_modified": true
+    },
+    "server/tasks/database_push_notification_config_store.py": {
+      "upstream_sha256": "a642b184e1fbb4ad0bdb2d257b7eb38c0b7f9e8ecf791154dce622ce96c312fe",
+      "vendored_sha256": "cb2213626db7b3d1d45cab722cb992da8a338fe1e05f86ab954fad325c62fa1d",
+      "namespace_modified": true
+    },
+    "server/tasks/database_task_store.py": {
+      "upstream_sha256": "345ea91748c35b0b5436ab45f2cee1ba50e6fd09e3ab8bc60daad6ff1e0df1a0",
+      "vendored_sha256": "6acf55817e41e853a2c232b7e7149efb56a6312189abee784843f818b5dbe157",
+      "namespace_modified": true
+    },
+    "server/tasks/inmemory_push_notification_config_store.py": {
+      "upstream_sha256": "4ad9d878e4f323329c639563294869fd2057c2f6c12122a83e2dbbbf0922591e",
+      "vendored_sha256": "ce1c77a81ce38c2f6a7997efb8079d56bcd654d3e07e585b0f7ae725d72952fa",
+      "namespace_modified": true
+    },
+    "server/tasks/inmemory_task_store.py": {
+      "upstream_sha256": "73622f0b86384fb730987569ebf7e6e770427318fe758dfa36b6721c5e673e9a",
+      "vendored_sha256": "2e8393a4c6d5db05d9fca5a6c9f84cc68c74bdc4a737155089c96a369d859724",
+      "namespace_modified": true
+    },
+    "server/tasks/push_notification_config_store.py": {
+      "upstream_sha256": "5934be91e51e9c31e64b1898d7aade6684b5c1abfd74b985f83c245f3560c2f2",
+      "vendored_sha256": "f5f222cdbd973756563b58d02fe60d10f8eed170b5fcf031d47a7143c276f2f6",
+      "namespace_modified": true
+    },
+    "server/tasks/push_notification_sender.py": {
+      "upstream_sha256": "f440afa1347704948a82935d26fae76d32f9f6c4ee0ee7612e116bea5fba2e64",
+      "vendored_sha256": "3a2eecc9e9e1c8d8c311b47a26e0ff6b7e206e351d366a9232ad5e60597908e6",
+      "namespace_modified": true
+    },
+    "server/tasks/result_aggregator.py": {
+      "upstream_sha256": "b57455c9c308b36e95e2b0bdd5d154a693ee692eb6b37d69f6003545f42da488",
+      "vendored_sha256": "2f7b09d2a668f6b78ef3522488cf200f9ca020ca24df804e53e01fbe14f8b1c2",
+      "namespace_modified": true
+    },
+    "server/tasks/task_manager.py": {
+      "upstream_sha256": "fae8ea37c727d44dc41048646fd5030c685228f5ab876920637959d9f61a40a1",
+      "vendored_sha256": "258c006d0d46e350585eb122b61c4dfb4022b1d386691587dcd4420f42a2467d",
+      "namespace_modified": true
+    },
+    "server/tasks/task_store.py": {
+      "upstream_sha256": "e274b94337d23ff6cfe63276fb945589aef1dd99bd1c80849648e7d55437d729",
+      "vendored_sha256": "8154478175284ffcf858b1f0662f21fcdfd96c25e436f4429808a77db9343b0c",
+      "namespace_modified": true
+    },
+    "server/tasks/task_updater.py": {
+      "upstream_sha256": "a54aa1d36f3de43fb688252b8e3ec83099284c07cf76a8df53f5698be7e96725",
+      "vendored_sha256": "f23567be05cddbf39b5bc603f7d9181841c396ef13fb31acc6ac7b5dc2c23884",
+      "namespace_modified": true
+    },
+    "types/__init__.py": {
+      "upstream_sha256": "d8e0b9a3928f7b6a6982c58a2af2c312039ba7aa993326d5cbe50ada008dc542",
+      "vendored_sha256": "1d9589ed55e7c4b26bd4139b21f29aa5811d3315470b64ad8e41fcb52ff40430",
+      "namespace_modified": true
+    },
+    "types/a2a_pb2.py": {
+      "upstream_sha256": "d0aac0be3a3b639b17be3f3c42ac2aab185a10e3d085f38c05410472769483ba",
+      "vendored_sha256": "ddf6703ac0fabe0bb36d8ee7d9648640f1f41491eabb2a03680ec9a80dd217a1",
+      "namespace_modified": false
+    },
+    "types/a2a_pb2.pyi": {
+      "upstream_sha256": "9043d39968ee701c636142ad9474e1306f14a2b8f635d45a35565af3ffa1e13c",
+      "vendored_sha256": "9043d39968ee701c636142ad9474e1306f14a2b8f635d45a35565af3ffa1e13c",
+      "namespace_modified": false
+    },
+    "types/a2a_pb2_grpc.py": {
+      "upstream_sha256": "401e653ec5e4261bf29fb91839a54341b97162f4e701a45085accea06067b49e",
+      "vendored_sha256": "618ad0ef2385258f8add06fb445036a69674a09e6ee8e039fa8812b7d6aed181",
+      "namespace_modified": false
+    },
+    "utils/__init__.py": {
+      "upstream_sha256": "a9350876cae4bc9a636c2b556262ad4ccdaf39530bb2708d7d0c42480dee1e26",
+      "vendored_sha256": "951c8313d78c85920d929b06a620ffc722d4c7318bf7ecfeac53bf47a4d62385",
+      "namespace_modified": true
+    },
+    "utils/_async_queue_compat.py": {
+      "upstream_sha256": "aa2f776d08e557597859547df72e02eaa5aef962befc086060082947bdd2dfbe",
+      "vendored_sha256": "dca61087e49dd5b1cb6627cc3ebe19ba98d90b1117ebd5294b821d1ccf8963d9",
+      "namespace_modified": false
+    },
+    "utils/_jcs.py": {
+      "upstream_sha256": "2b84a31f3a20569820ce473c3d38f4f397154974ea975d65699fafde8111cb90",
+      "vendored_sha256": "f218825b3b2ac3a3741d0dc2cdb570d39d4917de7bf732be979ef70100f00bf6",
+      "namespace_modified": false
+    },
+    "utils/constants.py": {
+      "upstream_sha256": "48b4c162ecd45772a90b7f17a2ba28aeec41f410cb16ee83484965a75390ebc4",
+      "vendored_sha256": "fb0254f77150e6252eff0e9a0df07a6841b79ad1a9747bf942b3f3824fffce07",
+      "namespace_modified": false
+    },
+    "utils/error_handlers.py": {
+      "upstream_sha256": "d04b40d736f9bdbcde18d07bff793df0bc2c136ac079c8446e2fd7bb4d0ee5f0",
+      "vendored_sha256": "84829e6025ca0dd75553136ee63dc5821475a8eafed49cd125fb58132b5e1fda",
+      "namespace_modified": true
+    },
+    "utils/errors.py": {
+      "upstream_sha256": "a2138f672c9a300d1083efaa9e779205f0c9e3b2a7443cf3161b20beeb5a8924",
+      "vendored_sha256": "6b6a0255cb2d304b1114a0fe4de589c73a94f06d33c33a77f2132b7fa9ef6ae3",
+      "namespace_modified": false
+    },
+    "utils/grpc_status.py": {
+      "upstream_sha256": "c8f6f49bcb1e4bb5827694eb913471a61bcbb1643bb736d15286239a27866ea4",
+      "vendored_sha256": "16a12bfce07673cbb47cf46aaa03731cbcd627ed068fa005ebd01b22b1f50a7d",
+      "namespace_modified": false
+    },
+    "utils/input_mode_validator.py": {
+      "upstream_sha256": "82ead8d39bcfab8c393a2bf6172da69b34dca418ea8904f7887354492711ca92",
+      "vendored_sha256": "71af975a6656903a0696ec4e353524298da13e7399f73ff5c5a17015ef6f26cc",
+      "namespace_modified": true
+    },
+    "utils/json_utils.py": {
+      "upstream_sha256": "23b580cdd9ae44f641d8fb5d15547215b00020a8a2954b9e24c3a90bba76a8bc",
+      "vendored_sha256": "517aa2ec3eecdc04ca3037e5bbf8fc198c6da38c78c43c7476dfeb80cc95e3d0",
+      "namespace_modified": false
+    },
+    "utils/proto_utils.py": {
+      "upstream_sha256": "ba78977261287f6b51400ce5c9489ffd602d399fff7816fb3e4049435b9e1cb6",
+      "vendored_sha256": "af6dab6c6ee3d114fdebfe089e3d6ee589a6cf6aae5cb2d189b27cdb07218611",
+      "namespace_modified": true
+    },
+    "utils/push_url_validator.py": {
+      "upstream_sha256": "367a712a7a85687b70ffbb24d5026a93eed7605489fda0473acc0ce1ce14ad82",
+      "vendored_sha256": "571a48c57807723b74d5a80dd8b60ebe4579401bd03a1e76cc8bdfcbe0b6e1e0",
+      "namespace_modified": false
+    },
+    "utils/signing.py": {
+      "upstream_sha256": "6bcfbd171a7f66ff59298404248526ee87539ac9de034bb4549a5d3bdaccb891",
+      "vendored_sha256": "f33f9bc34af0c79e5813756db6c0b33504e3185fb95c19c86afb6b968487b946",
+      "namespace_modified": true
+    },
+    "utils/task.py": {
+      "upstream_sha256": "938a5984e80703c0849bb8deefdc2ca97ab81c57e4c55567f2b0bbc925a27b98",
+      "vendored_sha256": "ea48d543079c04d792805c08390f6234cd35bf4a4b9a3815b4f9423f5fb93dbe",
+      "namespace_modified": true
+    },
+    "utils/telemetry.py": {
+      "upstream_sha256": "c0737745ca57159d7ecec0746616710e7b4bb62ac548d8b091126225bec2a4b9",
+      "vendored_sha256": "c2e81bac6ca388fd1543be9d3337e175a4615ddef9ee4ae76d3c0eb8530803e8",
+      "namespace_modified": true
+    },
+    "utils/version_validator.py": {
+      "upstream_sha256": "0f1d43225db102ecd375887b8814ba5ad54f7528c0c927b40c003593368c3209",
+      "vendored_sha256": "c1303622b6d8b9ac5e4915ee0c3339b3e8ae00ee57584c423dab4fb2eced6a1f",
+      "namespace_modified": true
+    }
+  },
+  "provenance_sha256": {
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "UPSTREAM-PYPROJECT.toml": "5cdf8fdd9f297018cba28c9f91308f122264cab237acc41ee7c54bbb1f6ee776",
+    "UPSTREAM.patch": "4c8576a8db578951ae766713fc7543a1629e0400a56cb7dfe2b060ccbb59e53f",
+    "NOTICE": "4924afe3dab57b45b0ae6ed34529d8231904adf8d7eeb35be6b12546be7cd8c0"
+  }
+}

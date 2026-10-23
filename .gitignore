@@ -1,3 +1,9 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Public, reviewed A2A source custody metadata.
+!kestrel_sdk/native_a2a/VENDORED.json
+
+# Independent public canonicalization/interoperability vectors.
+!tests/native_a2a/**/*.json

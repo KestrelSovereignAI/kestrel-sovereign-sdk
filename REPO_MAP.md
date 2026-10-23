@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 151 tracked files (136 `.py`, 6 `.md`, 9 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 316 tracked files (283 `.py`, 8 `.md`, 25 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -18,6 +18,7 @@ Repo entry points and standard project files.
 - **README.md** — kestrel-sovereign-sdk — Lightweight SDK providing base interfaces, protocols, and utilities for Kestrel Sovereign feature package development.
 - **AGENTS.md** — kestrel-sovereign-sdk — Agent Instructions — See [README.md](README.md) for package overview.
 - **LICENSE** — —
+- **.gitattributes** — —
 - **.gitignore** — —
 - **CHANGELOG.md** — Changelog — All notable changes to this project are documented in this file.
 - **REPO_MAP.md** — kestrel-sovereign-sdk — Repo Map — Auto-generated file-tree + per-file purpose index.
@@ -116,6 +117,254 @@ Repo entry points and standard project files.
   - `class BackendType`
 - **kestrel_sdk/metrics.py** — Kestrel Prometheus Metrics — shared metric definitions for the Kestrel ecosystem.
   - `def generate_metrics()`; `def get_content_type()`
+- **kestrel_sdk/native_a2a/LICENSE** — —
+- **kestrel_sdk/native_a2a/NOTICE** — —
+- **kestrel_sdk/native_a2a/UPSTREAM-PYPROJECT.toml** — (configuration)
+- **kestrel_sdk/native_a2a/UPSTREAM.patch** — —
+- **kestrel_sdk/native_a2a/VENDORED.json** — (configuration)
+- **kestrel_sdk/native_a2a/__init__.py** — The A2A Python SDK.
+- **kestrel_sdk/native_a2a/_base.py** — —
+  - `def to_camel_custom(snake)`; `class A2ABaseModel`
+- **kestrel_sdk/native_a2a/a2a_db_cli.py** — —
+  - `def create_parser()`; `def run_migrations()`
+- **kestrel_sdk/native_a2a/alembic.ini** — (configuration)
+- **kestrel_sdk/native_a2a/auth/__init__.py** — —
+- **kestrel_sdk/native_a2a/auth/user.py** — Authenticated user information.
+  - `class User`; `class UnauthenticatedUser`
+- **kestrel_sdk/native_a2a/client/__init__.py** — Client-side components for interacting with an A2A agent.
+- **kestrel_sdk/native_a2a/client/auth/__init__.py** — Client-side authentication components for the A2A Python SDK.
+- **kestrel_sdk/native_a2a/client/auth/credentials.py** — —
+  - `class CredentialService`; `class InMemoryContextCredentialStore`
+- **kestrel_sdk/native_a2a/client/auth/interceptor.py** — —
+  - `class AuthInterceptor`
+- **kestrel_sdk/native_a2a/client/base_client.py** — —
+  - `class BaseClient`
+- **kestrel_sdk/native_a2a/client/card_resolver.py** — —
+  - `def parse_agent_card(agent_card_data)`; `class A2ACardResolver`
+- **kestrel_sdk/native_a2a/client/client.py** — —
+  - `class ClientConfig`; `class ClientCallContext`; `class Client`
+- **kestrel_sdk/native_a2a/client/client_factory.py** — —
+  - `def major_minor(version)`; `class ClientFactory`; `async def create_client(agent, client_config, interceptors, relative_card_path, …)`; `def minimal_agent_card(url, transports)`
+- **kestrel_sdk/native_a2a/client/errors.py** — Custom exceptions for the A2A client.
+  - `class A2AClientError`; `class AgentCardResolutionError`; `class A2AClientTimeoutError`
+- **kestrel_sdk/native_a2a/client/interceptors.py** — —
+  - `class BeforeArgs`; `class AfterArgs`; `class ClientCallInterceptor`
+- **kestrel_sdk/native_a2a/client/optionals.py** — —
+- **kestrel_sdk/native_a2a/client/service_parameters.py** — —
+  - `class ServiceParametersFactory`; `def with_a2a_extensions(extensions)`
+- **kestrel_sdk/native_a2a/client/transports/__init__.py** — A2A Client Transports.
+- **kestrel_sdk/native_a2a/client/transports/base.py** — —
+  - `class ClientTransport`
+- **kestrel_sdk/native_a2a/client/transports/grpc.py** — —
+  - `class GrpcTransport`
+- **kestrel_sdk/native_a2a/client/transports/http_helpers.py** — —
+  - `def handle_http_exceptions(status_error_handler)`; `def get_http_args(context)`; `async def send_http_request(httpx_client, request, status_error_handler)`; `async def parse_sse_stream(response)`; `async def send_http_stream_request(httpx_client, method, url, status_error_handler, …)`
+- **kestrel_sdk/native_a2a/client/transports/jsonrpc.py** — —
+  - `class JsonRpcTransport`
+- **kestrel_sdk/native_a2a/client/transports/response_parsing.py** — Decode peer response data separately from transport and admission failures.
+  - `def load_json_value(payload)`; `def load_json_response(payload)`; `def decode_response_text(payload)`; `def parse_jsonrpc_response(payload)`; `def parse_protobuf_response(payload, message)`
+- **kestrel_sdk/native_a2a/client/transports/rest.py** — —
+  - `class RestTransport`
+- **kestrel_sdk/native_a2a/client/transports/tenant_decorator.py** — —
+  - `class TenantTransportDecorator`
+- **kestrel_sdk/native_a2a/compat/__init__.py** — —
+- **kestrel_sdk/native_a2a/compat/v0_3/README.md** — A2A Protocol Backward Compatibility (v0.3) — This directory (`src/a2a/compat/v0_3/`) provides the foundational types and translation layers necessary for modern `v1.0` clients and servers to interoperate with legacy `v0.3` A2A systems.
+- **kestrel_sdk/native_a2a/compat/v0_3/__init__.py** — —
+- **kestrel_sdk/native_a2a/compat/v0_3/a2a_v0_3.proto** — —
+- **kestrel_sdk/native_a2a/compat/v0_3/a2a_v0_3_pb2.py** — Generated protocol buffer code.
+- **kestrel_sdk/native_a2a/compat/v0_3/a2a_v0_3_pb2.pyi** — —
+- **kestrel_sdk/native_a2a/compat/v0_3/a2a_v0_3_pb2_grpc.py** — Client and server classes corresponding to protobuf-defined services.
+  - `class A2AServiceStub`; `class A2AServiceServicer`; `def add_A2AServiceServicer_to_server(servicer, server)`; `class A2AService`
+- **kestrel_sdk/native_a2a/compat/v0_3/buf.yaml** — (configuration)
+- **kestrel_sdk/native_a2a/compat/v0_3/context_builders.py** — Context builders that add v0.3 backwards-compatibility for extensions.
+  - `class V03ServerCallContextBuilder`; `class V03GrpcServerCallContextBuilder`
+- **kestrel_sdk/native_a2a/compat/v0_3/conversions.py** — —
+  - `def to_core_part(compat_part)`; `def to_compat_part(core_part)`; `def to_core_message(compat_msg)`; `def to_compat_message(core_msg)`; `def to_core_task_status(compat_status)`; `def to_compat_task_status(core_status)`; `def to_core_task(compat_task)`; `def to_compat_task(core_task)`; `…`
+- **kestrel_sdk/native_a2a/compat/v0_3/extension_headers.py** — Shared header name constants for v0.3 extension compatibility.
+  - `def add_legacy_extension_header(parameters)`
+- **kestrel_sdk/native_a2a/compat/v0_3/grpc_handler.py** — —
+  - `class CompatGrpcHandler`
+- **kestrel_sdk/native_a2a/compat/v0_3/grpc_transport.py** — —
+  - `class CompatGrpcTransport`
+- **kestrel_sdk/native_a2a/compat/v0_3/jsonrpc_adapter.py** — —
+  - `class JSONRPC03Adapter`
+- **kestrel_sdk/native_a2a/compat/v0_3/jsonrpc_transport.py** — —
+  - `class CompatJsonRpcTransport`
+- **kestrel_sdk/native_a2a/compat/v0_3/model_conversions.py** — Database model conversions for v0.3 compatibility.
+  - `def core_to_compat_task_model(task, owner)`; `def compat_task_model_to_core(task_model)`; `def core_to_compat_push_notification_config_model(task_id, config, owner, fernet)`; `def compat_push_notification_config_model_to_core(model_instance, task_id)`
+- **kestrel_sdk/native_a2a/compat/v0_3/proto_utils.py** — This file was migrated from the a2a-python SDK version 0.3.
+  - `def dict_to_struct(dictionary)`; `def make_dict_serializable(value)`; `def normalize_large_integers_to_strings(value, max_safe_digits)`; `def parse_string_integers_in_dict(value, max_safe_digits)`; `class ToProto`; `class FromProto`
+- **kestrel_sdk/native_a2a/compat/v0_3/request_handler.py** — —
+  - `class RequestHandler03`
+- **kestrel_sdk/native_a2a/compat/v0_3/rest_adapter.py** — —
+  - `class REST03Adapter`
+- **kestrel_sdk/native_a2a/compat/v0_3/rest_handler.py** — —
+  - `class REST03Handler`
+- **kestrel_sdk/native_a2a/compat/v0_3/rest_transport.py** — —
+  - `class CompatRestTransport`
+- **kestrel_sdk/native_a2a/compat/v0_3/types.py** — —
+  - `class A2A`; `class In`; `class APIKeySecurityScheme`; `class AgentCardSignature`; `class AgentExtension`; `class AgentInterface`; `class AgentProvider`; `class AgentSkill`; `…`
+- **kestrel_sdk/native_a2a/compat/v0_3/versions.py** — Utility functions for protocol version comparison and validation.
+  - `def is_legacy_version(version)`
+- **kestrel_sdk/native_a2a/extensions/__init__.py** — —
+- **kestrel_sdk/native_a2a/extensions/common.py** — —
+  - `def get_requested_extensions(values)`; `def find_extension_by_uri(card, uri)`
+- **kestrel_sdk/native_a2a/helpers/__init__.py** — Helper functions for the A2A Python SDK.
+- **kestrel_sdk/native_a2a/helpers/agent_card.py** — Utility functions for inspecting AgentCard instances.
+  - `def display_agent_card(card)`
+- **kestrel_sdk/native_a2a/helpers/proto_helpers.py** — Unified helper functions for creating and handling A2A types.
+  - `def new_message(parts, context_id, task_id, role)`; `def new_text_message(text, media_type, context_id, task_id, …)`; `def get_message_text(message, delimiter)`; `def new_data_message(data, media_type, context_id, task_id, …)`; `def new_raw_message(raw, media_type, filename, context_id, …)`; `def new_url_message(url, media_type, filename, context_id, …)`; `def new_artifact(parts, name, description, artifact_id)`; `def new_text_artifact(name, text, media_type, description, …)`; `…`
+- **kestrel_sdk/native_a2a/migrations/README.md** — A2A SDK Database Migrations — This directory handles the database schema updates for the A2A SDK.
+- **kestrel_sdk/native_a2a/migrations/__init__.py** — Alembic database migration package.
+- **kestrel_sdk/native_a2a/migrations/env.py** — —
+  - `def run_migrations_offline()`; `def do_run_migrations(connection)`; `async def run_async_migrations()`; `def run_migrations_online()`
+- **kestrel_sdk/native_a2a/migrations/migration_utils.py** — Utility functions for Alembic migrations.
+  - `def table_exists(table_name)`; `def column_exists(table_name, column_name, downgrade_mode)`; `def index_exists(table_name, index_name, downgrade_mode)`; `def add_column(table, column_name, nullable, type_, …)`; `def drop_column(table, column_name)`; `def add_index(table, index_name, columns)`; `def drop_index(table, index_name)`
+- **kestrel_sdk/native_a2a/migrations/script.py.mako** — —
+- **kestrel_sdk/native_a2a/migrations/versions/38ce57e08137_add_column_protocol_version.py** — add column protocol version
+  - `def upgrade()`; `def downgrade()`
+- **kestrel_sdk/native_a2a/migrations/versions/6419d2d130f6_add_columns_owner_last_updated.py** — add_columns_owner_last_updated.
+  - `def upgrade()`; `def downgrade()`
+- **kestrel_sdk/native_a2a/migrations/versions/__init__.py** — Alembic migrations scripts for the A2A project.
+- **kestrel_sdk/native_a2a/migrations/versions/b5e3d1c8a2f7_add_task_version_and_task_events.py** — add task_versions and task_events tables
+  - `def upgrade()`; `def downgrade()`
+- **kestrel_sdk/native_a2a/py.typed** — —
+- **kestrel_sdk/native_a2a/server/__init__.py** — Server-side components for implementing an A2A agent.
+- **kestrel_sdk/native_a2a/server/agent_execution/__init__.py** — Components for executing agent logic within the A2A server.
+- **kestrel_sdk/native_a2a/server/agent_execution/active_task.py** — Active Task execution and data flow architecture.
+  - `class EventConsumer`; `class ActiveTask`
+- **kestrel_sdk/native_a2a/server/agent_execution/active_task_registry.py** — —
+  - `class ActiveTaskRegistry`
+- **kestrel_sdk/native_a2a/server/agent_execution/agent_executor.py** — —
+  - `class AgentExecutor`
+- **kestrel_sdk/native_a2a/server/agent_execution/context.py** — —
+  - `class RequestContext`
+- **kestrel_sdk/native_a2a/server/agent_execution/request_context_builder.py** — —
+  - `class RequestContextBuilder`
+- **kestrel_sdk/native_a2a/server/agent_execution/simple_request_context_builder.py** — —
+  - `class SimpleRequestContextBuilder`
+- **kestrel_sdk/native_a2a/server/cluster/__init__.py** — —
+- **kestrel_sdk/native_a2a/server/cluster/database_event_stream.py** — —
+  - `def stream_response_to_event(response)`; `class DatabaseTaskEventStream`
+- **kestrel_sdk/native_a2a/server/cluster/database_task_store.py** — —
+  - `class VersionedDatabaseTaskStore`
+- **kestrel_sdk/native_a2a/server/cluster/event_stream.py** — —
+  - `class VersionedEvent`; `class TaskEventStream`
+- **kestrel_sdk/native_a2a/server/cluster/task_store.py** — —
+  - `class StoredTask`; `class ConcurrentTaskModificationError`; `class VersionedTaskStore`; `class LegacyTaskStoreAdapter`
+- **kestrel_sdk/native_a2a/server/cluster/version.py** — —
+  - `class TaskVersion`
+- **kestrel_sdk/native_a2a/server/context.py** — Defines the ServerCallContext class.
+  - `class ServerCallContext`
+- **kestrel_sdk/native_a2a/server/events/__init__.py** — Event handling components for the A2A server.
+- **kestrel_sdk/native_a2a/server/events/event_consumer.py** — —
+  - `class EventConsumer`
+- **kestrel_sdk/native_a2a/server/events/event_queue.py** — —
+  - `class EventQueue`; `class EventQueueLegacy`
+- **kestrel_sdk/native_a2a/server/events/event_queue_v2.py** — —
+  - `class EventQueueSource`; `class EventQueueSink`
+- **kestrel_sdk/native_a2a/server/events/in_memory_queue_manager.py** — —
+  - `class InMemoryQueueManager`
+- **kestrel_sdk/native_a2a/server/events/queue_manager.py** — —
+  - `class QueueManager`; `class TaskQueueExists`; `class NoTaskQueue`
+- **kestrel_sdk/native_a2a/server/id_generator.py** — —
+  - `class IDGeneratorContext`; `class IDGenerator`; `class UUIDGenerator`
+- **kestrel_sdk/native_a2a/server/jsonrpc_models.py** — —
+  - `class JSONRPCBaseModel`; `class JSONRPCError`; `class JSONParseError`; `class InvalidRequestError`; `class MethodNotFoundError`; `class InvalidParamsError`; `class InternalError`
+- **kestrel_sdk/native_a2a/server/models.py** — —
+  - `class Base`; `class TaskMixin`; `def create_task_model(table_name, base)`; `class TaskModel`; `class PushNotificationConfigMixin`; `def create_push_notification_config_model(table_name, base)`; `class PushNotificationConfigModel`; `class TaskEventMixin`; `…`
+- **kestrel_sdk/native_a2a/server/owner_resolver.py** — —
+  - `def resolve_user_scope(context)`
+- **kestrel_sdk/native_a2a/server/request_handlers/__init__.py** — Request handler components for the A2A server.
+- **kestrel_sdk/native_a2a/server/request_handlers/default_request_handler.py** — —
+  - `class LegacyRequestHandler`
+- **kestrel_sdk/native_a2a/server/request_handlers/default_request_handler_v2.py** — —
+  - `class DefaultRequestHandlerV2`
+- **kestrel_sdk/native_a2a/server/request_handlers/grpc_handler.py** — —
+  - `class GrpcServerCallContextBuilder`; `class DefaultGrpcServerCallContextBuilder`; `class GrpcHandler`
+- **kestrel_sdk/native_a2a/server/request_handlers/request_handler.py** — —
+  - `class RequestHandler`; `def validate_request_params(method)`; `def validate(expression, error_message, error_type)`
+- **kestrel_sdk/native_a2a/server/request_handlers/response_helpers.py** — Helper functions for building A2A JSON-RPC responses.
+  - `def agent_card_to_dict(card)`; `def build_error_response(request_id, error)`; `def prepare_response_object(request_id, response, success_response_types)`
+- **kestrel_sdk/native_a2a/server/routes/__init__.py** — A2A Routes.
+- **kestrel_sdk/native_a2a/server/routes/_jsonrpc_schema.py** — JSON-RPC envelope schema utilities for A2A server routes.
+  - `def envelope_schema(components)`
+- **kestrel_sdk/native_a2a/server/routes/_proto_schema.py** — Proto → JSON Schema utilities for A2A server routes.
+  - `def field_schema(field, components)`; `def message_schema(descriptor, components)`
+- **kestrel_sdk/native_a2a/server/routes/agent_card_routes.py** — —
+  - `def create_agent_card_routes(agent_card, card_modifier, card_url, cache_control)`
+- **kestrel_sdk/native_a2a/server/routes/common.py** — —
+  - `def serialize_list_tasks_response(response, include_artifacts)`; `def create_event_source_response(content, shutdown_grace_period)`; `class StarletteUser`; `class ServerCallContextBuilder`; `class DefaultServerCallContextBuilder`
+- **kestrel_sdk/native_a2a/server/routes/fastapi_routes.py** — —
+  - `def add_a2a_routes_to_fastapi(app)`
+- **kestrel_sdk/native_a2a/server/routes/jsonrpc_dispatcher.py** — JSON-RPC application for A2A server.
+  - `class JsonRpcDispatcher`
+- **kestrel_sdk/native_a2a/server/routes/jsonrpc_routes.py** — —
+  - `def create_jsonrpc_routes(request_handler, rpc_url, context_builder, enable_v0_3_compat, …)`
+- **kestrel_sdk/native_a2a/server/routes/rest_dispatcher.py** — —
+  - `class RestDispatcher`
+- **kestrel_sdk/native_a2a/server/routes/rest_routes.py** — —
+  - `def create_rest_routes(request_handler, context_builder, enable_v0_3_compat, path_prefix, …)`
+- **kestrel_sdk/native_a2a/server/tasks/__init__.py** — Components for managing tasks within the A2A server.
+- **kestrel_sdk/native_a2a/server/tasks/base_push_notification_sender.py** — —
+  - `class BasePushNotificationSender`
+- **kestrel_sdk/native_a2a/server/tasks/copying_task_store.py** — —
+  - `class CopyingTaskStoreAdapter`
+- **kestrel_sdk/native_a2a/server/tasks/database_push_notification_config_store.py** — —
+  - `class DatabasePushNotificationConfigStore`
+- **kestrel_sdk/native_a2a/server/tasks/database_task_store.py** — —
+  - `class DatabaseTaskStore`
+- **kestrel_sdk/native_a2a/server/tasks/inmemory_push_notification_config_store.py** — —
+  - `class InMemoryPushNotificationConfigStore`
+- **kestrel_sdk/native_a2a/server/tasks/inmemory_task_store.py** — —
+  - `class InMemoryTaskStore`
+- **kestrel_sdk/native_a2a/server/tasks/push_notification_config_store.py** — —
+  - `def normalize_push_notification_config(task_id, notification_config)`; `class PushNotificationConfigStore`
+- **kestrel_sdk/native_a2a/server/tasks/push_notification_sender.py** — —
+  - `class PushNotificationSender`
+- **kestrel_sdk/native_a2a/server/tasks/result_aggregator.py** — —
+  - `class ResultAggregator`
+- **kestrel_sdk/native_a2a/server/tasks/task_manager.py** — —
+  - `def append_artifact_to_task(task, event)`; `class TaskManager`
+- **kestrel_sdk/native_a2a/server/tasks/task_store.py** — —
+  - `class TaskStore`
+- **kestrel_sdk/native_a2a/server/tasks/task_updater.py** — —
+  - `class TaskUpdater`
+- **kestrel_sdk/native_a2a/types/__init__.py** — A2A Types Package - Protocol Buffer and SDK-specific types.
+- **kestrel_sdk/native_a2a/types/a2a_pb2.py** — Generated protocol buffer code.
+- **kestrel_sdk/native_a2a/types/a2a_pb2.pyi** — —
+- **kestrel_sdk/native_a2a/types/a2a_pb2_grpc.py** — Client and server classes corresponding to protobuf-defined services.
+  - `class A2AServiceStub`; `class A2AServiceServicer`; `def add_A2AServiceServicer_to_server(servicer, server)`; `class A2AService`
+- **kestrel_sdk/native_a2a/utils/__init__.py** — Utility functions for the A2A Python SDK.
+- **kestrel_sdk/native_a2a/utils/_async_queue_compat.py** — Cross-version aliases for async queue primitives.
+- **kestrel_sdk/native_a2a/utils/_jcs.py** — RFC 8785 JSON Canonicalization Scheme (JCS).
+  - `class CanonicalizationError`; `def canonicalize(obj)`
+- **kestrel_sdk/native_a2a/utils/constants.py** — Constants for well-known URIs used throughout the A2A Python SDK.
+  - `class TransportProtocol`
+- **kestrel_sdk/native_a2a/utils/error_handlers.py** — —
+  - `def build_error_details(error)`; `def build_rest_error_payload(error)`; `def rest_error_handler(func)`; `def rest_stream_error_handler(func)`
+- **kestrel_sdk/native_a2a/utils/errors.py** — Custom exceptions and error types for A2A server-side errors.
+  - `class ErrorMapping`; `class A2AError`; `class TaskNotFoundError`; `class TaskNotCancelableError`; `class PushNotificationNotSupportedError`; `class UnsupportedOperationError`; `class ContentTypeNotSupportedError`; `class InternalError`; `…`
+- **kestrel_sdk/native_a2a/utils/grpc_status.py** — —
+  - `class GrpcStatus`; `def status_to_grpc(status)`; `def status_from_call(call)`
+- **kestrel_sdk/native_a2a/utils/input_mode_validator.py** — Shared policy for checking message parts against an agent's declared input modes.
+  - `def validate_input_modes(message, agent_card)`
+- **kestrel_sdk/native_a2a/utils/json_utils.py** — JSON serialization helpers for the A2A Python SDK.
+  - `def dumps(obj)`
+- **kestrel_sdk/native_a2a/utils/proto_utils.py** — Utilities for working with proto types.
+  - `def parse_lenient(data, message)`; `def to_stream_response(event)`; `def make_dict_serializable(value)`; `def normalize_large_integers_to_strings(value, max_safe_digits)`; `def parse_string_integers_in_dict(value, max_safe_digits)`; `def parse_params(params, message)`; `class ValidationDetail`; `def validate_proto_required_fields(msg)`; `…`
+- **kestrel_sdk/native_a2a/utils/push_url_validator.py** — Shared policy for screening client-supplied push-notification URLs.
+  - `async def validate_push_notification_url(url)`
+- **kestrel_sdk/native_a2a/utils/signing.py** — —
+  - `class SignatureVerificationError`; `class NoSignatureError`; `class InvalidSignaturesError`; `class ProtectedHeader`; `def create_agent_card_signer(signing_key, protected_header, header)`; `def create_signature_verifier(key_provider, algorithms)`
+- **kestrel_sdk/native_a2a/utils/task.py** — Utility functions for creating A2A Task objects.
+  - `class HistoryLengthConfig`; `def validate_history_length(config)`; `def apply_history_length(task, config)`; `def validate_page_size(page_size)`; `def encode_page_token(task_id)`; `def decode_page_token(page_token)`; `class ListTasksCursor`; `def encode_list_tasks_cursor(cursor)`; `…`
+- **kestrel_sdk/native_a2a/utils/telemetry.py** — OpenTelemetry Tracing Utilities for A2A Python SDK.
+  - `def trace_function(func)`; `def trace_class(include_list, exclude_list, kind)`
+- **kestrel_sdk/native_a2a/utils/version_validator.py** — General utility functions for the A2A Python SDK.
+  - `def validate_version(expected_version)`
+- **kestrel_sdk/native_a2a_custody.py** — Offline custody verification for the packaged modified A2A SDK.
+  - `def verify_vendored_a2a(root)`
 - **kestrel_sdk/operator/__init__.py** — Contracts for feature-owned, authorized operator execution.
 - **kestrel_sdk/operator/context.py** — Authenticated, fail-closed context for operator execution.
   - `class OperatorAuthorizationError`; `class OperatorContext`
@@ -199,10 +448,47 @@ Repo entry points and standard project files.
 
 - **scripts/generate_repo_map.py** — Generate REPO_MAP.md — a file-tree + per-file purpose index for this repo.
   - `class FileEntry`; `def repo_name()`; `def tracked_files()`; `def is_excluded(path)`; `def first_sentence(text, max_chars)`; `def summarize_python(path)`; `def summarize_markdown(path)`; `def summarize_other(path)`; `…`
+- **scripts/vendor_a2a.py** — Import and verify the reviewed A2A SDK in Kestrel's isolated namespace.
+  - `def relocate(text)`; `def import_vendor(root, source, revision, base)`; `def check_vendor(root)`; `def main()`
 
 ## `tests/`
 
 - **tests/__init__.py** — —
+- **tests/native_a2a/client/test_card_resolver.py** — —
+  - `def mock_httpx_client()`; `def base_url()`; `def resolver(mock_httpx_client, base_url)`; `def mock_response()`; `def valid_agent_card_data()`; `class TestA2ACardResolverInit`; `class TestGetAgentCard`; `class TestParseAgentCard`
+- **tests/native_a2a/client/test_client_factory.py** — Tests for the ClientFactory.
+  - `def test_factory_rejects_unsupported_protocol_before_opening_client(binding, version)`; `async def test_factory_selects_native_binding_after_unsupported_first_binding(client_preference)`; `def base_agent_card()`; `def test_client_factory_selects_preferred_transport(base_agent_card)`; `def test_client_factory_selects_secondary_transport_url(base_agent_card)`; `def test_client_factory_server_preference(base_agent_card)`; `def test_client_factory_prefers_1_0_ignoring_patch_version(base_agent_card, v1_version)`; `def test_client_factory_no_compatible_transport(base_agent_card)`; `…`
+- **tests/native_a2a/client/test_client_factory_grpc.py** — Tests for GRPC transport selection in ClientFactory.
+  - `def grpc_agent_card()`; `def test_grpc_priority_1_0(grpc_agent_card)`; `def test_grpc_unsupported_versions_are_rejected(grpc_agent_card)`; `def test_grpc_priority_lt_0_3_raises_value_error(grpc_agent_card)`; `def test_grpc_invalid_version_raises_value_error(grpc_agent_card)`; `def test_grpc_unspecified_version_uses_grpc_transport(grpc_agent_card)`
+- **tests/native_a2a/client/test_discovery_validation.py** — Peer-controlled discovery uses the same decoder as native responses.
+  - `async def test_discovery_normalizes_peer_decoding_errors(body)`; `async def test_discovery_preserves_forward_fields_without_mutating_the_card()`; `async def test_discovery_does_not_misclassify_verifier_failures(error)`
+- **tests/native_a2a/client/test_errors.py** — —
+  - `class TestA2AClientError`; `class TestClientErrorRepr`
+- **tests/native_a2a/client/transports/test_http_helpers.py** — —
+  - `def test_default_sse_error_handler()`; `async def test_parse_sse_stream_edge_cases()`; `async def test_send_http_stream_request_non_sse(mocker)`
+- **tests/native_a2a/client/transports/test_jsonrpc_client.py** — Tests for the JSON-RPC client transport.
+  - `async def async_iterable_from_list(items)`; `def mock_httpx_client(monkeypatch)`; `def agent_card()`; `def transport(mock_httpx_client, agent_card)`; `def transport_with_url(mock_httpx_client)`; `def create_send_message_request(text)`; `class TestJsonRpcTransportInit`; `class TestSendMessage`; `…`
+- **tests/native_a2a/client/transports/test_response_decoding.py** — Malformed peer data is typed without catching local transport callbacks.
+  - `async def invoke(transport, method, params)`; `def peer_response(request, binding, method, fault)`; `def transport_for(http, binding)`; `async def test_malformed_json_is_typed_on_every_operation(binding, method, params, fault)`; `async def test_malformed_known_protobuf_response_field_is_typed(binding, method, params)`; `async def test_nonfinite_json_never_becomes_a_task(binding, fault)`; `async def test_local_admission_exception_is_preserved_before_response_decoding(binding, method, params, kind)`; `async def test_valid_data_strings_survive_response_decoding(binding)`; `…`
+- **tests/native_a2a/client/transports/test_rest_client.py** — —
+  - `def mock_httpx_client()`; `def mock_agent_card()`; `async def async_iterable_from_list(items)`; `class TestRestTransport`; `class TestRestTransportExtensions`; `class TestTaskCallback`; `class TestRestTransportTenant`; `class TestRestUnrecognizedResponseFields`
+- **tests/native_a2a/server/routes/test_agent_card_routes.py** — —
+  - `def agent_card()`; `def test_get_agent_card_success(agent_card)`; `def test_get_agent_card_with_modifier(agent_card)`; `def test_agent_card_custom_url(agent_card)`; `def card_client()`; `def test_response_carries_a_weak_etag()`; `def test_cache_control_is_sent_only_when_configured()`; `def test_etag_changes_with_the_card()`; `…`
+- **tests/native_a2a/server/routes/test_http_authorization_errors.py** — HTTP authorization errors remain HTTP errors on both native bindings.
+  - `class RejectingHandler`; `async def test_native_routes_preserve_http_authorization_errors(status_code, tenant, binding, method, …)`
+- **tests/native_a2a/utils/jcs_depth_vectors.json** — (configuration)
+- **tests/native_a2a/utils/jcs_vectors.json** — (configuration)
+- **tests/native_a2a/utils/signing_interop_vectors.json** — (configuration)
+- **tests/native_a2a/utils/test_jcs.py** — RFC 8785 (JCS) conformance tests for Agent Card canonicalization.
+  - `def test_vector_corpus_is_complete()`; `def test_vector_must_accept(vector)`; `def test_vector_must_reject(vector)`; `def test_vector_agrees_with_independent_implementation(vector)`; `def test_non_ascii_is_emitted_as_literal_utf8()`; `def test_line_and_paragraph_separators_are_not_escaped()`; `def test_mandatory_escapes_are_still_applied()`; `def test_non_bmp_characters_survive_as_literal_utf8()`; `…`
+- **tests/native_a2a/utils/test_proto_utils.py** — Tests for kestrel_sdk.native_a2a.utils.proto_utils module.
+  - `class TestToStreamResponse`; `class TestDictSerialization`; `class TestFieldIsRepeatedFallback`; `class TestRestParams`; `class TestValidateProtoRequiredFields`; `class TestWarnOnMissingRequiredFields`; `class TestParseLenient`
+- **tests/native_a2a/utils/test_signing.py** — —
+  - `def create_key_provider(verification_key)`; `def sample_agent_card()`; `def test_signer_and_verifier_symmetric(sample_agent_card)`; `def test_signer_and_verifier_symmetric_multiple_signatures(sample_agent_card)`; `def test_signer_and_verifier_asymmetric(sample_agent_card)`; `def test_canonicalize_agent_card(sample_agent_card)`; `def test_canonicalize_agent_card_preserves_false_capability(sample_agent_card)`; `def test_canonicalize_agent_card_warns_about_missing_required_fields(caplog)`
+- **tests/native_a2a/utils/test_signing_interop.py** — Cross-SDK Agent Card signature tests.
+  - `def test_vector_corpus_is_complete()`; `def test_card_signed_by_any_sdk_verifies(vector)`; `def test_card_canonical_bytes_are_the_shared_form(vector)`; `def test_card_edited_after_signing_is_rejected(vector)`; `def test_malformed_signature_does_not_hide_independent_valid_signature(vector, protected)`; `def test_malformed_only_signature_has_a_verification_error(protected)`; `def test_verifier_does_not_swallow_key_provider_failures(failure)`; `def test_hostile_key_family_does_not_hide_independent_ec_signature(hostile_algorithm, valid_follows)`; `…`
+- **tests/native_a2a/utils/test_signing_presence.py** — Agent Card field-presence rules from A2A 1.0 section 8.4.1.
+  - `def test_public_signing_obeys_field_presence(case)`; `def test_explicit_empty_optional_field_is_signed(field)`
 - **tests/test_channel_delivery_contracts.py** — —
   - `class EchoChannel`; `class EchoDeliveryProvider`; `def test_async_channel_contract()`; `def test_async_delivery_contract()`; `def test_output_event_envelope_serializes_destination()`; `def test_entry_point_group_constants_are_stable()`
 - **tests/test_command_argument_binding.py** — ``!command`` argument binding: quoting, ``name=value`` and named failures (#73).
@@ -285,6 +571,8 @@ Repo entry points and standard project files.
   - `def test_packaged_fixture_keeps_causation_and_authority_on_different_axes()`; `def test_packaged_fixture_pins_fail_closed_and_restart_matrix()`; `def test_wire_chain_accessors_return_fresh_json_compatible_values()`; `def test_parser_rejects_relationship_or_matrix_collapse(mutation, message)`
 - **tests/test_vector_search_protocol.py** — Tests for vector search backend protocol.
   - `class StubVectorSearchBackend`; `async def test_vector_search_backend_conformance()`; `async def test_vector_search_backend_callable()`; `async def test_vector_search_backend_without_filter()`; `async def test_vector_search_backend_supports_filters_property()`; `async def test_vector_search_backend_returns_tuples()`
+- **tests/test_vendored_a2a.py** — Custody, isolation and packaging contracts for the modified official SDK.
+  - `def test_import_uses_the_pinned_git_tree_and_refuses_overwrite(tmp_path)`; `def test_relocation_changes_modules_but_preserves_protocol_identifiers()`; `def test_checked_in_sdk_reproduces_reviewed_source_and_license()`; `def test_optional_migration_cli_resolves_its_actual_packaged_resources(tmp_path)`; `def test_vendor_custody_rejects_changed_sources_and_provenance(tmp_path, mutation)`; `def test_sdk_imports_never_load_the_external_a2a_package()`; `def test_vendored_runtime_dependencies_are_declared_without_external_sdk()`
 - **tests/test_voice_provider_contract.py** — —
   - `async def test_single_tool_providers_remain_batch_compatible()`; `async def test_parallel_provider_can_commit_one_batch()`; `def test_conversation_capabilities_serialize_specialized_tools()`; `def test_legacy_provider_gets_conservative_capabilities()`; `def test_provider_scoped_voices_do_not_leak_between_catalogs()`; `def test_provider_scoped_voice_keys_are_normalized()`; `def test_transcript_updates_can_declare_cumulative_corrections()`; `def test_legacy_tts_provider_gets_format_capabilities()`; `…`
 - **tests/test_waitable.py** — Tests for the Waitable provider contract.

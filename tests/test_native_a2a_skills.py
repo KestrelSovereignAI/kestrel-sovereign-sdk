@@ -9,7 +9,7 @@ import sys
 import pytest
 from google.protobuf.json_format import MessageToDict
 
-from a2a.types import AgentSkill, InvalidParamsError
+from kestrel_sdk.native_a2a.types import AgentSkill, InvalidParamsError
 from kestrel_sdk.features.base import Feature, tool
 from kestrel_sdk.tools.base import ToolCategory
 
@@ -114,8 +114,10 @@ import sys
 
 class BlockA2A(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
+        if fullname == "google.protobuf" or fullname.startswith("google.protobuf."):
+            raise ModuleNotFoundError("blocked optional protobuf", name="google.protobuf")
         if fullname == "a2a" or fullname.startswith("a2a."):
-            raise ModuleNotFoundError("blocked optional a2a", name="a2a")
+            raise AssertionError("external A2A SDK must not be imported")
 sys.meta_path.insert(0, BlockA2A())
 from kestrel_sdk.features.base import Feature, tool
 
@@ -130,10 +132,11 @@ class Example(Feature):
 feature = Example(agent=None)
 assert asyncio.run(feature.get_tools()[0].execute(text="hello"))["result"] == {"text": "hello"}
 assert not any(name == "a2a" or name.startswith("a2a.") for name in sys.modules)
+assert not any(name.startswith("kestrel_sdk.native_a2a") for name in sys.modules)
 try:
     feature.get_agent_skills()
 except ModuleNotFoundError as error:
-    assert error.name == "a2a"
+    assert error.name == "google.protobuf"
 else:
     raise AssertionError("native skill contribution requires the optional a2a extra")
 '''
