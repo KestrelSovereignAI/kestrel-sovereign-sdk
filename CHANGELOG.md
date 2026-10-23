@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.42.1
+
+### Fixed
+
+- JSON-RPC and HTTP+JSON server handlers now require the Major.Minor protocol
+  release from the `A2A-Version` header in unary and streaming requests. They reject unsupported minor releases
+  with VersionNotSupportedError and continue to ignore specification patch numbers.
+  Client interface selection and server validation share one version parser.
+  The retained optional gRPC handler does not negotiate `A2A-Version` metadata;
+  that existing gap is tracked in [#91](https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk/issues/91).
+
 ## 0.42.0
 
 ### Added

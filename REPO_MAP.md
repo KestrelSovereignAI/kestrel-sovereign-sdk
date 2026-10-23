@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 316 tracked files (283 `.py`, 8 `.md`, 25 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 319 tracked files (286 `.py`, 8 `.md`, 25 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -144,7 +144,7 @@ Repo entry points and standard project files.
 - **kestrel_sdk/native_a2a/client/client.py** — —
   - `class ClientConfig`; `class ClientCallContext`; `class Client`
 - **kestrel_sdk/native_a2a/client/client_factory.py** — —
-  - `def major_minor(version)`; `class ClientFactory`; `async def create_client(agent, client_config, interceptors, relative_card_path, …)`; `def minimal_agent_card(url, transports)`
+  - `class ClientFactory`; `async def create_client(agent, client_config, interceptors, relative_card_path, …)`; `def minimal_agent_card(url, transports)`
 - **kestrel_sdk/native_a2a/client/errors.py** — Custom exceptions for the A2A client.
   - `class A2AClientError`; `class AgentCardResolutionError`; `class A2AClientTimeoutError`
 - **kestrel_sdk/native_a2a/client/interceptors.py** — —
@@ -363,6 +363,8 @@ Repo entry points and standard project files.
   - `def trace_function(func)`; `def trace_class(include_list, exclude_list, kind)`
 - **kestrel_sdk/native_a2a/utils/version_validator.py** — General utility functions for the A2A Python SDK.
   - `def validate_version(expected_version)`
+- **kestrel_sdk/native_a2a/utils/versioning.py** — Protocol compatibility is determined by the Major.Minor release.
+  - `def major_minor(version)`
 - **kestrel_sdk/native_a2a_custody.py** — Offline custody verification for the packaged modified A2A SDK.
   - `def verify_vendored_a2a(root)`
 - **kestrel_sdk/operator/__init__.py** — Contracts for feature-owned, authorized operator execution.
@@ -489,6 +491,10 @@ Repo entry points and standard project files.
   - `def test_vector_corpus_is_complete()`; `def test_card_signed_by_any_sdk_verifies(vector)`; `def test_card_canonical_bytes_are_the_shared_form(vector)`; `def test_card_edited_after_signing_is_rejected(vector)`; `def test_malformed_signature_does_not_hide_independent_valid_signature(vector, protected)`; `def test_malformed_only_signature_has_a_verification_error(protected)`; `def test_verifier_does_not_swallow_key_provider_failures(failure)`; `def test_hostile_key_family_does_not_hide_independent_ec_signature(hostile_algorithm, valid_follows)`; `…`
 - **tests/native_a2a/utils/test_signing_presence.py** — Agent Card field-presence rules from A2A 1.0 section 8.4.1.
   - `def test_public_signing_obeys_field_presence(case)`; `def test_explicit_empty_optional_field_is_signed(field)`
+- **tests/native_a2a/utils/test_version_validation.py** — Tests for version validation decorators.
+  - `class TestHandler`; `async def test_validate_version_success()`; `async def test_validate_version_case_insensitive()`; `async def test_validate_version_mismatch()`; `async def test_validate_version_missing_defaults_to_0_3()`; `async def test_validate_version_async_gen_success()`; `async def test_validate_version_async_gen_failure()`; `async def test_validate_version_no_context()`; `…`
+- **tests/native_a2a/utils/test_versioning.py** — Canonical version parsing shared by client selection and server handlers.
+  - `def test_protocol_release(version, release)`; `def test_invalid_protocol_version()`; `def test_invalid_handler_configuration_fails_at_decoration()`
 - **tests/test_channel_delivery_contracts.py** — —
   - `class EchoChannel`; `class EchoDeliveryProvider`; `def test_async_channel_contract()`; `def test_async_delivery_contract()`; `def test_output_event_envelope_serializes_destination()`; `def test_entry_point_group_constants_are_stable()`
 - **tests/test_command_argument_binding.py** — ``!command`` argument binding: quoting, ``name=value`` and named failures (#73).

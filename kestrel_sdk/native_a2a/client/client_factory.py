@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from packaging.version import InvalidVersion, Version
+from packaging.version import InvalidVersion
 
 from kestrel_sdk.native_a2a.client.base_client import BaseClient
 from kestrel_sdk.native_a2a.client.card_resolver import A2ACardResolver
@@ -28,6 +28,7 @@ from kestrel_sdk.native_a2a.utils.constants import (
     VERSION_HEADER,
     TransportProtocol,
 )
+from kestrel_sdk.native_a2a.utils.versioning import major_minor
 
 
 if TYPE_CHECKING:
@@ -47,12 +48,6 @@ TransportProducer = Callable[
     [AgentCard, str, ClientConfig],
     ClientTransport,
 ]
-
-
-def major_minor(version: str) -> tuple[int, int]:
-    """Returns the `Major.Minor` release of a protocol version."""
-    v = Version(version)
-    return (v.major, v.minor)
 
 
 class ClientFactory:
