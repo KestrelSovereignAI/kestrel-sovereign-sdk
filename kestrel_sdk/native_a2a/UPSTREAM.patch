@@ -1,8 +1,121 @@
+diff --git a/src/a2a/client/card_resolver.py b/src/a2a/client/card_resolver.py
+index 4479135..31e9a5b 100644
+--- a/src/a2a/client/card_resolver.py
++++ b/src/a2a/client/card_resolver.py
+@@ -1,4 +1,3 @@
+-import json
+ import logging
+ 
+ from collections.abc import Callable
+@@ -6,9 +5,13 @@ from typing import Any
+ 
+ import httpx
+ 
+-from google.protobuf.json_format import ParseDict, ParseError
++from google.protobuf.json_format import ParseError
+ 
+-from a2a.client.errors import AgentCardResolutionError
++from a2a.client.errors import A2AClientError, AgentCardResolutionError
++from a2a.client.transports.response_parsing import (
++    load_json_value,
++    parse_protobuf_response,
++)
+ from a2a.types.a2a_pb2 import (
+     AgentCard,
+ )
+@@ -29,7 +32,10 @@ def parse_agent_card(agent_card_data: dict[str, Any]) -> AgentCard:
+     except (TypeError, AttributeError) as e:
+         raise ParseError(f'Invalid agent card structure: {e}') from e
+ 
+-    return ParseDict(agent_card_data, AgentCard(), ignore_unknown_fields=True)
++    try:
++        return parse_protobuf_response(agent_card_data, AgentCard())
++    except A2AClientError as e:
++        raise ParseError(f'Invalid agent card structure: {e}') from e
+ 
+ 
+ def _handle_extended_card_compatibility(
+@@ -191,31 +197,35 @@ class A2ACardResolver:
+                 **(http_kwargs or {}),
+             )
+             response.raise_for_status()
+-            agent_card_data = response.json()
+-            logger.info(
+-                'Successfully fetched agent card data from %s: %s',
+-                target_url,
+-                agent_card_data,
+-            )
+-            agent_card = parse_agent_card(agent_card_data)
+-            if signature_verifier:
+-                signature_verifier(agent_card)
+         except httpx.HTTPStatusError as e:
+             raise AgentCardResolutionError(
+                 f'Failed to fetch agent card from {target_url} (HTTP {e.response.status_code}): {e}',
+                 status_code=e.response.status_code,
+             ) from e
+-        except json.JSONDecodeError as e:
+-            raise AgentCardResolutionError(
+-                f'Failed to parse JSON for agent card from {target_url}: {e}'
+-            ) from e
+         except httpx.RequestError as e:
+             raise AgentCardResolutionError(
+                 f'Network communication error fetching agent card from {target_url}: {e}',
+             ) from e
++        try:
++            agent_card_data = load_json_value(response.content)
++        except A2AClientError as e:
++            raise AgentCardResolutionError(
++                f'Failed to parse JSON for agent card from {target_url}: {e}'
++            ) from e
++
++        try:
++            agent_card = parse_agent_card(agent_card_data)
+         except ParseError as e:
+             raise AgentCardResolutionError(
+                 f'Failed to validate agent card structure from {target_url}: {e}'
+             ) from e
+ 
++        # Verifier/key-provider failures are not peer JSON or HTTP errors.
++        if signature_verifier:
++            signature_verifier(agent_card)
++        logger.info(
++            'Successfully fetched agent card data from %s: %s',
++            target_url,
++            agent_card_data,
++        )
+         return agent_card
 diff --git a/src/a2a/client/client_factory.py b/src/a2a/client/client_factory.py
-index e43207c..db62667 100644
+index e43207c..42ea7c4 100644
 --- a/src/a2a/client/client_factory.py
 +++ b/src/a2a/client/client_factory.py
-@@ -77,6 +77,9 @@ class ClientFactory:
+@@ -16,14 +16,12 @@ from a2a.client.transports.base import ClientTransport
+ from a2a.client.transports.jsonrpc import JsonRpcTransport
+ from a2a.client.transports.rest import RestTransport
+ from a2a.client.transports.tenant_decorator import TenantTransportDecorator
+-from a2a.compat.v0_3.versions import is_legacy_version
+ from a2a.types.a2a_pb2 import (
+     AgentCapabilities,
+     AgentCard,
+     AgentInterface,
+ )
+ from a2a.utils.constants import (
+-    PROTOCOL_VERSION_0_3,
+     PROTOCOL_VERSION_1_0,
+     PROTOCOL_VERSION_CURRENT,
+     VERSION_HEADER,
+@@ -41,11 +39,6 @@ except ImportError:
+     GrpcTransport = None  # type: ignore # pyright: ignore
+ 
+ 
+-try:
+-    from a2a.compat.v0_3.grpc_transport import CompatGrpcTransport
+-except ImportError:
+-    CompatGrpcTransport = None  # type: ignore # pyright: ignore
+-
+ logger = logging.getLogger(__name__)
+ 
+ 
+@@ -77,6 +70,9 @@ class ClientFactory:
  
      The client can be used consistently regardless of the transport. This
      aligns the client configuration with the server's capabilities.
@@ -12,7 +125,7 @@ index e43207c..db62667 100644
      """
  
      def __init__(
-@@ -84,16 +87,25 @@ class ClientFactory:
+@@ -84,16 +80,25 @@ class ClientFactory:
          config: ClientConfig | None = None,
      ):
          config = config or ClientConfig()
@@ -43,24 +156,32 @@ index e43207c..db62667 100644
      def _register_defaults(self, supported: list[str]) -> None:
          # Empty support list implies JSON-RPC only.
  
-@@ -115,21 +127,25 @@ class ClientFactory:
-                     else PROTOCOL_VERSION_CURRENT
-                 )
- 
-+                httpx_client, is_shared_httpx = self._resolve_http_client()
-+
-                 if is_legacy_version(version):
-                     from a2a.compat.v0_3.jsonrpc_transport import (  # noqa: PLC0415
-                         CompatJsonRpcTransport,
-                     )
- 
-                     return CompatJsonRpcTransport(
+@@ -104,32 +109,13 @@ class ClientFactory:
+                 url: str,
+                 config: ClientConfig,
+             ) -> ClientTransport:
+-                interface = ClientFactory._find_best_interface(
+-                    list(card.supported_interfaces),
+-                    protocol_bindings=[TransportProtocol.JSONRPC],
+-                    url=url,
+-                )
+-                version = (
+-                    interface.protocol_version
+-                    if interface
+-                    else PROTOCOL_VERSION_CURRENT
+-                )
+-
+-                if is_legacy_version(version):
+-                    from a2a.compat.v0_3.jsonrpc_transport import (  # noqa: PLC0415
+-                        CompatJsonRpcTransport,
+-                    )
+-
+-                    return CompatJsonRpcTransport(
 -                        self._httpx_client,
-+                        httpx_client,
-                         card,
-                         url,
-+                        is_shared_httpx=is_shared_httpx,
-                     )
+-                        card,
+-                        url,
+-                    )
++                httpx_client, is_shared_httpx = self._resolve_http_client()
  
                  return JsonRpcTransport(
 -                    self._httpx_client,
@@ -71,24 +192,32 @@ index e43207c..db62667 100644
                  )
  
              self.register(
-@@ -154,21 +170,25 @@ class ClientFactory:
-                     else PROTOCOL_VERSION_CURRENT
-                 )
- 
-+                httpx_client, is_shared_httpx = self._resolve_http_client()
-+
-                 if is_legacy_version(version):
-                     from a2a.compat.v0_3.rest_transport import (  # noqa: PLC0415
-                         CompatRestTransport,
-                     )
- 
-                     return CompatRestTransport(
+@@ -143,32 +129,13 @@ class ClientFactory:
+                 url: str,
+                 config: ClientConfig,
+             ) -> ClientTransport:
+-                interface = ClientFactory._find_best_interface(
+-                    list(card.supported_interfaces),
+-                    protocol_bindings=[TransportProtocol.HTTP_JSON],
+-                    url=url,
+-                )
+-                version = (
+-                    interface.protocol_version
+-                    if interface
+-                    else PROTOCOL_VERSION_CURRENT
+-                )
+-
+-                if is_legacy_version(version):
+-                    from a2a.compat.v0_3.rest_transport import (  # noqa: PLC0415
+-                        CompatRestTransport,
+-                    )
+-
+-                    return CompatRestTransport(
 -                        self._httpx_client,
-+                        httpx_client,
-                         card,
-                         url,
-+                        is_shared_httpx=is_shared_httpx,
-                     )
+-                        card,
+-                        url,
+-                    )
++                httpx_client, is_shared_httpx = self._resolve_http_client()
  
                  return RestTransport(
 -                    self._httpx_client,
@@ -99,7 +228,80 @@ index e43207c..db62667 100644
                  )
  
              self.register(
-@@ -273,8 +293,9 @@ class ClientFactory:
+@@ -189,25 +156,6 @@ class ClientFactory:
+                 url: str,
+                 config: ClientConfig,
+             ) -> ClientTransport:
+-                # The interface has already been selected and passed as `url`.
+-                # We determine its version to use the appropriate transport implementation.
+-                interface = ClientFactory._find_best_interface(
+-                    list(card.supported_interfaces),
+-                    protocol_bindings=[TransportProtocol.GRPC],
+-                    url=url,
+-                )
+-                version = (
+-                    interface.protocol_version
+-                    if interface
+-                    else PROTOCOL_VERSION_CURRENT
+-                )
+-
+-                if (
+-                    is_legacy_version(version)
+-                    and CompatGrpcTransport is not None
+-                ):
+-                    return CompatGrpcTransport.create(card, url, config)
+-
+                 return _grpc_transport.create(card, url, config)
+ 
+             self.register(
+@@ -235,33 +183,22 @@ class ClientFactory:
+         if not candidates:
+             return None
+ 
+-        # Prefer interface with version 1.0. Patch versions must not affect
+-        # negotiation, so '1.0.0' counts as '1.0'.
+-        v1_0 = major_minor(PROTOCOL_VERSION_1_0)
+-        v0_3 = major_minor(PROTOCOL_VERSION_0_3)
+-
+-        best_gt_1_0 = None
+-        best_ge_0_3 = None
+-        best_no_version = None
+-
+-        for i in candidates:
+-            if not i.protocol_version:
+-                if best_no_version is None:
+-                    best_no_version = i
++        # This maintained native client supports A2A 1.0, including patch
++        # revisions. Missing versions are only useful for minimal bootstrap
++        # cards; an advertised unsupported version must never select 0.3 code.
++        native_version = major_minor(PROTOCOL_VERSION_1_0)
++        unversioned = None
++        for interface in candidates:
++            if not interface.protocol_version:
++                if unversioned is None:
++                    unversioned = interface
+                 continue
+-
+             try:
+-                v = major_minor(i.protocol_version)
+-                if v == v1_0:
+-                    return i
+-                if best_gt_1_0 is None and v > v1_0:
+-                    best_gt_1_0 = i
+-                if best_ge_0_3 is None and v >= v0_3:
+-                    best_ge_0_3 = i
++                if major_minor(interface.protocol_version) == native_version:
++                    return interface
+             except InvalidVersion:
+-                pass
+-
+-        return best_gt_1_0 or best_ge_0_3 or best_no_version
++                continue
++        return unversioned
+ 
+     async def create_from_url(
+         self,
+@@ -273,8 +210,9 @@ class ClientFactory:
      ) -> Client:
          """Create a `Client` by resolving an `AgentCard` from a URL.
  
@@ -111,7 +313,7 @@ index e43207c..db62667 100644
  
          If the agent card is already available, use `create` directly
          instead.
-@@ -295,12 +316,17 @@ class ClientFactory:
+@@ -295,12 +233,17 @@ class ClientFactory:
          Returns:
            A `Client` object.
          """
@@ -135,6 +337,16 @@ index e43207c..db62667 100644
          return self.create(card, interceptors)
  
      def register(self, label: str, generator: TransportProducer) -> None:
+@@ -349,7 +292,8 @@ class ClientFactory:
+                         list(card.supported_interfaces),
+                         protocol_bindings=[transport_protocol],
+                     )
+-                    break
++                    if selected_interface:
++                        break
+         if not transport_protocol or not selected_interface:
+             raise ValueError('no compatible transports found.')
+         if transport_protocol not in self._registry:
 diff --git a/src/a2a/client/errors.py b/src/a2a/client/errors.py
 index 4d3802d..853ff59 100644
 --- a/src/a2a/client/errors.py
@@ -1145,12 +1357,12 @@ index d8e3189..919c660 100644
              if violation:
                  errors.append(violation)
 diff --git a/src/a2a/utils/signing.py b/src/a2a/utils/signing.py
-index c6540d1..8af4bad 100644
+index c6540d1..7fb2310 100644
 --- a/src/a2a/utils/signing.py
 +++ b/src/a2a/utils/signing.py
-@@ -1,9 +1,10 @@
- import json
- 
+@@ -1,9 +1,8 @@
+-import json
+-
  from collections.abc import Callable
 -from typing import Any, TypedDict
 +from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -1160,7 +1372,16 @@ index c6540d1..8af4bad 100644
  
  
  try:
-@@ -21,8 +22,16 @@ except ImportError as e:
+@@ -12,7 +11,7 @@ try:
+     from jwt import api_jws
+     from jwt.api_jwk import PyJWK
+     from jwt.exceptions import PyJWTError
+-    from jwt.utils import base64url_decode, base64url_encode
++    from jwt.utils import base64url_encode
+ except ImportError as e:
+     raise ImportError(
+         'A2A Signing requires PyJWT to be installed. '
+@@ -21,8 +20,16 @@ except ImportError as e:
      ) from e
  
  from a2a.types import AgentCard, AgentCardSignature
@@ -1179,7 +1400,35 @@ index c6540d1..8af4bad 100644
  
  
  class SignatureVerificationError(Exception):
-@@ -165,36 +174,56 @@ def create_signature_verifier(
+@@ -139,16 +146,20 @@ def create_signature_verifier(
+ 
+         for agent_card_signature in agent_card.signatures:
+             try:
+-                # get verification key
+-                protected_header_json = base64url_decode(
+-                    agent_card_signature.protected.encode('utf-8')
+-                ).decode('utf-8')
+-                protected_header = json.loads(protected_header_json)
++                token = f'{agent_card_signature.protected}.{encoded_payload}.{agent_card_signature.signature}'
++                protected_header = api_jws.get_unverified_header(token)
+                 kid = protected_header.get('kid')
+                 jku = protected_header.get('jku')
+-                verification_key = key_provider(kid, jku)
++                if (kid is not None and not isinstance(kid, str)) or (
++                    jku is not None and not isinstance(jku, str)
++                ):
++                    continue
++            except (PyJWTError, UnicodeError, RecursionError):
++                continue
+ 
+-                token = f'{agent_card_signature.protected}.{encoded_payload}.{agent_card_signature.signature}'
++            # Key-provider/network failures remain visible to the caller.
++            try:
++                verification_key = key_provider(kid, jku)
+                 jwt.decode(
+                     jwt=token,
+                     key=verification_key,
+@@ -165,36 +176,56 @@ def create_signature_verifier(
      return signature_verifier
  
  
@@ -1264,7 +1513,7 @@ index c6540d1..8af4bad 100644
  
  
  def _canonicalize_agent_card(agent_card: AgentCard) -> str:
-@@ -204,10 +233,10 @@ def _canonicalize_agent_card(agent_card: AgentCard) -> str:
+@@ -204,10 +235,10 @@ def _canonicalize_agent_card(agent_card: AgentCard) -> str:
      )
      card_dict = MessageToDict(
          agent_card,
@@ -1278,8 +1527,139 @@ index c6540d1..8af4bad 100644
 -    return canonicalize(cleaned_dict)
 +    _apply_field_presence(agent_card, card_dict)
 +    return canonicalize(card_dict)
+diff --git a/tests/client/test_card_resolver.py b/tests/client/test_card_resolver.py
+index a964025..b3672fe 100644
+--- a/tests/client/test_card_resolver.py
++++ b/tests/client/test_card_resolver.py
+@@ -139,7 +139,7 @@ class TestGetAgentCard:
+         valid_agent_card_data,
+     ):
+         """Test successful agent card fetch using default path."""
+-        mock_response.json.return_value = valid_agent_card_data
++        mock_response.content = json.dumps(valid_agent_card_data).encode()
+         mock_httpx_client.get.return_value = mock_response
+ 
+         result = await resolver.get_agent_card()
+@@ -147,7 +147,6 @@ class TestGetAgentCard:
+             f'{base_url}/{AGENT_CARD_WELL_KNOWN_PATH[1:]}',
+         )
+         mock_response.raise_for_status.assert_called_once()
+-        mock_response.json.assert_called_once()
+         assert result is not None
+         assert isinstance(result, AgentCard)
+ 
+@@ -162,7 +161,7 @@ class TestGetAgentCard:
+     ):
+         """Test successful agent card fetch using custom relative path."""
+         custom_path = 'custom/path/card'
+-        mock_response.json.return_value = valid_agent_card_data
++        mock_response.content = json.dumps(valid_agent_card_data).encode()
+         mock_httpx_client.get.return_value = mock_response
+         await resolver.get_agent_card(relative_card_path=custom_path)
+ 
+@@ -181,7 +180,7 @@ class TestGetAgentCard:
+     ):
+         """Test successful agent card fetch using custom path with leading slash."""
+         custom_path = '/custom/path/card'
+-        mock_response.json.return_value = valid_agent_card_data
++        mock_response.content = json.dumps(valid_agent_card_data).encode()
+         mock_httpx_client.get.return_value = mock_response
+         await resolver.get_agent_card(relative_card_path=custom_path)
+ 
+@@ -199,7 +198,7 @@ class TestGetAgentCard:
+         valid_agent_card_data,
+     ):
+         """Test that http_kwargs are passed to httpx.get."""
+-        mock_response.json.return_value = valid_agent_card_data
++        mock_response.content = json.dumps(valid_agent_card_data).encode()
+         mock_httpx_client.get.return_value = mock_response
+         http_kwargs = {
+             'timeout': 30,
+@@ -222,7 +221,7 @@ class TestGetAgentCard:
+         valid_agent_card_data,
+     ):
+         """Test fetching agent card from root path."""
+-        mock_response.json.return_value = valid_agent_card_data
++        mock_response.content = json.dumps(valid_agent_card_data).encode()
+         mock_httpx_client.get.return_value = mock_response
+         await resolver.get_agent_card(relative_card_path='/')
+         mock_httpx_client.get.assert_called_once_with(f'{base_url}')
+@@ -238,7 +237,7 @@ class TestGetAgentCard:
+     ):
+         """Test fetching agent card when the resolver's agent_card_path is empty."""
+         resolver.agent_card_path = ''
+-        mock_response.json.return_value = valid_agent_card_data
++        mock_response.content = json.dumps(valid_agent_card_data).encode()
+         mock_httpx_client.get.return_value = mock_response
+         await resolver.get_agent_card()
+         mock_httpx_client.get.assert_called_once_with(f'{base_url}')
+@@ -268,9 +267,7 @@ class TestGetAgentCard:
+         self, resolver, mock_httpx_client, mock_response
+     ):
+         """Test A2AClientJSONError raised on JSON decode error."""
+-        mock_response.json.side_effect = json.JSONDecodeError(
+-            'Invalid JSON', '', 0
+-        )
++        mock_response.content = b'invalid JSON'
+         mock_httpx_client.get.return_value = mock_response
+         with pytest.raises(AgentCardResolutionError) as exc_info:
+             await resolver.get_agent_card()
+@@ -299,7 +296,7 @@ class TestGetAgentCard:
+     ):
+         """Test A2AClientJSONError is raised on agent card validation error."""
+         return_json = {'name': {'invalid': 'type'}}
+-        mock_response.json.return_value = return_json
++        mock_response.content = json.dumps(return_json).encode()
+         mock_httpx_client.get.return_value = mock_response
+         with pytest.raises(AgentCardResolutionError) as exc_info:
+             await resolver.get_agent_card()
+@@ -393,7 +390,7 @@ class TestGetAgentCard:
+         valid_agent_card_data,
+         caplog,
+     ):
+-        mock_response.json.return_value = valid_agent_card_data
++        mock_response.content = json.dumps(valid_agent_card_data).encode()
+         mock_httpx_client.get.return_value = mock_response
+         with caplog.at_level(logging.INFO):
+             await resolver.get_agent_card()
+@@ -412,7 +409,7 @@ class TestGetAgentCard:
+         valid_agent_card_data,
+     ):
+         """Test that None relative_card_path uses default path."""
+-        mock_response.json.return_value = valid_agent_card_data
++        mock_response.content = json.dumps(valid_agent_card_data).encode()
+         mock_httpx_client.get.return_value = mock_response
+ 
+         await resolver.get_agent_card(relative_card_path=None)
+@@ -430,7 +427,7 @@ class TestGetAgentCard:
+         valid_agent_card_data,
+     ):
+         """Test that empty string relative_card_path uses default path."""
+-        mock_response.json.return_value = valid_agent_card_data
++        mock_response.content = json.dumps(valid_agent_card_data).encode()
+         mock_httpx_client.get.return_value = mock_response
+ 
+         await resolver.get_agent_card(relative_card_path='')
+@@ -460,7 +457,7 @@ class TestGetAgentCard:
+         self, resolver, mock_httpx_client, mock_response, valid_agent_card_data
+     ):
+         """Test that get_agent_card returns an AgentCard instance."""
+-        mock_response.json.return_value = valid_agent_card_data
++        mock_response.content = json.dumps(valid_agent_card_data).encode()
+         mock_httpx_client.get.return_value = mock_response
+         result = await resolver.get_agent_card()
+         assert isinstance(result, AgentCard)
+@@ -474,7 +471,7 @@ class TestGetAgentCard:
+         mock_verifier = MagicMock()
+ 
+         mock_response = MagicMock(spec=httpx.Response)
+-        mock_response.json.return_value = valid_agent_card_data
++        mock_response.content = json.dumps(valid_agent_card_data).encode()
+         mock_httpx_client.get.return_value = mock_response
+ 
+         agent_card = await resolver.get_agent_card(
 diff --git a/tests/client/test_client_factory.py b/tests/client/test_client_factory.py
-index 8698810..10380d6 100644
+index 8698810..4e91327 100644
 --- a/tests/client/test_client_factory.py
 +++ b/tests/client/test_client_factory.py
 @@ -9,6 +9,7 @@ import pytest
@@ -1290,7 +1670,7 @@ index 8698810..10380d6 100644
  from a2a.client.transports import (
      JsonRpcTransport,
      RestTransport,
-@@ -19,7 +20,9 @@ from a2a.types.a2a_pb2 import (
+@@ -19,7 +20,71 @@ from a2a.types.a2a_pb2 import (
      AgentCard,
      AgentInterface,
  )
@@ -1298,10 +1678,81 @@ index 8698810..10380d6 100644
 +from a2a.utils.constants import (
 +    TransportProtocol,
 +)
++
++
++@pytest.mark.parametrize(
++    'binding', [TransportProtocol.JSONRPC, TransportProtocol.HTTP_JSON]
++)
++@pytest.mark.parametrize(
++    'version', ['0.3', '0.3.26', '1.1', '2.0', 'not-a-version']
++)
++def test_factory_rejects_unsupported_protocol_before_opening_client(
++    binding: str, version: str
++) -> None:
++    """The Kestrel native factory never silently selects an unreviewed legacy transport."""
++    card = AgentCard(
++        supported_interfaces=[
++            AgentInterface(
++                protocol_binding=binding,
++                protocol_version=version,
++                url='https://peer.example',
++            )
++        ]
++    )
++    factory = ClientFactory(ClientConfig(supported_protocol_bindings=[binding]))
++    with patch.object(factory, '_resolve_http_client') as allocate:
++        with pytest.raises(ValueError, match='no compatible transports'):
++            factory.create(card)
++    allocate.assert_not_called()
++
++
++@pytest.mark.parametrize('client_preference', [False, True])
++@pytest.mark.asyncio
++async def test_factory_selects_native_binding_after_unsupported_first_binding(
++    client_preference: bool,
++) -> None:
++    card = AgentCard(
++        supported_interfaces=[
++            AgentInterface(
++                protocol_binding=TransportProtocol.JSONRPC,
++                protocol_version='0.3.0',
++                url='https://legacy.example',
++            ),
++            AgentInterface(
++                protocol_binding=TransportProtocol.HTTP_JSON,
++                protocol_version='1.0.1',
++                url='https://native.example',
++            ),
++        ]
++    )
++    async with httpx.AsyncClient() as http_client:
++        factory = ClientFactory(
++            ClientConfig(
++                httpx_client=http_client,
++                use_client_preference=client_preference,
++                supported_protocol_bindings=[
++                    TransportProtocol.JSONRPC,
++                    TransportProtocol.HTTP_JSON,
++                ],
++            )
++        )
++        client = factory.create(card)
++        assert isinstance(client._transport, RestTransport)  # type: ignore[attr-defined]
++        assert client._transport.url == 'https://native.example'  # type: ignore[attr-defined]
++        await client.close()
  
  
  @pytest.fixture
-@@ -407,3 +410,51 @@ async def test_create_client_with_url_and_config(base_agent_card: AgentCard):
+@@ -115,7 +180,7 @@ def test_client_factory_server_preference(base_agent_card: AgentCard):
+     assert client._transport.url == 'http://primary-url.com'  # type: ignore[attr-defined]
+ 
+ 
+-@pytest.mark.parametrize('v1_version', ['1.0', '1.0.0'])
++@pytest.mark.parametrize('v1_version', ['1.0', '1.0.0', '1.0.1'])
+ def test_client_factory_prefers_1_0_ignoring_patch_version(
+     base_agent_card: AgentCard, v1_version: str
+ ):
+@@ -407,3 +472,51 @@ async def test_create_client_with_url_and_config(base_agent_card: AgentCard):
          mock_resolver.assert_called_once_with(
              mock_httpx_client, 'http://example.com'
          )
@@ -1353,6 +1804,165 @@ index 8698810..10380d6 100644
 +
 +    with pytest.raises(A2AClientError, match='HTTP client is already closed'):
 +        await client.close()
+diff --git a/tests/client/test_client_factory_grpc.py b/tests/client/test_client_factory_grpc.py
+index 7c3b68b..acae8c1 100644
+--- a/tests/client/test_client_factory_grpc.py
++++ b/tests/client/test_client_factory_grpc.py
+@@ -51,11 +51,7 @@ def test_grpc_priority_1_0(grpc_agent_card):
+         grpc_channel_factory=MagicMock(),
+     )
+ 
+-    # We patch GrpcTransport and CompatGrpcTransport in the client_factory module
+-    with (
+-        patch('a2a.client.client_factory.GrpcTransport') as mock_grpc,
+-        patch('a2a.client.client_factory.CompatGrpcTransport') as mock_compat,
+-    ):
++    with patch('a2a.client.client_factory.GrpcTransport') as mock_grpc:
+         factory = ClientFactory(config)
+         factory.create(grpc_agent_card)
+ 
+@@ -63,11 +59,10 @@ def test_grpc_priority_1_0(grpc_agent_card):
+         mock_grpc.create.assert_called_once_with(
+             grpc_agent_card, 'url10', config
+         )
+-        mock_compat.create.assert_not_called()
+ 
+ 
+-def test_grpc_priority_gt_1_0(grpc_agent_card):
+-    """Verify that protocol version > 1.0 uses GrpcTransport (first one found)."""
++def test_grpc_unsupported_versions_are_rejected(grpc_agent_card):
++    """Advertised legacy and future minor versions require explicit support."""
+     grpc_agent_card.supported_interfaces.extend(
+         [
+             AgentInterface(
+@@ -93,18 +88,11 @@ def test_grpc_priority_gt_1_0(grpc_agent_card):
+         grpc_channel_factory=MagicMock(),
+     )
+ 
+-    with (
+-        patch('a2a.client.client_factory.GrpcTransport') as mock_grpc,
+-        patch('a2a.client.client_factory.CompatGrpcTransport') as mock_compat,
+-    ):
++    with patch('a2a.client.client_factory.GrpcTransport') as mock_grpc:
+         factory = ClientFactory(config)
+-        factory.create(grpc_agent_card)
+-
+-        # Priority 2: > 1.0 -> GrpcTransport (first matching is 1.1)
+-        mock_grpc.create.assert_called_once_with(
+-            grpc_agent_card, 'url11', config
+-        )
+-        mock_compat.create.assert_not_called()
++        with pytest.raises(ValueError, match='no compatible transports found'):
++            factory.create(grpc_agent_card)
++        mock_grpc.create.assert_not_called()
+ 
+ 
+ def test_grpc_priority_lt_0_3_raises_value_error(grpc_agent_card):
+diff --git a/tests/client/test_discovery_validation.py b/tests/client/test_discovery_validation.py
+new file mode 100644
+index 0000000..284cbfe
+--- /dev/null
++++ b/tests/client/test_discovery_validation.py
+@@ -0,0 +1,99 @@
++"""Peer-controlled discovery uses the same decoder as native responses."""
++
++import json
++
++from pathlib import Path
++
++import httpx
++import pytest
++
++from a2a.client import (
++    A2ACardResolver,
++    AgentCardResolutionError,
++    ClientConfig,
++    ClientFactory,
++)
++from a2a.types import AgentCard
++
++
++_VECTORS = json.loads(
++    (
++        Path(__file__).parents[1] / 'utils' / 'signing_interop_vectors.json'
++    ).read_text()
++)
++_VALID_CARD = _VECTORS['vectors'][0]['served_card']
++
++
++@pytest.mark.parametrize(
++    'body',
++    [
++        b'{"name":"n","\\ud800":1}',
++        b'{"name":"\\udfff"}',
++        b'{"name":"\xff"}',
++        b'{"name":"n","x":' + b'[' * 2000 + b']' * 2000 + b'}',
++        b'{"name":"n","version":NaN}',
++        b'{"name":"n","version":1e999}',
++        b'{"name":"first","name":"second"}',
++        json.dumps({**_VALID_CARD, 'capabilities': 'zzz'}).encode(),
++        json.dumps({**_VALID_CARD, 'supportedInterfaces': 'zzz'}).encode(),
++        json.dumps({**_VALID_CARD, 'skills': [42]}).encode(),
++    ],
++    ids=[
++        'surrogate-key',
++        'surrogate-value',
++        'utf8',
++        'depth',
++        'nan',
++        'infinity',
++        'duplicate-key',
++        'capabilities-shape',
++        'interfaces-shape',
++        'skill-shape',
++    ],
++)
++@pytest.mark.asyncio
++async def test_discovery_normalizes_peer_decoding_errors(body: bytes) -> None:
++    transport = httpx.MockTransport(lambda _: httpx.Response(200, content=body))
++    async with httpx.AsyncClient(transport=transport) as http_client:
++        with pytest.raises(AgentCardResolutionError):
++            await ClientFactory(
++                ClientConfig(httpx_client=http_client)
++            ).create_from_url('https://peer.example')
++
++
++@pytest.mark.asyncio
++async def test_discovery_preserves_forward_fields_without_mutating_the_card() -> (
++    None
++):
++    served = {**_VALID_CARD, 'futureField': {'unicode': '雪', 'value': [1, 2]}}
++    transport = httpx.MockTransport(lambda _: httpx.Response(200, json=served))
++    async with httpx.AsyncClient(transport=transport) as http_client:
++        card = await A2ACardResolver(
++            http_client, 'https://peer.example'
++        ).get_agent_card()
++    assert card.name == _VALID_CARD['name']
++    assert (
++        card.signatures[0].protected
++        == _VALID_CARD['signatures'][0]['protected']
++    )
++
++
++@pytest.mark.parametrize(
++    'error', [ValueError('key store'), json.JSONDecodeError('key store', '', 0)]
++)
++@pytest.mark.asyncio
++async def test_discovery_does_not_misclassify_verifier_failures(
++    error: Exception,
++) -> None:
++    def verifier(_: AgentCard) -> None:
++        raise error
++
++    transport = httpx.MockTransport(
++        lambda _: httpx.Response(200, json=_VALID_CARD)
++    )
++    async with httpx.AsyncClient(transport=transport) as http_client:
++        with pytest.raises(type(error)) as caught:
++            await A2ACardResolver(
++                http_client, 'https://peer.example'
++            ).get_agent_card(signature_verifier=verifier)
++    assert caught.value is error
 diff --git a/tests/client/test_errors.py b/tests/client/test_errors.py
 index 1ee7ab1..280f1c2 100644
 --- a/tests/client/test_errors.py
@@ -3684,7 +4294,7 @@ index 0952aaa..3ef0fee 100644
  
      mock_send_http_stream_request.assert_called_once_with(
 diff --git a/tests/integration/cross_version/client_server/test_client_server.py b/tests/integration/cross_version/client_server/test_client_server.py
-index 2b03576..d46582e 100644
+index 2b03576..5ae45c1 100644
 --- a/tests/integration/cross_version/client_server/test_client_server.py
 +++ b/tests/integration/cross_version/client_server/test_client_server.py
 @@ -8,6 +8,11 @@ import time
@@ -3699,7 +4309,15 @@ index 2b03576..d46582e 100644
  def get_free_port():
      with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
          s.bind(('127.0.0.1', 0))
-@@ -128,7 +133,7 @@ def running_servers():
+@@ -85,6 +90,7 @@ def finalize_process(
+     print('-' * 80)
+     if failure:
+         pytest.fail(f'Process {name} failed.')
++    return stdout_text, stderr_text
+ 
+ 
+ @pytest.fixture(scope='session')
+@@ -128,7 +134,7 @@ def running_servers():
          'uvicorn',
          '--with',
          'fastapi',
@@ -3708,7 +4326,7 @@ index 2b03576..d46582e 100644
      ]
      s03_cmd = (
          [uv_path, 'run']
-@@ -192,14 +197,14 @@ def running_servers():
+@@ -192,14 +198,14 @@ def running_servers():
          (
              'server_0_3.py',
              'client_0_3.py',
@@ -3725,6 +4343,22 @@ index 2b03576..d46582e 100644
              ['grpc', 'jsonrpc', 'rest'],
          ),
          # Run 1.0 Server <-> 1.0 Client
+@@ -246,4 +252,14 @@ def test_cross_version(
+         text=True,
+         start_new_session=True,
+     )
+-    finalize_process(client_result, client_script, 0)
++    unsupported = (
++        server_script == 'server_0_3.py' and client_script == 'client_1_0.py'
++    )
++    stdout_text, stderr_text = finalize_process(
++        client_result, client_script, 1 if unsupported else 0
++    )
++    if unsupported:
++        assert stdout_text.count('no compatible transports found') == len(
++            protocols
++        )
++        assert 'no compatible transports found' in stderr_text
 diff --git a/tests/integration/cross_version/test_cross_version_card_validation.py b/tests/integration/cross_version/test_cross_version_card_validation.py
 index 5b9f65b..a727076 100644
 --- a/tests/integration/cross_version/test_cross_version_card_validation.py
@@ -4391,6 +5025,101 @@ index f22c605..418df34 100644
  def test_canonicalize_agent_card_warns_about_missing_required_fields(
      caplog: pytest.LogCaptureFixture,
  ):
+diff --git a/tests/utils/test_signing_interop.py b/tests/utils/test_signing_interop.py
+index 6e6ec97..f2d7820 100644
+--- a/tests/utils/test_signing_interop.py
++++ b/tests/utils/test_signing_interop.py
+@@ -8,13 +8,14 @@ hold however a2aproject/A2A#2122 is settled: a card another SDK signed still
+ verifies here.
+ """
+ 
++import base64
+ import json
+ 
+ from pathlib import Path
+ 
+ import pytest
+ 
+-from a2a.types import AgentCard
++from a2a.types import AgentCard, AgentCardSignature
+ from a2a.utils import signing
+ from google.protobuf import json_format
+ from jwt import PyJWK
+@@ -76,3 +77,74 @@ def test_card_edited_after_signing_is_rejected(vector):
+     """A signature over other bytes must not verify."""
+     with pytest.raises(signing.InvalidSignaturesError):
+         _VERIFY(_card(vector['served_card']))
++
++
++_BAD_PROTECTED_HEADERS = [
++    base64.urlsafe_b64encode(value).rstrip(b'=').decode()
++    for value in [
++        b'[]',
++        b'"x"',
++        b'null',
++        b'nope',
++        b'\xff\xfe',
++        b'{"kid":[]}',
++        b'{"jku":{}}',
++        b'[' * 2000 + b']' * 2000,
++    ]
++] + ['a']
++_BAD_HEADER_IDS = [
++    'array',
++    'string',
++    'null',
++    'json',
++    'utf8',
++    'kid',
++    'jku',
++    'depth',
++    'base64',
++]
++
++
++@pytest.mark.parametrize('vector', _ACCEPT, ids=lambda v: v['id'])
++@pytest.mark.parametrize(
++    'protected', _BAD_PROTECTED_HEADERS, ids=_BAD_HEADER_IDS
++)
++def test_malformed_signature_does_not_hide_independent_valid_signature(
++    vector: dict, protected: str
++) -> None:
++    """A malformed first signature cannot invalidate a later JS/Go/reference signature."""
++    card = _card(vector['served_card'])
++    good = list(card.signatures)
++    del card.signatures[:]
++    card.signatures.append(
++        AgentCardSignature(protected=protected, signature='AAAA')
++    )
++    card.signatures.extend(good)
++    _VERIFY(card)
++
++
++@pytest.mark.parametrize(
++    'protected', _BAD_PROTECTED_HEADERS, ids=_BAD_HEADER_IDS
++)
++def test_malformed_only_signature_has_a_verification_error(
++    protected: str,
++) -> None:
++    card = _card(_ACCEPT[0]['served_card'])
++    del card.signatures[:]
++    card.signatures.append(
++        AgentCardSignature(protected=protected, signature='AAAA')
++    )
++    with pytest.raises(signing.InvalidSignaturesError):
++        _VERIFY(card)
++
++
++def test_verifier_does_not_swallow_key_provider_failures() -> None:
++    failure = ValueError('verification key store unavailable')
++
++    def provider(kid: str | None, jku: str | None) -> bytes:
++        raise failure
++
++    verify = signing.create_signature_verifier(provider, ['ES256'])
++    with pytest.raises(ValueError) as caught:
++        verify(_card(_ACCEPT[0]['served_card']))
++    assert caught.value is failure
 diff --git a/tests/utils/test_signing_presence.py b/tests/utils/test_signing_presence.py
 new file mode 100644
 index 0000000..dd40122

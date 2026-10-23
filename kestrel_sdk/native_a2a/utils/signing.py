@@ -1,6 +1,4 @@
 # Modified by Kestrel: isolated SDK namespace; see VENDORED.json.
-import json
-
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
@@ -14,7 +12,7 @@ try:
     from jwt import api_jws
     from jwt.api_jwk import PyJWK
     from jwt.exceptions import PyJWTError
-    from jwt.utils import base64url_decode, base64url_encode
+    from jwt.utils import base64url_encode
 except ImportError as e:
     raise ImportError(
         'A2A Signing requires PyJWT to be installed. '
@@ -149,16 +147,20 @@ def create_signature_verifier(
 
         for agent_card_signature in agent_card.signatures:
             try:
-                # get verification key
-                protected_header_json = base64url_decode(
-                    agent_card_signature.protected.encode('utf-8')
-                ).decode('utf-8')
-                protected_header = json.loads(protected_header_json)
+                token = f'{agent_card_signature.protected}.{encoded_payload}.{agent_card_signature.signature}'
+                protected_header = api_jws.get_unverified_header(token)
                 kid = protected_header.get('kid')
                 jku = protected_header.get('jku')
-                verification_key = key_provider(kid, jku)
+                if (kid is not None and not isinstance(kid, str)) or (
+                    jku is not None and not isinstance(jku, str)
+                ):
+                    continue
+            except (PyJWTError, UnicodeError, RecursionError):
+                continue
 
-                token = f'{agent_card_signature.protected}.{encoded_payload}.{agent_card_signature.signature}'
+            # Key-provider/network failures remain visible to the caller.
+            try:
+                verification_key = key_provider(kid, jku)
                 jwt.decode(
                     jwt=token,
                     key=verification_key,

@@ -97,7 +97,7 @@ def import_vendor(root: Path, source: Path, revision: str, base: str) -> None:
         "base_commit": base_commit,
         "reviewed_source_tree": tree,
         "namespace": "kestrel_sdk.native_a2a",
-        "modifications": "Reviewed signing, HTTP authorization, client ownership and response decoding fixes in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
+        "modifications": "Reviewed signing, HTTP authorization, client ownership, discovery/response decoding and native-only client selection fixes in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
         "files": files,
         "provenance_sha256": provenance,
     }

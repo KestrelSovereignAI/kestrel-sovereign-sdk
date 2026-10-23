@@ -26,6 +26,68 @@ from kestrel_sdk.native_a2a.utils.constants import (
 )
 
 
+@pytest.mark.parametrize(
+    'binding', [TransportProtocol.JSONRPC, TransportProtocol.HTTP_JSON]
+)
+@pytest.mark.parametrize(
+    'version', ['0.3', '0.3.26', '1.1', '2.0', 'not-a-version']
+)
+def test_factory_rejects_unsupported_protocol_before_opening_client(
+    binding: str, version: str
+) -> None:
+    """The Kestrel native factory never silently selects an unreviewed legacy transport."""
+    card = AgentCard(
+        supported_interfaces=[
+            AgentInterface(
+                protocol_binding=binding,
+                protocol_version=version,
+                url='https://peer.example',
+            )
+        ]
+    )
+    factory = ClientFactory(ClientConfig(supported_protocol_bindings=[binding]))
+    with patch.object(factory, '_resolve_http_client') as allocate:
+        with pytest.raises(ValueError, match='no compatible transports'):
+            factory.create(card)
+    allocate.assert_not_called()
+
+
+@pytest.mark.parametrize('client_preference', [False, True])
+@pytest.mark.asyncio
+async def test_factory_selects_native_binding_after_unsupported_first_binding(
+    client_preference: bool,
+) -> None:
+    card = AgentCard(
+        supported_interfaces=[
+            AgentInterface(
+                protocol_binding=TransportProtocol.JSONRPC,
+                protocol_version='0.3.0',
+                url='https://legacy.example',
+            ),
+            AgentInterface(
+                protocol_binding=TransportProtocol.HTTP_JSON,
+                protocol_version='1.0.1',
+                url='https://native.example',
+            ),
+        ]
+    )
+    async with httpx.AsyncClient() as http_client:
+        factory = ClientFactory(
+            ClientConfig(
+                httpx_client=http_client,
+                use_client_preference=client_preference,
+                supported_protocol_bindings=[
+                    TransportProtocol.JSONRPC,
+                    TransportProtocol.HTTP_JSON,
+                ],
+            )
+        )
+        client = factory.create(card)
+        assert isinstance(client._transport, RestTransport)  # type: ignore[attr-defined]
+        assert client._transport.url == 'https://native.example'  # type: ignore[attr-defined]
+        await client.close()
+
+
 @pytest.fixture
 def base_agent_card() -> AgentCard:
     """Provides a base AgentCard for tests."""
@@ -119,7 +181,7 @@ def test_client_factory_server_preference(base_agent_card: AgentCard):
     assert client._transport.url == 'http://primary-url.com'  # type: ignore[attr-defined]
 
 
-@pytest.mark.parametrize('v1_version', ['1.0', '1.0.0'])
+@pytest.mark.parametrize('v1_version', ['1.0', '1.0.0', '1.0.1'])
 def test_client_factory_prefers_1_0_ignoring_patch_version(
     base_agent_card: AgentCard, v1_version: str
 ):

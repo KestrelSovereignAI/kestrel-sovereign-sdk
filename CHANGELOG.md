@@ -2,12 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
-## 0.42.0 — Unreleased
+## 0.42.0 — 2026-10-23
 
 ### Added
 
 - Reviewed official A2A Python SDK snapshot in `kestrel_sdk.native_a2a`, with
-  signing, authorization, borrowed HTTP-client ownership and response-decoding
+  signing, authorization, borrowed HTTP-client ownership, Agent Card discovery and response-decoding
   corrections. Apache license, source/test patch and reproducible custody
   metadata ship in both distributions. The wire protocol remains A2A 1.0.1.
 
@@ -20,6 +20,13 @@ All notable changes to this project are documented in this file.
   `a2a-sdk` distribution. `Feature.get_agent_skills()` constructs its native
   AgentSkill from the same implementation hosts consume. Base SDK imports and
   dependency requirements remain lightweight.
+
+- The native client factory selects only A2A 1.0 interfaces, including patch
+  revisions. It rejects unsupported advertised protocol versions before opening
+  a transport instead of automatically selecting upstream 0.3 compatibility code.
+- Agent Card discovery uses the same bounded-error JSON/Protobuf decoder as
+  native responses. A malformed signature cannot hide a later valid signature;
+  verification-key provider failures remain visible to the caller.
 
 - `AgentTool.parse_command_args` now binds `!command` arguments differently
   (#73, kestrel-sovereign#3118). Previously it split the text on whitespace

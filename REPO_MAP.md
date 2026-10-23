@@ -455,7 +455,7 @@ Repo entry points and standard project files.
 
 - **tests/__init__.py** — —
 - **tests/native_a2a/client/test_client_factory.py** — Tests for the ClientFactory.
-  - `def base_agent_card()`; `def test_client_factory_selects_preferred_transport(base_agent_card)`; `def test_client_factory_selects_secondary_transport_url(base_agent_card)`; `def test_client_factory_server_preference(base_agent_card)`; `def test_client_factory_prefers_1_0_ignoring_patch_version(base_agent_card, v1_version)`; `def test_client_factory_no_compatible_transport(base_agent_card)`; `def test_client_factory_create_with_default_config(base_agent_card)`; `async def test_client_factory_create_from_url(base_agent_card)`; `…`
+  - `def test_factory_rejects_unsupported_protocol_before_opening_client(binding, version)`; `async def test_factory_selects_native_binding_after_unsupported_first_binding(client_preference)`; `def base_agent_card()`; `def test_client_factory_selects_preferred_transport(base_agent_card)`; `def test_client_factory_selects_secondary_transport_url(base_agent_card)`; `def test_client_factory_server_preference(base_agent_card)`; `def test_client_factory_prefers_1_0_ignoring_patch_version(base_agent_card, v1_version)`; `def test_client_factory_no_compatible_transport(base_agent_card)`; `…`
 - **tests/native_a2a/client/test_errors.py** — —
   - `class TestA2AClientError`; `class TestClientErrorRepr`
 - **tests/native_a2a/client/transports/test_http_helpers.py** — —
@@ -480,7 +480,7 @@ Repo entry points and standard project files.
 - **tests/native_a2a/utils/test_signing.py** — —
   - `def create_key_provider(verification_key)`; `def sample_agent_card()`; `def test_signer_and_verifier_symmetric(sample_agent_card)`; `def test_signer_and_verifier_symmetric_multiple_signatures(sample_agent_card)`; `def test_signer_and_verifier_asymmetric(sample_agent_card)`; `def test_canonicalize_agent_card(sample_agent_card)`; `def test_canonicalize_agent_card_preserves_false_capability(sample_agent_card)`; `def test_canonicalize_agent_card_warns_about_missing_required_fields(caplog)`
 - **tests/native_a2a/utils/test_signing_interop.py** — Cross-SDK Agent Card signature tests.
-  - `def test_vector_corpus_is_complete()`; `def test_card_signed_by_any_sdk_verifies(vector)`; `def test_card_canonical_bytes_are_the_shared_form(vector)`; `def test_card_edited_after_signing_is_rejected(vector)`
+  - `def test_vector_corpus_is_complete()`; `def test_card_signed_by_any_sdk_verifies(vector)`; `def test_card_canonical_bytes_are_the_shared_form(vector)`; `def test_card_edited_after_signing_is_rejected(vector)`; `def test_malformed_signature_does_not_hide_independent_valid_signature(vector, protected)`; `def test_malformed_only_signature_has_a_verification_error(protected)`; `def test_verifier_does_not_swallow_key_provider_failures()`
 - **tests/native_a2a/utils/test_signing_presence.py** — Agent Card field-presence rules from A2A 1.0 section 8.4.1.
   - `def test_public_signing_obeys_field_presence(case)`; `def test_explicit_empty_optional_field_is_signed(field)`
 - **tests/test_channel_delivery_contracts.py** — —

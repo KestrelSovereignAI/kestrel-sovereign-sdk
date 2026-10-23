@@ -3,9 +3,9 @@
   "protocol": "1.0.1",
   "base_release": "1.2.3",
   "base_commit": "44b2f761a99123370237afe6c828f4cd2a50c402",
-  "reviewed_source_tree": "4f5da315d2ed9d5e55fe98f900ee232edd126907",
+  "reviewed_source_tree": "ebc7dd1a19fe75414592a401c67be8a83536ce45",
   "namespace": "kestrel_sdk.native_a2a",
-  "modifications": "Reviewed signing, HTTP authorization, client ownership and response decoding fixes in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
+  "modifications": "Reviewed signing, HTTP authorization, client ownership, discovery/response decoding and native-only client selection fixes in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
   "files": {
     "__init__.py": {
       "upstream_sha256": "071fb0057bdade6df2df0a6ee1c09348dc1f6f54defcba348fe7774b2ef09834",
@@ -63,8 +63,8 @@
       "namespace_modified": true
     },
     "client/card_resolver.py": {
-      "upstream_sha256": "380557f1e9ac21fd9c86ee86ebcce0477b2c5c8e1cd85b1b80039ae6af0e1270",
-      "vendored_sha256": "748abee04bf0ec9382b6fe66ad6c030757822bda32302b83545c00c2dccbf174",
+      "upstream_sha256": "d304fe5a782316e1b410eabc5dca71da5fd4b5526d11fc0ff50b5ee1fc9d1952",
+      "vendored_sha256": "e11323ed1f93eec5a73dcb41de8ab2eed49a60bb6a771c3c79eadcb49ea91754",
       "namespace_modified": true
     },
     "client/client.py": {
@@ -73,8 +73,8 @@
       "namespace_modified": true
     },
     "client/client_factory.py": {
-      "upstream_sha256": "7348a584a3300a9a3e001c6ed00798ba237ba5c99d6616c156be9533b14db781",
-      "vendored_sha256": "2fbb480f45ec6637afc1da629c18411bad2ccc465e18946dcd298ec1a0f36952",
+      "upstream_sha256": "4972dd40d6f9530b600fa968602b1bb9153fb86e2f6b8f415e46f6b96d7f84f4",
+      "vendored_sha256": "d4f05774c2143bd59852b33209e5efaf466cefb99ecd56ed3d2948710ef4fb61",
       "namespace_modified": true
     },
     "client/errors.py": {
@@ -678,8 +678,8 @@
       "namespace_modified": false
     },
     "utils/signing.py": {
-      "upstream_sha256": "6e0940b710b81068206c63a694ad55e51b78600b65b1361e0e1c6a67c36705cd",
-      "vendored_sha256": "8023703d5e16e79ee785a959fed2c8af793e57680cec397dfe678f28f2ae4a6d",
+      "upstream_sha256": "ba3824300910b0d077522b60b723fcb0b5840321888a81d0165763230e756697",
+      "vendored_sha256": "0b0573aac25d347d1277cef41c7b6639a6bec8c10299945529957975979e59a8",
       "namespace_modified": true
     },
     "utils/task.py": {
@@ -701,7 +701,7 @@
   "provenance_sha256": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
     "UPSTREAM-PYPROJECT.toml": "5cdf8fdd9f297018cba28c9f91308f122264cab237acc41ee7c54bbb1f6ee776",
-    "UPSTREAM.patch": "6e54fe51f72b9b6ee9a48bffaab43e5ad5bfceb9b71190e4f108a9f69eea3b0f",
+    "UPSTREAM.patch": "519adf27bafd8f61fd3bc5a988928a013f5ba78f2d643542dafd9a36117386e2",
     "NOTICE": "4924afe3dab57b45b0ae6ed34529d8231904adf8d7eeb35be6b12546be7cd8c0"
   }
 }

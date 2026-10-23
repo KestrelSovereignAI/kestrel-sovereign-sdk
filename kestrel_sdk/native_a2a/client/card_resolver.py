@@ -1,5 +1,4 @@
 # Modified by Kestrel: isolated SDK namespace; see VENDORED.json.
-import json
 import logging
 
 from collections.abc import Callable
@@ -7,9 +6,13 @@ from typing import Any
 
 import httpx
 
-from google.protobuf.json_format import ParseDict, ParseError
+from google.protobuf.json_format import ParseError
 
-from kestrel_sdk.native_a2a.client.errors import AgentCardResolutionError
+from kestrel_sdk.native_a2a.client.errors import A2AClientError, AgentCardResolutionError
+from kestrel_sdk.native_a2a.client.transports.response_parsing import (
+    load_json_value,
+    parse_protobuf_response,
+)
 from kestrel_sdk.native_a2a.types.a2a_pb2 import (
     AgentCard,
 )
@@ -30,7 +33,10 @@ def parse_agent_card(agent_card_data: dict[str, Any]) -> AgentCard:
     except (TypeError, AttributeError) as e:
         raise ParseError(f'Invalid agent card structure: {e}') from e
 
-    return ParseDict(agent_card_data, AgentCard(), ignore_unknown_fields=True)
+    try:
+        return parse_protobuf_response(agent_card_data, AgentCard())
+    except A2AClientError as e:
+        raise ParseError(f'Invalid agent card structure: {e}') from e
 
 
 def _handle_extended_card_compatibility(
@@ -192,31 +198,35 @@ class A2ACardResolver:
                 **(http_kwargs or {}),
             )
             response.raise_for_status()
-            agent_card_data = response.json()
-            logger.info(
-                'Successfully fetched agent card data from %s: %s',
-                target_url,
-                agent_card_data,
-            )
-            agent_card = parse_agent_card(agent_card_data)
-            if signature_verifier:
-                signature_verifier(agent_card)
         except httpx.HTTPStatusError as e:
             raise AgentCardResolutionError(
                 f'Failed to fetch agent card from {target_url} (HTTP {e.response.status_code}): {e}',
                 status_code=e.response.status_code,
             ) from e
-        except json.JSONDecodeError as e:
-            raise AgentCardResolutionError(
-                f'Failed to parse JSON for agent card from {target_url}: {e}'
-            ) from e
         except httpx.RequestError as e:
             raise AgentCardResolutionError(
                 f'Network communication error fetching agent card from {target_url}: {e}',
             ) from e
+        try:
+            agent_card_data = load_json_value(response.content)
+        except A2AClientError as e:
+            raise AgentCardResolutionError(
+                f'Failed to parse JSON for agent card from {target_url}: {e}'
+            ) from e
+
+        try:
+            agent_card = parse_agent_card(agent_card_data)
         except ParseError as e:
             raise AgentCardResolutionError(
                 f'Failed to validate agent card structure from {target_url}: {e}'
             ) from e
 
+        # Verifier/key-provider failures are not peer JSON or HTTP errors.
+        if signature_verifier:
+            signature_verifier(agent_card)
+        logger.info(
+            'Successfully fetched agent card data from %s: %s',
+            target_url,
+            agent_card_data,
+        )
         return agent_card
