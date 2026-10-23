@@ -48,11 +48,22 @@ jobs:
           import importlib, pkgutil, sys
           import kestrel_sdk
           failed = []
-          for m in pkgutil.walk_packages(kestrel_sdk.__path__, prefix='kestrel_sdk.'):
+          modules = []
+          # The base/crypto profile deliberately excludes the optional A2A
+          # implementation. The test and artifact profiles install [a2a]
+          # and exercise its native types, HTTP bindings and signing.
+          for top in pkgutil.iter_modules(kestrel_sdk.__path__, prefix='kestrel_sdk.'):
+              if top.name == 'kestrel_sdk.native_a2a':
+                  continue
+              modules.append(top.name)
+              if top.ispkg:
+                  package = importlib.import_module(top.name)
+                  modules.extend(m.name for m in pkgutil.walk_packages(package.__path__, prefix=top.name + '.'))
+          for name in modules:
               try:
-                  importlib.import_module(m.name)
+                  importlib.import_module(name)
               except Exception as e:
-                  failed.append((m.name, repr(e)))
+                  failed.append((name, repr(e)))
           if failed:
               for name, err in failed:
                   print(f'{name}: {err}', file=sys.stderr)
@@ -220,12 +231,21 @@ jobs:
           print('wheel core imports OK on Python ' + os.environ['MATRIX_PYTHON_VERSION'])
           "
           )
-          uv pip install --python .venv-test/bin/python "${WHEEL}[crypto]"
+          uv pip install --python .venv-test/bin/python "${WHEEL}[crypto,a2a]"
           (
           cd "$SMOKE_DIR"
           "$GITHUB_WORKSPACE/.venv-test/bin/python" -c "
           from kestrel_sdk.security.aead import AEADCipher
           from kestrel_sdk.security import encryption
+          from kestrel_sdk.native_a2a.client import ClientFactory
+          from kestrel_sdk.native_a2a.server.routes import create_agent_card_routes
+          from kestrel_sdk.native_a2a.utils.signing import create_agent_card_signer
+          from importlib.resources import files
+          import json
+          assert files('kestrel_sdk.native_a2a').joinpath('LICENSE').is_file()
+          assert json.loads(files('kestrel_sdk.native_a2a').joinpath('VENDORED.json').read_text())['protocol'] == '1.0.1'
+          from kestrel_sdk.native_a2a_custody import verify_vendored_a2a
+          assert verify_vendored_a2a() == []
           import os
           print('wheel crypto imports OK on Python ' + os.environ['MATRIX_PYTHON_VERSION'])
           "
@@ -243,12 +263,21 @@ jobs:
           print('sdist core imports OK on Python ' + os.environ['MATRIX_PYTHON_VERSION'])
           "
           )
-          uv pip install --python .venv-sdist/bin/python "${SDIST}[crypto]"
+          uv pip install --python .venv-sdist/bin/python "${SDIST}[crypto,a2a]"
           (
           cd "$SMOKE_DIR"
           "$GITHUB_WORKSPACE/.venv-sdist/bin/python" -c "
           from kestrel_sdk.security.aead import AEADCipher
           from kestrel_sdk.security import encryption
+          from kestrel_sdk.native_a2a.client import ClientFactory
+          from kestrel_sdk.native_a2a.server.routes import create_agent_card_routes
+          from kestrel_sdk.native_a2a.utils.signing import create_agent_card_signer
+          from importlib.resources import files
+          import json
+          assert files('kestrel_sdk.native_a2a').joinpath('LICENSE').is_file()
+          assert json.loads(files('kestrel_sdk.native_a2a').joinpath('VENDORED.json').read_text())['protocol'] == '1.0.1'
+          from kestrel_sdk.native_a2a_custody import verify_vendored_a2a
+          assert verify_vendored_a2a() == []
           import os
           print('sdist crypto imports OK on Python ' + os.environ['MATRIX_PYTHON_VERSION'])
           "

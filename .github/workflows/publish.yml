@@ -284,12 +284,21 @@ jobs:
           print('wheel imports OK on Python ' + os.environ['MATRIX_PYTHON_VERSION'])
           "
           )
-          uv pip install --python .venv-wheel/bin/python "${WHEEL}[crypto]"
+          uv pip install --python .venv-wheel/bin/python "${WHEEL}[crypto,a2a]"
           (
           cd "$SMOKE_DIR"
           "$GITHUB_WORKSPACE/.venv-wheel/bin/python" -c "
           from kestrel_sdk.security.aead import AEADCipher
           from kestrel_sdk.security import encryption
+          from kestrel_sdk.native_a2a.client import ClientFactory
+          from kestrel_sdk.native_a2a.server.routes import create_agent_card_routes
+          from kestrel_sdk.native_a2a.utils.signing import create_agent_card_signer
+          from importlib.resources import files
+          import json
+          assert files('kestrel_sdk.native_a2a').joinpath('LICENSE').is_file()
+          assert json.loads(files('kestrel_sdk.native_a2a').joinpath('VENDORED.json').read_text())['protocol'] == '1.0.1'
+          from kestrel_sdk.native_a2a_custody import verify_vendored_a2a
+          assert verify_vendored_a2a() == []
           import os
           print('wheel crypto imports OK on Python ' + os.environ['MATRIX_PYTHON_VERSION'])
           "
@@ -307,12 +316,21 @@ jobs:
           print('sdist imports OK on Python ' + os.environ['MATRIX_PYTHON_VERSION'])
           "
           )
-          uv pip install --python .venv-sdist/bin/python "${SDIST}[crypto]"
+          uv pip install --python .venv-sdist/bin/python "${SDIST}[crypto,a2a]"
           (
           cd "$SMOKE_DIR"
           "$GITHUB_WORKSPACE/.venv-sdist/bin/python" -c "
           from kestrel_sdk.security.aead import AEADCipher
           from kestrel_sdk.security import encryption
+          from kestrel_sdk.native_a2a.client import ClientFactory
+          from kestrel_sdk.native_a2a.server.routes import create_agent_card_routes
+          from kestrel_sdk.native_a2a.utils.signing import create_agent_card_signer
+          from importlib.resources import files
+          import json
+          assert files('kestrel_sdk.native_a2a').joinpath('LICENSE').is_file()
+          assert json.loads(files('kestrel_sdk.native_a2a').joinpath('VENDORED.json').read_text())['protocol'] == '1.0.1'
+          from kestrel_sdk.native_a2a_custody import verify_vendored_a2a
+          assert verify_vendored_a2a() == []
           import os
           print('sdist crypto imports OK on Python ' + os.environ['MATRIX_PYTHON_VERSION'])
           "

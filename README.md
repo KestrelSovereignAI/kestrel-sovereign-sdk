@@ -69,6 +69,32 @@ With encryption helpers:
 uv pip install "kestrel-sovereign-sdk[crypto] @ git+https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk.git"
 ```
 
+## Vendored native A2A implementation
+
+The `[a2a]` extra supplies one reviewed, modified copy of the official A2A Python
+SDK under `kestrel_sdk.native_a2a`. Hosts and feature skill producers use this
+same implementation. The wire protocol remains A2A 1.0.1; this is not an official
+upstream SDK release. The base SDK still requires only Pydantic and IDNA.
+
+The vendored package includes its Apache 2.0 license, modification notice, public
+base commit, exact reviewed source tree, source/test patch, and original/relocated
+file digests in `VENDORED.json`. Run `uv run python -m scripts.vendor_a2a --check` from a
+source checkout to verify custody offline. Reproduce updates from an explicit
+Git tree with `--source`, `--revision` and `--base`; the importer refuses an existing
+output directory and never consumes dirty working-tree files.
+
+The snapshot contains signing, HTTP authorization, borrowed-client lifetime and
+response-decoding fixes. Python imports and package-resource references are
+relocated; protocol names, JSON fields and protobuf descriptors are preserved.
+The repository maintains the upstream signing/JCS, client factory, response
+decoding and HTTP authorization regressions under `tests/native_a2a`, including
+independent canonicalization vectors. These are SDK regressions, not a claim
+that Kestrel has passed the full A2A TCK.
+
+No runtime module alias, monkey patch, private protocol or signature fallback is
+installed. A separately installed `a2a` Python package does not supply Kestrel's
+SDK implementation. Full host conformance and interoperability remain host gates.
+
 ## Dependencies
 
 - `pydantic>=2.0`
@@ -80,7 +106,7 @@ uv pip install "kestrel-sovereign-sdk[crypto] @ git+https://github.com/KestrelSo
 ### A2A skill contributions
 
 Install `kestrel-sovereign-sdk[a2a]` when consuming
-`Feature.get_agent_skills()`. It returns official `a2a.types.AgentSkill`
+`Feature.get_agent_skills()`. It returns native `kestrel_sdk.native_a2a.types.AgentSkill`
 messages derived from the feature's currently exposed tool schemas. Disabled
 tools are excluded, and each call returns fresh messages. Ordinary feature
 imports, tool decoration and execution do not import the optional A2A SDK.

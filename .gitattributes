@@ -1,0 +1,4 @@
+# The custody manifest records exact source bytes, including on Windows.
+/kestrel_sdk/native_a2a/** text eol=lf
+# Unified-diff context lines include a single structural space on blank lines.
+/kestrel_sdk/native_a2a/UPSTREAM.patch -whitespace

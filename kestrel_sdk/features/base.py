@@ -46,7 +46,7 @@ from kestrel_sdk.features._contribution_support import (
 from kestrel_sdk.features.ui import UIContributions
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from a2a.types import AgentSkill, Task
+    from kestrel_sdk.native_a2a.types import AgentSkill, Task
 
     from kestrel_sdk.features.contributions import (
         ContextClauseContributions,
@@ -473,8 +473,8 @@ class Feature(ABC):
         Requires the ``a2a`` extra. The serving agent owns its signed Agent
         Card and transport URLs; a feature contributes capabilities only.
         """
-        from a2a.types import AgentSkill
-        from a2a.utils.proto_utils import validate_proto_required_fields
+        from kestrel_sdk.native_a2a.types import AgentSkill
+        from kestrel_sdk.native_a2a.utils.proto_utils import validate_proto_required_fields
 
         skills = []
         for exposed_tool in self.get_tools():
