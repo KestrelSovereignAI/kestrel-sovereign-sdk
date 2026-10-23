@@ -119,8 +119,10 @@ requirements recorded in `UPSTREAM-PYPROJECT.toml`. Installing the external SDK
 to satisfy a vendored module's hint can create the descriptor conflicts above.
 The retained gRPC server does not negotiate `A2A-Version` metadata
 ([#91](https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk/issues/91)).
-HTTP handlers currently read that service parameter only from the header;
-the alternative `A2A-Version` query parameter is not supported.
+HTTP handlers accept `A2A-Version` in headers or query parameters, including
+case-insensitive parameter names. Every supplied value must match the handler's
+Major.Minor release; patch numbers are ignored. Empty values mean 0.3, so a
+supported value cannot hide a conflicting or empty value in another carrier.
 
 ## Dependencies
 

@@ -1279,6 +1279,23 @@ index 5cf779a..dfbb7b7 100644
  
  
  def _if_none_match_hits(header: str, etag: str) -> bool:
+diff --git a/src/a2a/server/routes/common.py b/src/a2a/server/routes/common.py
+index 93dc034..dfd589e 100644
+--- a/src/a2a/server/routes/common.py
++++ b/src/a2a/server/routes/common.py
+@@ -112,7 +112,11 @@ class DefaultServerCallContextBuilder(ServerCallContextBuilder):
+         state = {}
+         if 'auth' in request.scope:
+             state['auth'] = request.auth
+-        state['headers'] = dict(request.headers)
++        # Keep the immutable mapping's duplicate entries for negotiation.
++        state['headers'] = request.headers
++        # Preserve duplicate parameters so version negotiation can reject
++        # conflicting requests instead of silently choosing one value.
++        state['query_params'] = tuple(request.query_params.multi_items())
+         return ServerCallContext(
+             user=self.build_user(request),
+             state=state,
 diff --git a/src/a2a/utils/error_handlers.py b/src/a2a/utils/error_handlers.py
 index ef81829..20a8bd2 100644
 --- a/src/a2a/utils/error_handlers.py
@@ -1581,7 +1598,7 @@ index c6540d1..b5b36c0 100644
 +    _apply_field_presence(agent_card, card_dict)
 +    return canonicalize(card_dict)
 diff --git a/src/a2a/utils/version_validator.py b/src/a2a/utils/version_validator.py
-index 4a776c2..5845785 100644
+index 4a776c2..e004bfa 100644
 --- a/src/a2a/utils/version_validator.py
 +++ b/src/a2a/utils/version_validator.py
 @@ -7,11 +7,12 @@ import logging
@@ -1598,7 +1615,22 @@ index 4a776c2..5845785 100644
  
  
  F = TypeVar('F', bound=Callable[..., Any])
-@@ -41,12 +42,7 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
+@@ -21,11 +22,11 @@ logger = logging.getLogger(__name__)
+ 
+ 
+ def validate_version(expected_version: str) -> Callable[[F], F]:
+-    """Decorator that validates the A2A-Version header in the request context.
++    """Validate A2A-Version headers and query parameters in the context.
+ 
+     The header name is defined by `constants.VERSION_HEADER` ('A2A-Version').
+-    If the header is missing or empty, it is interpreted as `constants.PROTOCOL_VERSION_0_3` ('0.3').
+-    If the version in the header does not match the `expected_version` (major and minor parts),
++    Missing or empty versions mean `constants.PROTOCOL_VERSION_0_3` ('0.3').
++    Every supplied value must match `expected_version` (major and minor parts),
+     a `VersionNotSupportedError` is raised. Patch version is ignored.
+ 
+     This decorator supports both async methods and async generator methods. It
+@@ -41,17 +42,12 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
      Raises:
          VersionNotSupportedError: If the version in the request does not match `expected_version`.
      """
@@ -1611,9 +1643,42 @@ index 4a776c2..5845785 100644
 +    expected_release = major_minor(expected_version)
  
      def decorator(func: F) -> F:
-         def _get_actual_version(
-@@ -78,16 +74,10 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
-             return str(actual_version)
+-        def _get_actual_version(
++        def _get_actual_versions(
+             args: tuple[Any, ...], kwargs: dict[str, Any]
+-        ) -> str:
++        ) -> tuple[str, ...]:
+             context = kwargs.get('context')
+             if context is None:
+                 for arg in args:
+@@ -63,42 +59,33 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
+                 # If no context is found, we can't validate the version.
+                 # In a real scenario, this shouldn't happen for properly routed requests.
+                 # We default to the expected version to allow test call to proceed.
+-                return expected_version
++                return (expected_version,)
+ 
+             headers = context.state.get('headers', {})
+-            # Header names are usually case-insensitive in most frameworks, but dict lookup is case-sensitive.
+-            # We check both standard and lowercase versions.
+-            actual_version = headers.get(
+-                constants.VERSION_HEADER
+-            ) or headers.get(constants.VERSION_HEADER.lower())
+-
+-            if not actual_version:
+-                return constants.PROTOCOL_VERSION_0_3
+-
+-            return str(actual_version)
++            parameters = (
++                *headers.items(),
++                *context.state.get('query_params', ()),
++            )
++            versions = tuple(
++                str(value) if value else constants.PROTOCOL_VERSION_0_3
++                for name, value in parameters
++                if name.casefold() == constants.VERSION_HEADER.casefold()
++            )
++            return versions or (constants.PROTOCOL_VERSION_0_3,)
  
          def _is_version_compatible(actual: str) -> bool:
 -            if actual == expected_version:
@@ -1627,9 +1692,58 @@ index 4a776c2..5845785 100644
                  return False
 -            else:
 -                return actual_v.major == expected_v.major
+-
+-        if inspect.isasyncgenfunction(inspect.unwrap(func)):
  
-         if inspect.isasyncgenfunction(inspect.unwrap(func)):
+-            @functools.wraps(func)
+-            def async_gen_wrapper(
+-                *args: Any, **kwargs: Any
+-            ) -> AsyncIterator[Any]:
+-                actual_version = _get_actual_version(args, kwargs)
++        def _validate_context_version(
++            args: tuple[Any, ...], kwargs: dict[str, Any]
++        ) -> None:
++            for actual_version in _get_actual_versions(args, kwargs):
+                 if not _is_version_compatible(actual_version):
+                     logger.warning(
+-                        "Version mismatch: actual='%s', expected='%s'",
++                        'Version mismatch: actual=%r, expected=%r',
+                         actual_version,
+                         expected_version,
+                     )
+@@ -106,23 +93,21 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
+                         message=f"A2A version '{actual_version}' is not supported by this handler. "
+                         f"Expected version '{expected_version}'."
+                     )
++
++        if inspect.isasyncgenfunction(inspect.unwrap(func)):
++
++            @functools.wraps(func)
++            def async_gen_wrapper(
++                *args: Any, **kwargs: Any
++            ) -> AsyncIterator[Any]:
++                _validate_context_version(args, kwargs)
+                 return func(*args, **kwargs)
  
+             return cast('F', async_gen_wrapper)
+ 
+         @functools.wraps(func)
+         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+-            actual_version = _get_actual_version(args, kwargs)
+-            if not _is_version_compatible(actual_version):
+-                logger.warning(
+-                    "Version mismatch: actual='%s', expected='%s'",
+-                    actual_version,
+-                    expected_version,
+-                )
+-                raise VersionNotSupportedError(
+-                    message=f"A2A version '{actual_version}' is not supported by this handler. "
+-                    f"Expected version '{expected_version}'."
+-                )
++            _validate_context_version(args, kwargs)
+             return await func(*args, **kwargs)
+ 
+         return cast('F', async_wrapper)
 diff --git a/src/a2a/utils/versioning.py b/src/a2a/utils/versioning.py
 new file mode 100644
 index 0000000..7a9862b
@@ -4855,6 +4969,247 @@ index 0000000..04432a9
 +    assert response.headers['www-authenticate'] == 'Bearer realm="a2a"'
 +    assert response.text == 'Recipient policy refused this principal'
 +    assert 'text/event-stream' not in response.headers['content-type']
+diff --git a/tests/server/routes/test_http_version_parameters.py b/tests/server/routes/test_http_version_parameters.py
+new file mode 100644
+index 0000000..abe3de6
+--- /dev/null
++++ b/tests/server/routes/test_http_version_parameters.py
+@@ -0,0 +1,222 @@
++"""Exercise version carriers through real HTTP routes and task storage."""
++
++import httpx
++import pytest
++
++from a2a.server.agent_execution import AgentExecutor, RequestContext
++from a2a.server.context import ServerCallContext
++from a2a.server.events import EventQueue
++from a2a.server.request_handlers import DefaultRequestHandler
++from a2a.server.routes import create_jsonrpc_routes, create_rest_routes
++from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
++from a2a.types import (
++    AgentCapabilities,
++    AgentCard,
++    AgentInterface,
++    AgentSkill,
++    Message,
++    Part,
++    Role,
++    Task,
++    TaskState,
++    TaskStatus,
++)
++from starlette.applications import Starlette
++
++
++class ObservedExecutor(AgentExecutor):
++    def __init__(self) -> None:
++        self.executions = 0
++
++    async def execute(
++        self, context: RequestContext, event_queue: EventQueue
++    ) -> None:
++        self.executions += 1
++        await event_queue.enqueue_event(
++            Message(
++                message_id='version-carrier-response',
++                role=Role.ROLE_AGENT,
++                parts=[Part(text='echo-result')],
++            )
++        )
++
++    async def cancel(
++        self, context: RequestContext, event_queue: EventQueue
++    ) -> None:
++        raise AssertionError('GetTask must not cancel agent work')
++
++
++class ObservedTaskStore(InMemoryTaskStore):
++    def __init__(self) -> None:
++        super().__init__()
++        self.reads = 0
++
++    async def get(
++        self, task_id: str, context: ServerCallContext
++    ) -> Task | None:
++        self.reads += 1
++        return await super().get(task_id, context)
++
++
++def create_app(executor: AgentExecutor, store: InMemoryTaskStore) -> Starlette:
++    handler = DefaultRequestHandler(
++        agent_executor=executor,
++        task_store=store,
++        agent_card=AgentCard(
++            name='Version carriers',
++            description='Exercise native HTTP service parameters',
++            version='1',
++            capabilities=AgentCapabilities(streaming=True),
++            supported_interfaces=[
++                AgentInterface(
++                    url='http://test/rest',
++                    protocol_binding='HTTP+JSON',
++                    protocol_version='1.0',
++                ),
++                AgentInterface(
++                    url='http://test/rpc',
++                    protocol_binding='JSONRPC',
++                    protocol_version='1.0',
++                ),
++            ],
++            default_input_modes=['text/plain'],
++            default_output_modes=['text/plain'],
++            skills=[
++                AgentSkill(
++                    id='version-carriers',
++                    name='Version carriers',
++                    description='Echo with native version negotiation',
++                    tags=['test'],
++                )
++            ],
++        ),
++    )
++    return Starlette(
++        routes=[
++            *create_rest_routes(request_handler=handler, path_prefix='/rest'),
++            *create_jsonrpc_routes(request_handler=handler, rpc_url='/rpc'),
++        ]
++    )
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('binding', ['rest', 'jsonrpc'])
++@pytest.mark.parametrize(
++    ('headers', 'query', 'accepted'),
++    [
++        ([], [('A2A-Version', '1.0')], True),
++        ([], [('a2a-version', '1.0.999')], True),
++        ([], [('a2A-vErSiOn', '1.0.1')], True),
++        ([('a2A-vErSiOn', '1.0')], [], True),
++        ([('A2A-Version', '1.0')], [('a2a-version', '1.0.1')], True),
++        ([], [('A2A-Version', '1.0'), ('a2a-version', '1.0.2')], True),
++        ([], [], False),
++        ([], [('A2A-Version', '')], False),
++        ([], [('A2A-Version', '1.1')], False),
++        ([], [('A2A-Version', '2.0')], False),
++        ([], [('A2A-Version', 'invalid')], False),
++        ([('A2A-Version', '1.0')], [('A2A-Version', '1.1')], False),
++        ([('A2A-Version', '1.1')], [('A2A-Version', '1.0')], False),
++        ([('A2A-Version', '')], [('A2A-Version', '1.0')], False),
++        ([], [('A2A-Version', '1.1'), ('A2A-Version', '1.0')], False),
++        ([], [('A2A-Version', '1.0'), ('a2a-version', '1.1')], False),
++        ([], [('A2A-Version', ''), ('a2a-version', '1.0')], False),
++        ([('A2A-Version', '1.0'), ('a2a-version', '1.0.2')], [], True),
++        ([('A2A-Version', '1.1'), ('A2A-Version', '1.0')], [], False),
++        ([('A2A-Version', '1.0'), ('A2A-Version', '1.1')], [], False),
++        ([('A2A-Version', ''), ('A2A-Version', '1.0')], [], False),
++    ],
++)
++async def test_http_version_carriers_before_task_read(
++    binding: str,
++    headers: list[tuple[str, str]],
++    query: list[tuple[str, str]],
++    accepted: bool,
++) -> None:
++    store = ObservedTaskStore()
++    task = Task(
++        id='version-carrier-task',
++        context_id='version-carrier-context',
++        status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
++    )
++    await store.save(task, ServerCallContext())
++    executor = ObservedExecutor()
++    app = create_app(executor, store)
++    async with httpx.AsyncClient(
++        transport=httpx.ASGITransport(app), base_url='http://test'
++    ) as client:
++        if binding == 'rest':
++            response = await client.get(
++                '/rest/tasks/' + task.id, headers=headers, params=query
++            )
++        else:
++            response = await client.post(
++                '/rpc',
++                json={
++                    'jsonrpc': '2.0',
++                    'id': 1,
++                    'method': 'GetTask',
++                    'params': {'id': task.id},
++                },
++                headers=headers,
++                params=query,
++            )
++    payload = response.json()
++    assert executor.executions == 0
++    if accepted:
++        assert response.status_code == 200, payload
++        result = payload if binding == 'rest' else payload['result']
++        assert result['id'] == task.id
++        assert store.reads == 1
++    else:
++        if binding == 'rest':
++            assert response.status_code == 400, payload
++        else:
++            assert payload['error']['code'] == -32009, payload
++        assert store.reads == 0
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('binding', ['rest', 'jsonrpc'])
++@pytest.mark.parametrize('version', ['1.0', '1.0.999', '', '1.1', 'invalid'])
++async def test_query_version_before_streaming_execution(
++    binding: str, version: str
++) -> None:
++    executor = ObservedExecutor()
++    store = ObservedTaskStore()
++    app = create_app(executor, store)
++    params = {
++        'message': {
++            'messageId': 'version-carrier-request',
++            'role': 'ROLE_USER',
++            'parts': [{'text': 'echo'}],
++        }
++    }
++    async with httpx.AsyncClient(
++        transport=httpx.ASGITransport(app), base_url='http://test'
++    ) as client:
++        response = await client.post(
++            '/rest/message:stream' if binding == 'rest' else '/rpc',
++            json=params
++            if binding == 'rest'
++            else {
++                'jsonrpc': '2.0',
++                'id': 1,
++                'method': 'SendStreamingMessage',
++                'params': params,
++            },
++            params={'a2A-vErSiOn': version},
++            headers={'Accept': 'text/event-stream'},
++        )
++    if version.startswith('1.0'):
++        assert response.status_code == 200, response.text
++        assert response.headers['content-type'].startswith('text/event-stream')
++        assert 'echo-result' in response.text
++        assert executor.executions == 1
++    else:
++        if binding == 'rest':
++            assert response.status_code == 400, response.text
++        else:
++            assert response.json()['error']['code'] == -32009, response.text
++        assert executor.executions == 0
++        assert store.reads == 0
+diff --git a/tests/server/routes/test_rest_dispatcher.py b/tests/server/routes/test_rest_dispatcher.py
+index e0d72c4..0fb1829 100644
+--- a/tests/server/routes/test_rest_dispatcher.py
++++ b/tests/server/routes/test_rest_dispatcher.py
+@@ -86,7 +86,7 @@ def make_mock_request(
+     mock_req = MagicMock(spec=Request)
+     mock_req.method = method
+     mock_req.path_params = path_params or {}
+-    mock_req.query_params = query_params or {}
++    mock_req.query_params = QueryParams(query_params or {})
+ 
+     # Default valid headers for A2A
+     default_headers = {'a2a-version': '1.0'}
 diff --git a/tests/utils/test_a2a_errors.py b/tests/utils/test_a2a_errors.py
 new file mode 100644
 index 0000000..ea7133a
@@ -5563,10 +5918,45 @@ index 0000000..dd40122
 +    with pytest.raises(signing.InvalidSignaturesError):
 +        verifier(card)
 diff --git a/tests/utils/test_version_validation.py b/tests/utils/test_version_validation.py
-index 9014702..7485f73 100644
+index 9014702..df61635 100644
 --- a/tests/utils/test_version_validation.py
 +++ b/tests/utils/test_version_validation.py
-@@ -110,7 +110,7 @@ async def test_validate_version_no_context():
+@@ -45,6 +45,34 @@ async def test_validate_version_case_insensitive():
+     assert result == 'success'
+ 
+ 
++@pytest.mark.asyncio
++@pytest.mark.parametrize('streaming', [False, True])
++@pytest.mark.parametrize(
++    'version', ['1.0', '1.0.0', '1.0.999', '', '1.1', 'invalid']
++)
++async def test_query_version_for_unary_and_streaming(
++    streaming: bool, version: str
++) -> None:
++    handler = TestHandler()
++    context = ServerCallContext(
++        state={'query_params': (('a2A-vErSiOn', version),)}
++    )
++
++    async def invoke() -> None:
++        if streaming:
++            assert [
++                item async for item in handler.async_gen_method(None, context)
++            ] == ['success']
++        else:
++            assert await handler.async_method(None, context) == 'success'
++
++    if version.startswith('1.0'):
++        await invoke()
++    else:
++        with pytest.raises(VersionNotSupportedError):
++            await invoke()
++
++
+ @pytest.mark.asyncio
+ async def test_validate_version_mismatch():
+     handler = TestHandler()
+@@ -110,7 +138,7 @@ async def test_validate_version_no_context():
  
  
  @pytest.mark.asyncio
@@ -5575,7 +5965,7 @@ index 9014702..7485f73 100644
      handler = TestHandler()
  
      # 1.0.1 should match 1.0
-@@ -127,12 +127,12 @@ async def test_validate_version_ignore_minor_patch():
+@@ -127,12 +155,12 @@ async def test_validate_version_ignore_minor_patch():
      result = await handler.async_method(None, context_zero_patch)
      assert result == 'success'
  
@@ -5591,7 +5981,7 @@ index 9014702..7485f73 100644
  
      # 2.0.0 should NOT match 1.0
      context_diff_major = ServerCallContext(
-@@ -142,6 +142,38 @@ async def test_validate_version_ignore_minor_patch():
+@@ -142,6 +170,38 @@ async def test_validate_version_ignore_minor_patch():
          await handler.async_method(None, context_diff_major)
  
  

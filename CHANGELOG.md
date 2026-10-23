@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.42.2
+
+### Fixed
+
+- Native JSON-RPC and HTTP+JSON handlers accept the standard `A2A-Version`
+  query parameter in unary and streaming requests. Service parameter names
+  are case-insensitive, and all supplied versions must match the supported
+  Major.Minor release before task access or execution. Conflicting values are
+  rejected across headers and repeated query parameters; patch differences remain
+  compatible. Fixes [#92](https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk/issues/92).
+
 ## 0.42.1
 
 ### Fixed
