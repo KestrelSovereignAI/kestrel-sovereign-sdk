@@ -84,7 +84,7 @@ Git tree with `--source`, `--revision` and `--base`; the importer refuses an exi
 output directory and never consumes dirty working-tree files.
 
 The snapshot contains signing, HTTP authorization, borrowed-client lifetime,
-Agent Card discovery and response-decoding fixes. Python imports and package-resource references are
+Agent Card discovery, response-decoding and HTTP version-negotiation fixes. Python imports and package-resource references are
 relocated; protocol names, JSON fields and protobuf descriptors are preserved.
 The repository maintains the upstream signing/JCS, client factory, response
 decoding and HTTP authorization regressions under `tests/native_a2a`, including
@@ -117,6 +117,10 @@ that mention `a2a-sdk[extra]`; those hints do not apply to this vendored package
 Install the named optional libraries directly when using those modules, with the
 requirements recorded in `UPSTREAM-PYPROJECT.toml`. Installing the external SDK
 to satisfy a vendored module's hint can create the descriptor conflicts above.
+The retained gRPC server does not negotiate `A2A-Version` metadata
+([#91](https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk/issues/91)).
+HTTP handlers currently read that service parameter only from the header;
+the alternative `A2A-Version` query parameter is not supported.
 
 ## Dependencies
 
