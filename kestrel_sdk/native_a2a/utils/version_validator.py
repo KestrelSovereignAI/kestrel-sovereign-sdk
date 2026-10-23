@@ -8,11 +8,12 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Any, TypeVar, cast
 
-from packaging.version import InvalidVersion, Version
+from packaging.version import InvalidVersion
 
 from kestrel_sdk.native_a2a.server.context import ServerCallContext
 from kestrel_sdk.native_a2a.utils import constants
 from kestrel_sdk.native_a2a.utils.errors import VersionNotSupportedError
+from kestrel_sdk.native_a2a.utils.versioning import major_minor
 
 
 F = TypeVar('F', bound=Callable[..., Any])
@@ -42,12 +43,7 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
     Raises:
         VersionNotSupportedError: If the version in the request does not match `expected_version`.
     """
-    try:
-        expected_v = Version(expected_version)
-    except InvalidVersion:
-        # If the expected version is not a valid semver, we can't do major/minor comparison.
-        # This shouldn't happen with our constants.
-        expected_v = None
+    expected_release = major_minor(expected_version)
 
     def decorator(func: F) -> F:
         def _get_actual_version(
@@ -79,16 +75,10 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
             return str(actual_version)
 
         def _is_version_compatible(actual: str) -> bool:
-            if actual == expected_version:
-                return True
-            if not expected_v:
-                return False
             try:
-                actual_v = Version(actual)
+                return major_minor(actual) == expected_release
             except InvalidVersion:
                 return False
-            else:
-                return actual_v.major == expected_v.major
 
         if inspect.isasyncgenfunction(inspect.unwrap(func)):
 

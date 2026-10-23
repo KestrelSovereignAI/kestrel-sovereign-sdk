@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.42.1
+
+### Fixed
+
+- Native A2A server handlers now require the advertised Major.Minor protocol
+  release in unary and streaming requests. They reject unsupported minor releases
+  with VersionNotSupportedError and continue to ignore specification patch numbers.
+  Client interface selection and server validation share one version parser.
+
 ## 0.42.0
 
 ### Added

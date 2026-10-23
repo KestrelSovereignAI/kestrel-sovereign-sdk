@@ -85,10 +85,19 @@ index 4479135..31e9a5b 100644
 +        )
          return agent_card
 diff --git a/src/a2a/client/client_factory.py b/src/a2a/client/client_factory.py
-index e43207c..42ea7c4 100644
+index e43207c..18f5f29 100644
 --- a/src/a2a/client/client_factory.py
 +++ b/src/a2a/client/client_factory.py
-@@ -16,14 +16,12 @@ from a2a.client.transports.base import ClientTransport
+@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
+ 
+ import httpx
+ 
+-from packaging.version import InvalidVersion, Version
++from packaging.version import InvalidVersion
+ 
+ from a2a.client.base_client import BaseClient
+ from a2a.client.card_resolver import A2ACardResolver
+@@ -16,19 +16,18 @@ from a2a.client.transports.base import ClientTransport
  from a2a.client.transports.jsonrpc import JsonRpcTransport
  from a2a.client.transports.rest import RestTransport
  from a2a.client.transports.tenant_decorator import TenantTransportDecorator
@@ -103,7 +112,13 @@ index e43207c..42ea7c4 100644
      PROTOCOL_VERSION_1_0,
      PROTOCOL_VERSION_CURRENT,
      VERSION_HEADER,
-@@ -41,11 +39,6 @@ except ImportError:
+     TransportProtocol,
+ )
++from a2a.utils.versioning import major_minor
+ 
+ 
+ if TYPE_CHECKING:
+@@ -41,11 +40,6 @@ except ImportError:
      GrpcTransport = None  # type: ignore # pyright: ignore
  
  
@@ -115,7 +130,20 @@ index e43207c..42ea7c4 100644
  logger = logging.getLogger(__name__)
  
  
-@@ -77,6 +70,9 @@ class ClientFactory:
+@@ -55,12 +49,6 @@ TransportProducer = Callable[
+ ]
+ 
+ 
+-def major_minor(version: str) -> tuple[int, int]:
+-    """Returns the `Major.Minor` release of a protocol version."""
+-    v = Version(version)
+-    return (v.major, v.minor)
+-
+-
+ class ClientFactory:
+     """Factory for creating clients that communicate with A2A agents.
+ 
+@@ -77,6 +65,9 @@ class ClientFactory:
  
      The client can be used consistently regardless of the transport. This
      aligns the client configuration with the server's capabilities.
@@ -125,7 +153,7 @@ index e43207c..42ea7c4 100644
      """
  
      def __init__(
-@@ -84,16 +80,25 @@ class ClientFactory:
+@@ -84,16 +75,25 @@ class ClientFactory:
          config: ClientConfig | None = None,
      ):
          config = config or ClientConfig()
@@ -156,7 +184,7 @@ index e43207c..42ea7c4 100644
      def _register_defaults(self, supported: list[str]) -> None:
          # Empty support list implies JSON-RPC only.
  
-@@ -104,32 +109,13 @@ class ClientFactory:
+@@ -104,32 +104,13 @@ class ClientFactory:
                  url: str,
                  config: ClientConfig,
              ) -> ClientTransport:
@@ -192,7 +220,7 @@ index e43207c..42ea7c4 100644
                  )
  
              self.register(
-@@ -143,32 +129,13 @@ class ClientFactory:
+@@ -143,32 +124,13 @@ class ClientFactory:
                  url: str,
                  config: ClientConfig,
              ) -> ClientTransport:
@@ -228,7 +256,7 @@ index e43207c..42ea7c4 100644
                  )
  
              self.register(
-@@ -189,25 +156,6 @@ class ClientFactory:
+@@ -189,25 +151,6 @@ class ClientFactory:
                  url: str,
                  config: ClientConfig,
              ) -> ClientTransport:
@@ -254,7 +282,7 @@ index e43207c..42ea7c4 100644
                  return _grpc_transport.create(card, url, config)
  
              self.register(
-@@ -235,33 +183,22 @@ class ClientFactory:
+@@ -235,33 +178,22 @@ class ClientFactory:
          if not candidates:
              return None
  
@@ -301,7 +329,7 @@ index e43207c..42ea7c4 100644
  
      async def create_from_url(
          self,
-@@ -273,8 +210,9 @@ class ClientFactory:
+@@ -273,8 +205,9 @@ class ClientFactory:
      ) -> Client:
          """Create a `Client` by resolving an `AgentCard` from a URL.
  
@@ -313,7 +341,7 @@ index e43207c..42ea7c4 100644
  
          If the agent card is already available, use `create` directly
          instead.
-@@ -295,12 +233,17 @@ class ClientFactory:
+@@ -295,12 +228,17 @@ class ClientFactory:
          Returns:
            A `Client` object.
          """
@@ -337,7 +365,7 @@ index e43207c..42ea7c4 100644
          return self.create(card, interceptors)
  
      def register(self, label: str, generator: TransportProducer) -> None:
-@@ -349,7 +292,8 @@ class ClientFactory:
+@@ -349,7 +287,8 @@ class ClientFactory:
                          list(card.supported_interfaces),
                          protocol_bindings=[transport_protocol],
                      )
@@ -1552,6 +1580,71 @@ index c6540d1..b5b36c0 100644
 -    return canonicalize(cleaned_dict)
 +    _apply_field_presence(agent_card, card_dict)
 +    return canonicalize(card_dict)
+diff --git a/src/a2a/utils/version_validator.py b/src/a2a/utils/version_validator.py
+index 4a776c2..5845785 100644
+--- a/src/a2a/utils/version_validator.py
++++ b/src/a2a/utils/version_validator.py
+@@ -7,11 +7,12 @@ import logging
+ from collections.abc import AsyncIterator, Callable
+ from typing import Any, TypeVar, cast
+ 
+-from packaging.version import InvalidVersion, Version
++from packaging.version import InvalidVersion
+ 
+ from a2a.server.context import ServerCallContext
+ from a2a.utils import constants
+ from a2a.utils.errors import VersionNotSupportedError
++from a2a.utils.versioning import major_minor
+ 
+ 
+ F = TypeVar('F', bound=Callable[..., Any])
+@@ -41,12 +42,7 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
+     Raises:
+         VersionNotSupportedError: If the version in the request does not match `expected_version`.
+     """
+-    try:
+-        expected_v = Version(expected_version)
+-    except InvalidVersion:
+-        # If the expected version is not a valid semver, we can't do major/minor comparison.
+-        # This shouldn't happen with our constants.
+-        expected_v = None
++    expected_release = major_minor(expected_version)
+ 
+     def decorator(func: F) -> F:
+         def _get_actual_version(
+@@ -78,16 +74,10 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
+             return str(actual_version)
+ 
+         def _is_version_compatible(actual: str) -> bool:
+-            if actual == expected_version:
+-                return True
+-            if not expected_v:
+-                return False
+             try:
+-                actual_v = Version(actual)
++                return major_minor(actual) == expected_release
+             except InvalidVersion:
+                 return False
+-            else:
+-                return actual_v.major == expected_v.major
+ 
+         if inspect.isasyncgenfunction(inspect.unwrap(func)):
+ 
+diff --git a/src/a2a/utils/versioning.py b/src/a2a/utils/versioning.py
+new file mode 100644
+index 0000000..7a9862b
+--- /dev/null
++++ b/src/a2a/utils/versioning.py
+@@ -0,0 +1,9 @@
++"""Protocol compatibility is determined by the Major.Minor release."""
++
++from packaging.version import Version
++
++
++def major_minor(version: str) -> tuple[int, int]:
++    """Return the protocol release, ignoring the specification patch number."""
++    parsed = Version(version)
++    return parsed.major, parsed.minor
 diff --git a/tests/client/test_card_resolver.py b/tests/client/test_card_resolver.py
 index a964025..b3672fe 100644
 --- a/tests/client/test_card_resolver.py
@@ -4528,6 +4621,20 @@ index a617d26..1c6fc12 100644
          )
  
          config = ClientConfig(
+diff --git a/tests/integration/test_version_header.py b/tests/integration/test_version_header.py
+index 1e63670..2d70a0d 100644
+--- a/tests/integration/test_version_header.py
++++ b/tests/integration/test_version_header.py
+@@ -87,7 +87,8 @@ def client(test_app):
+         (None, '0.3'),
+         ('0.3', '0.3'),
+         ('1.0', '1.0'),
+-        ('1.2', '1.0'),
++        ('1.0.1', '1.0'),
++        ('1.2', 'none'),
+         ('2', 'none'),
+         ('INVALID', 'none'),
+     ],
 diff --git a/tests/server/routes/test_agent_card_routes.py b/tests/server/routes/test_agent_card_routes.py
 index f3cb03e..59c255b 100644
 --- a/tests/server/routes/test_agent_card_routes.py
@@ -5455,3 +5562,108 @@ index 0000000..dd40122
 +    assert card.HasField(field)
 +    with pytest.raises(signing.InvalidSignaturesError):
 +        verifier(card)
+diff --git a/tests/utils/test_version_validation.py b/tests/utils/test_version_validation.py
+index 9014702..7485f73 100644
+--- a/tests/utils/test_version_validation.py
++++ b/tests/utils/test_version_validation.py
+@@ -110,7 +110,7 @@ async def test_validate_version_no_context():
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_validate_version_ignore_minor_patch():
++async def test_validate_version_ignores_patch_but_requires_minor():
+     handler = TestHandler()
+ 
+     # 1.0.1 should match 1.0
+@@ -127,12 +127,12 @@ async def test_validate_version_ignore_minor_patch():
+     result = await handler.async_method(None, context_zero_patch)
+     assert result == 'success'
+ 
+-    # 1.1.0 should match 1.0
++    # 1.1.0 is a different protocol release, not a patch of 1.0.
+     context_diff_minor = ServerCallContext(
+         state={'headers': {constants.VERSION_HEADER: '1.1.0'}}
+     )
+-    result = await handler.async_method(None, context_diff_minor)
+-    assert result == 'success'
++    with pytest.raises(VersionNotSupportedError):
++        await handler.async_method(None, context_diff_minor)
+ 
+     # 2.0.0 should NOT match 1.0
+     context_diff_major = ServerCallContext(
+@@ -142,6 +142,38 @@ async def test_validate_version_ignore_minor_patch():
+         await handler.async_method(None, context_diff_major)
+ 
+ 
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    'version', ['1.1', '1.1.0', '1.99', '0.3', '2.0', 'invalid']
++)
++@pytest.mark.parametrize('streaming', [False, True])
++async def test_unsupported_release_refused_before_handler(
++    version: str, streaming: bool
++) -> None:
++    handler = TestHandler()
++    context = ServerCallContext(
++        state={'headers': {constants.VERSION_HEADER: version}}
++    )
++    with pytest.raises(VersionNotSupportedError):
++        if streaming:
++            async for _ in handler.async_gen_method(None, context):
++                pytest.fail('Unsupported version entered the streaming handler')
++        else:
++            await handler.async_method(None, context)
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('version', ['1.0', '1.0.0', '1.0.1', '1.0.999'])
++async def test_streaming_handler_ignores_patch(version: str) -> None:
++    handler = TestHandler()
++    context = ServerCallContext(
++        state={'headers': {constants.VERSION_HEADER: version}}
++    )
++    assert [item async for item in handler.async_gen_method(None, context)] == [
++        'success'
++    ]
++
++
+ @pytest.mark.asyncio
+ async def test_validate_version_handler_expects_patch():
+     class PatchHandler:
+diff --git a/tests/utils/test_versioning.py b/tests/utils/test_versioning.py
+new file mode 100644
+index 0000000..a152544
+--- /dev/null
++++ b/tests/utils/test_versioning.py
+@@ -0,0 +1,31 @@
++"""Canonical version parsing shared by client selection and server handlers."""
++
++import pytest
++
++from a2a.utils.version_validator import validate_version
++from a2a.utils.versioning import major_minor
++from packaging.version import InvalidVersion
++
++
++@pytest.mark.parametrize(
++    ('version', 'release'),
++    [
++        ('1.0', (1, 0)),
++        ('1.0.1', (1, 0)),
++        ('1.0.999', (1, 0)),
++        ('1.1', (1, 1)),
++        ('2.0', (2, 0)),
++    ],
++)
++def test_protocol_release(version: str, release: tuple[int, int]) -> None:
++    assert major_minor(version) == release
++
++
++def test_invalid_protocol_version() -> None:
++    with pytest.raises(InvalidVersion):
++        major_minor('invalid')
++
++
++def test_invalid_handler_configuration_fails_at_decoration() -> None:
++    with pytest.raises(InvalidVersion):
++        validate_version('invalid')

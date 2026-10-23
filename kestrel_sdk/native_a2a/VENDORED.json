@@ -3,7 +3,7 @@
   "protocol": "1.0.1",
   "base_release": "1.2.3",
   "base_commit": "44b2f761a99123370237afe6c828f4cd2a50c402",
-  "reviewed_source_tree": "22cbc3e0dd1b79b2886301afc7fb4564210b30ba",
+  "reviewed_source_tree": "4ec3e8ec4be600ab1002485bb7ab0517b911dce3",
   "namespace": "kestrel_sdk.native_a2a",
   "modifications": "Reviewed signing, HTTP authorization, client ownership, discovery/response decoding and native-only client selection fixes in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
   "files": {
@@ -73,8 +73,8 @@
       "namespace_modified": true
     },
     "client/client_factory.py": {
-      "upstream_sha256": "4972dd40d6f9530b600fa968602b1bb9153fb86e2f6b8f415e46f6b96d7f84f4",
-      "vendored_sha256": "d4f05774c2143bd59852b33209e5efaf466cefb99ecd56ed3d2948710ef4fb61",
+      "upstream_sha256": "14bcabe244b16dcf7517369d024d64de34b2b3671bea6d192bedf09d5583947f",
+      "vendored_sha256": "65f5cb2c037055dc0580f629adf0c7ff20323b000545722c6e49298e5696bb3a",
       "namespace_modified": true
     },
     "client/errors.py": {
@@ -693,15 +693,20 @@
       "namespace_modified": true
     },
     "utils/version_validator.py": {
-      "upstream_sha256": "0f1d43225db102ecd375887b8814ba5ad54f7528c0c927b40c003593368c3209",
-      "vendored_sha256": "c1303622b6d8b9ac5e4915ee0c3339b3e8ae00ee57584c423dab4fb2eced6a1f",
+      "upstream_sha256": "60f0f950210964c12fcf2564b2f33d68232b828d9ca3d8a21a1aeb52318ba315",
+      "vendored_sha256": "07d469c9bf0cbe9ba9abdcf3ad9afe36068104fa9f0a0a2d9920b9b073fa2114",
       "namespace_modified": true
+    },
+    "utils/versioning.py": {
+      "upstream_sha256": "28cb8b544bab52020cae326867f4d5c7d6ddb95af9f56c0226edb6bf927a7095",
+      "vendored_sha256": "58228653ec2a79d01971196066e420312c14219e4fc7eb919dd4f6517bad6418",
+      "namespace_modified": false
     }
   },
   "provenance_sha256": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
     "UPSTREAM-PYPROJECT.toml": "5cdf8fdd9f297018cba28c9f91308f122264cab237acc41ee7c54bbb1f6ee776",
-    "UPSTREAM.patch": "4c8576a8db578951ae766713fc7543a1629e0400a56cb7dfe2b060ccbb59e53f",
+    "UPSTREAM.patch": "e00fa0c8d02578b5d62a9b6f81c8d097c6a1e383010f37f8ab989ede5d892cd9",
     "NOTICE": "4924afe3dab57b45b0ae6ed34529d8231904adf8d7eeb35be6b12546be7cd8c0"
   }
 }
