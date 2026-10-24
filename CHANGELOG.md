@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.42.2
+
+### Fixed
+
+- Native JSON-RPC and HTTP+JSON handlers accept the standard `A2A-Version`
+  query parameter in unary and streaming requests. Service parameter names
+  are case-insensitive, and all supplied versions must match the supported
+  Major.Minor release before task access or execution. Conflicting values are
+  rejected across headers and repeated query parameters; patch differences remain
+  compatible. Fixes [#92](https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk/issues/92).
+- Rejected version values are escaped in protocol errors and warning logs;
+  non-ASCII lookalikes are not recognized as standard service parameter names.
+- HTTP request contexts retain Starlette's read-only header mapping so repeated
+  header values remain available during negotiation.
+
 ## 0.42.1
 
 ### Fixed

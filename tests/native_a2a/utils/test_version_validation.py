@@ -47,6 +47,34 @@ async def test_validate_version_case_insensitive():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('streaming', [False, True])
+@pytest.mark.parametrize(
+    'version', ['1.0', '1.0.0', '1.0.999', '', '1.1', 'invalid']
+)
+async def test_query_version_for_unary_and_streaming(
+    streaming: bool, version: str
+) -> None:
+    handler = TestHandler()
+    context = ServerCallContext(
+        state={'query_params': (('a2A-vErSiOn', version),)}
+    )
+
+    async def invoke() -> None:
+        if streaming:
+            assert [
+                item async for item in handler.async_gen_method(None, context)
+            ] == ['success']
+        else:
+            assert await handler.async_method(None, context) == 'success'
+
+    if version.startswith('1.0'):
+        await invoke()
+    else:
+        with pytest.raises(VersionNotSupportedError):
+            await invoke()
+
+
+@pytest.mark.asyncio
 async def test_validate_version_mismatch():
     handler = TestHandler()
     context = ServerCallContext(

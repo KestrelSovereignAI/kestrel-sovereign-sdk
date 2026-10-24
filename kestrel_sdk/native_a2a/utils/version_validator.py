@@ -23,11 +23,11 @@ logger = logging.getLogger(__name__)
 
 
 def validate_version(expected_version: str) -> Callable[[F], F]:
-    """Decorator that validates the A2A-Version header in the request context.
+    """Validate A2A-Version headers and query parameters in the context.
 
     The header name is defined by `constants.VERSION_HEADER` ('A2A-Version').
-    If the header is missing or empty, it is interpreted as `constants.PROTOCOL_VERSION_0_3` ('0.3').
-    If the version in the header does not match the `expected_version` (major and minor parts),
+    Missing or empty versions mean `constants.PROTOCOL_VERSION_0_3` ('0.3').
+    Every supplied value must match `expected_version` (major and minor parts),
     a `VersionNotSupportedError` is raised. Patch version is ignored.
 
     This decorator supports both async methods and async generator methods. It
@@ -46,9 +46,9 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
     expected_release = major_minor(expected_version)
 
     def decorator(func: F) -> F:
-        def _get_actual_version(
+        def _get_actual_versions(
             args: tuple[Any, ...], kwargs: dict[str, Any]
-        ) -> str:
+        ) -> tuple[str, ...]:
             context = kwargs.get('context')
             if context is None:
                 for arg in args:
@@ -60,19 +60,19 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
                 # If no context is found, we can't validate the version.
                 # In a real scenario, this shouldn't happen for properly routed requests.
                 # We default to the expected version to allow test call to proceed.
-                return expected_version
+                return (expected_version,)
 
             headers = context.state.get('headers', {})
-            # Header names are usually case-insensitive in most frameworks, but dict lookup is case-sensitive.
-            # We check both standard and lowercase versions.
-            actual_version = headers.get(
-                constants.VERSION_HEADER
-            ) or headers.get(constants.VERSION_HEADER.lower())
-
-            if not actual_version:
-                return constants.PROTOCOL_VERSION_0_3
-
-            return str(actual_version)
+            parameters = (
+                *headers.items(),
+                *context.state.get('query_params', ()),
+            )
+            versions = tuple(
+                str(value) if value else constants.PROTOCOL_VERSION_0_3
+                for name, value in parameters
+                if name.lower() == constants.VERSION_HEADER.lower()
+            )
+            return versions or (constants.PROTOCOL_VERSION_0_3,)
 
         def _is_version_compatible(actual: str) -> bool:
             try:
@@ -80,40 +80,35 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
             except InvalidVersion:
                 return False
 
+        def _validate_context_version(
+            args: tuple[Any, ...], kwargs: dict[str, Any]
+        ) -> None:
+            for actual_version in _get_actual_versions(args, kwargs):
+                if not _is_version_compatible(actual_version):
+                    logger.warning(
+                        'Version mismatch: actual=%r, expected=%r',
+                        actual_version,
+                        expected_version,
+                    )
+                    raise VersionNotSupportedError(
+                        message=f'A2A version {actual_version!r} is not supported by this handler. '
+                        f'Expected version {expected_version!r}.'
+                    )
+
         if inspect.isasyncgenfunction(inspect.unwrap(func)):
 
             @functools.wraps(func)
             def async_gen_wrapper(
                 *args: Any, **kwargs: Any
             ) -> AsyncIterator[Any]:
-                actual_version = _get_actual_version(args, kwargs)
-                if not _is_version_compatible(actual_version):
-                    logger.warning(
-                        "Version mismatch: actual='%s', expected='%s'",
-                        actual_version,
-                        expected_version,
-                    )
-                    raise VersionNotSupportedError(
-                        message=f"A2A version '{actual_version}' is not supported by this handler. "
-                        f"Expected version '{expected_version}'."
-                    )
+                _validate_context_version(args, kwargs)
                 return func(*args, **kwargs)
 
             return cast('F', async_gen_wrapper)
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            actual_version = _get_actual_version(args, kwargs)
-            if not _is_version_compatible(actual_version):
-                logger.warning(
-                    "Version mismatch: actual='%s', expected='%s'",
-                    actual_version,
-                    expected_version,
-                )
-                raise VersionNotSupportedError(
-                    message=f"A2A version '{actual_version}' is not supported by this handler. "
-                    f"Expected version '{expected_version}'."
-                )
+            _validate_context_version(args, kwargs)
             return await func(*args, **kwargs)
 
         return cast('F', async_wrapper)

@@ -113,7 +113,11 @@ class DefaultServerCallContextBuilder(ServerCallContextBuilder):
         state = {}
         if 'auth' in request.scope:
             state['auth'] = request.auth
-        state['headers'] = dict(request.headers)
+        # Keep the immutable mapping's duplicate entries for negotiation.
+        state['headers'] = request.headers
+        # Preserve duplicate parameters so version negotiation can reject
+        # conflicting requests instead of silently choosing one value.
+        state['query_params'] = tuple(request.query_params.multi_items())
         return ServerCallContext(
             user=self.build_user(request),
             state=state,
