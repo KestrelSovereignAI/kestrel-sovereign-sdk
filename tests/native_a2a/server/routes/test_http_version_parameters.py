@@ -1,6 +1,8 @@
 # Modified by Kestrel: isolated SDK namespace; see VENDORED.json.
 """Exercise version carriers through real HTTP routes and task storage."""
 
+import logging
+
 import httpx
 import pytest
 
@@ -22,6 +24,7 @@ from kestrel_sdk.native_a2a.types import (
     TaskState,
     TaskStatus,
 )
+from kestrel_sdk.native_a2a.utils import error_handlers, version_validator
 from starlette.applications import Starlette
 
 
@@ -100,6 +103,55 @@ def create_app(executor: AgentExecutor, store: InMemoryTaskStore) -> Starlette:
     )
 
 
+async def get_task(
+    client: httpx.AsyncClient,
+    binding: str,
+    task_id: str,
+    headers: list[tuple[str, str]],
+    query: list[tuple[str, str]],
+) -> httpx.Response:
+    if binding == 'rest':
+        return await client.get(
+            '/rest/tasks/' + task_id, headers=headers, params=query
+        )
+    return await client.post(
+        '/rpc',
+        json={
+            'jsonrpc': '2.0',
+            'id': 1,
+            'method': 'GetTask',
+            'params': {'id': task_id},
+        },
+        headers=headers,
+        params=query,
+    )
+
+
+async def send_streaming_message(
+    client: httpx.AsyncClient, binding: str, query: list[tuple[str, str]]
+) -> httpx.Response:
+    params = {
+        'message': {
+            'messageId': 'version-carrier-request',
+            'role': 'ROLE_USER',
+            'parts': [{'text': 'echo'}],
+        }
+    }
+    return await client.post(
+        '/rest/message:stream' if binding == 'rest' else '/rpc',
+        json=params
+        if binding == 'rest'
+        else {
+            'jsonrpc': '2.0',
+            'id': 1,
+            'method': 'SendStreamingMessage',
+            'params': params,
+        },
+        params=query,
+        headers={'Accept': 'text/event-stream'},
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('binding', ['rest', 'jsonrpc'])
 @pytest.mark.parametrize(
@@ -126,6 +178,7 @@ def create_app(executor: AgentExecutor, store: InMemoryTaskStore) -> Starlette:
         ([('A2A-Version', '1.1'), ('A2A-Version', '1.0')], [], False),
         ([('A2A-Version', '1.0'), ('A2A-Version', '1.1')], [], False),
         ([('A2A-Version', ''), ('A2A-Version', '1.0')], [], False),
+        ([], [('a2a-verſion', '1.0')], False),
     ],
 )
 async def test_http_version_carriers_before_task_read(
@@ -146,22 +199,7 @@ async def test_http_version_carriers_before_task_read(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app), base_url='http://test'
     ) as client:
-        if binding == 'rest':
-            response = await client.get(
-                '/rest/tasks/' + task.id, headers=headers, params=query
-            )
-        else:
-            response = await client.post(
-                '/rpc',
-                json={
-                    'jsonrpc': '2.0',
-                    'id': 1,
-                    'method': 'GetTask',
-                    'params': {'id': task.id},
-                },
-                headers=headers,
-                params=query,
-            )
+        response = await get_task(client, binding, task.id, headers, query)
     payload = response.json()
     assert executor.executions == 0
     if accepted:
@@ -186,28 +224,11 @@ async def test_query_version_before_streaming_execution(
     executor = ObservedExecutor()
     store = ObservedTaskStore()
     app = create_app(executor, store)
-    params = {
-        'message': {
-            'messageId': 'version-carrier-request',
-            'role': 'ROLE_USER',
-            'parts': [{'text': 'echo'}],
-        }
-    }
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app), base_url='http://test'
     ) as client:
-        response = await client.post(
-            '/rest/message:stream' if binding == 'rest' else '/rpc',
-            json=params
-            if binding == 'rest'
-            else {
-                'jsonrpc': '2.0',
-                'id': 1,
-                'method': 'SendStreamingMessage',
-                'params': params,
-            },
-            params={'a2A-vErSiOn': version},
-            headers={'Accept': 'text/event-stream'},
+        response = await send_streaming_message(
+            client, binding, [('a2A-vErSiOn', version)]
         )
     if version.startswith('1.0'):
         assert response.status_code == 200, response.text
@@ -221,3 +242,47 @@ async def test_query_version_before_streaming_execution(
             assert response.json()['error']['code'] == -32009, response.text
         assert executor.executions == 0
         assert store.reads == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('binding', ['rest', 'jsonrpc'])
+@pytest.mark.parametrize('streaming', [False, True])
+@pytest.mark.parametrize('control', ['\r\n', '\r', '\n', '\t'])
+async def test_version_query_rejection_escapes_error_and_warning_logs(
+    binding: str,
+    streaming: bool,
+    control: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    version = '1.1' + control + 'CRITICAL forged.auth accepted'
+    executor = ObservedExecutor()
+    store = ObservedTaskStore()
+    caplog.set_level(logging.WARNING)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(create_app(executor, store)),
+        base_url='http://test',
+    ) as client:
+        query = [('A2A-Version', version)]
+        response = (
+            await send_streaming_message(client, binding, query)
+            if streaming
+            else await get_task(client, binding, 'missing', [], query)
+        )
+    error = response.json()['error']
+    if binding == 'rest':
+        assert response.status_code == 400
+    else:
+        assert error['code'] == -32009
+    assert repr(version) in error['message']
+    assert not any(character in error['message'] for character in '\r\n\t')
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name in {error_handlers.__name__, version_validator.__name__}
+    ]
+    assert warnings
+    assert all(
+        not any(character in warning for character in '\r\n\t')
+        for warning in warnings
+    )
+    assert executor.executions == store.reads == 0

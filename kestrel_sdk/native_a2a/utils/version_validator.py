@@ -70,7 +70,7 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
             versions = tuple(
                 str(value) if value else constants.PROTOCOL_VERSION_0_3
                 for name, value in parameters
-                if name.casefold() == constants.VERSION_HEADER.casefold()
+                if name.lower() == constants.VERSION_HEADER.lower()
             )
             return versions or (constants.PROTOCOL_VERSION_0_3,)
 
@@ -91,8 +91,8 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
                         expected_version,
                     )
                     raise VersionNotSupportedError(
-                        message=f"A2A version '{actual_version}' is not supported by this handler. "
-                        f"Expected version '{expected_version}'."
+                        message=f'A2A version {actual_version!r} is not supported by this handler. '
+                        f'Expected version {expected_version!r}.'
                     )
 
         if inspect.isasyncgenfunction(inspect.unwrap(func)):

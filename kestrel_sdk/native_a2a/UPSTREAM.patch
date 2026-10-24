@@ -1598,7 +1598,7 @@ index c6540d1..b5b36c0 100644
 +    _apply_field_presence(agent_card, card_dict)
 +    return canonicalize(card_dict)
 diff --git a/src/a2a/utils/version_validator.py b/src/a2a/utils/version_validator.py
-index 4a776c2..e004bfa 100644
+index 4a776c2..29aaa63 100644
 --- a/src/a2a/utils/version_validator.py
 +++ b/src/a2a/utils/version_validator.py
 @@ -7,11 +7,12 @@ import logging
@@ -1651,7 +1651,7 @@ index 4a776c2..e004bfa 100644
              context = kwargs.get('context')
              if context is None:
                  for arg in args:
-@@ -63,42 +59,33 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
+@@ -63,66 +59,55 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
                  # If no context is found, we can't validate the version.
                  # In a real scenario, this shouldn't happen for properly routed requests.
                  # We default to the expected version to allow test call to proceed.
@@ -1676,7 +1676,7 @@ index 4a776c2..e004bfa 100644
 +            versions = tuple(
 +                str(value) if value else constants.PROTOCOL_VERSION_0_3
 +                for name, value in parameters
-+                if name.casefold() == constants.VERSION_HEADER.casefold()
++                if name.lower() == constants.VERSION_HEADER.lower()
 +            )
 +            return versions or (constants.PROTOCOL_VERSION_0_3,)
  
@@ -1711,9 +1711,11 @@ index 4a776c2..e004bfa 100644
                          actual_version,
                          expected_version,
                      )
-@@ -106,23 +93,21 @@ def validate_version(expected_version: str) -> Callable[[F], F]:
-                         message=f"A2A version '{actual_version}' is not supported by this handler. "
-                         f"Expected version '{expected_version}'."
+                     raise VersionNotSupportedError(
+-                        message=f"A2A version '{actual_version}' is not supported by this handler. "
+-                        f"Expected version '{expected_version}'."
++                        message=f'A2A version {actual_version!r} is not supported by this handler. '
++                        f'Expected version {expected_version!r}.'
                      )
 +
 +        if inspect.isasyncgenfunction(inspect.unwrap(func)):
@@ -4971,11 +4973,13 @@ index 0000000..04432a9
 +    assert 'text/event-stream' not in response.headers['content-type']
 diff --git a/tests/server/routes/test_http_version_parameters.py b/tests/server/routes/test_http_version_parameters.py
 new file mode 100644
-index 0000000..abe3de6
+index 0000000..c9b984b
 --- /dev/null
 +++ b/tests/server/routes/test_http_version_parameters.py
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,287 @@
 +"""Exercise version carriers through real HTTP routes and task storage."""
++
++import logging
 +
 +import httpx
 +import pytest
@@ -4998,6 +5002,7 @@ index 0000000..abe3de6
 +    TaskState,
 +    TaskStatus,
 +)
++from a2a.utils import error_handlers, version_validator
 +from starlette.applications import Starlette
 +
 +
@@ -5076,6 +5081,55 @@ index 0000000..abe3de6
 +    )
 +
 +
++async def get_task(
++    client: httpx.AsyncClient,
++    binding: str,
++    task_id: str,
++    headers: list[tuple[str, str]],
++    query: list[tuple[str, str]],
++) -> httpx.Response:
++    if binding == 'rest':
++        return await client.get(
++            '/rest/tasks/' + task_id, headers=headers, params=query
++        )
++    return await client.post(
++        '/rpc',
++        json={
++            'jsonrpc': '2.0',
++            'id': 1,
++            'method': 'GetTask',
++            'params': {'id': task_id},
++        },
++        headers=headers,
++        params=query,
++    )
++
++
++async def send_streaming_message(
++    client: httpx.AsyncClient, binding: str, query: list[tuple[str, str]]
++) -> httpx.Response:
++    params = {
++        'message': {
++            'messageId': 'version-carrier-request',
++            'role': 'ROLE_USER',
++            'parts': [{'text': 'echo'}],
++        }
++    }
++    return await client.post(
++        '/rest/message:stream' if binding == 'rest' else '/rpc',
++        json=params
++        if binding == 'rest'
++        else {
++            'jsonrpc': '2.0',
++            'id': 1,
++            'method': 'SendStreamingMessage',
++            'params': params,
++        },
++        params=query,
++        headers={'Accept': 'text/event-stream'},
++    )
++
++
 +@pytest.mark.asyncio
 +@pytest.mark.parametrize('binding', ['rest', 'jsonrpc'])
 +@pytest.mark.parametrize(
@@ -5102,6 +5156,7 @@ index 0000000..abe3de6
 +        ([('A2A-Version', '1.1'), ('A2A-Version', '1.0')], [], False),
 +        ([('A2A-Version', '1.0'), ('A2A-Version', '1.1')], [], False),
 +        ([('A2A-Version', ''), ('A2A-Version', '1.0')], [], False),
++        ([], [('a2a-verſion', '1.0')], False),
 +    ],
 +)
 +async def test_http_version_carriers_before_task_read(
@@ -5122,22 +5177,7 @@ index 0000000..abe3de6
 +    async with httpx.AsyncClient(
 +        transport=httpx.ASGITransport(app), base_url='http://test'
 +    ) as client:
-+        if binding == 'rest':
-+            response = await client.get(
-+                '/rest/tasks/' + task.id, headers=headers, params=query
-+            )
-+        else:
-+            response = await client.post(
-+                '/rpc',
-+                json={
-+                    'jsonrpc': '2.0',
-+                    'id': 1,
-+                    'method': 'GetTask',
-+                    'params': {'id': task.id},
-+                },
-+                headers=headers,
-+                params=query,
-+            )
++        response = await get_task(client, binding, task.id, headers, query)
 +    payload = response.json()
 +    assert executor.executions == 0
 +    if accepted:
@@ -5162,28 +5202,11 @@ index 0000000..abe3de6
 +    executor = ObservedExecutor()
 +    store = ObservedTaskStore()
 +    app = create_app(executor, store)
-+    params = {
-+        'message': {
-+            'messageId': 'version-carrier-request',
-+            'role': 'ROLE_USER',
-+            'parts': [{'text': 'echo'}],
-+        }
-+    }
 +    async with httpx.AsyncClient(
 +        transport=httpx.ASGITransport(app), base_url='http://test'
 +    ) as client:
-+        response = await client.post(
-+            '/rest/message:stream' if binding == 'rest' else '/rpc',
-+            json=params
-+            if binding == 'rest'
-+            else {
-+                'jsonrpc': '2.0',
-+                'id': 1,
-+                'method': 'SendStreamingMessage',
-+                'params': params,
-+            },
-+            params={'a2A-vErSiOn': version},
-+            headers={'Accept': 'text/event-stream'},
++        response = await send_streaming_message(
++            client, binding, [('a2A-vErSiOn', version)]
 +        )
 +    if version.startswith('1.0'):
 +        assert response.status_code == 200, response.text
@@ -5197,6 +5220,50 @@ index 0000000..abe3de6
 +            assert response.json()['error']['code'] == -32009, response.text
 +        assert executor.executions == 0
 +        assert store.reads == 0
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('binding', ['rest', 'jsonrpc'])
++@pytest.mark.parametrize('streaming', [False, True])
++@pytest.mark.parametrize('control', ['\r\n', '\r', '\n', '\t'])
++async def test_version_query_rejection_escapes_error_and_warning_logs(
++    binding: str,
++    streaming: bool,
++    control: str,
++    caplog: pytest.LogCaptureFixture,
++) -> None:
++    version = '1.1' + control + 'CRITICAL forged.auth accepted'
++    executor = ObservedExecutor()
++    store = ObservedTaskStore()
++    caplog.set_level(logging.WARNING)
++    async with httpx.AsyncClient(
++        transport=httpx.ASGITransport(create_app(executor, store)),
++        base_url='http://test',
++    ) as client:
++        query = [('A2A-Version', version)]
++        response = (
++            await send_streaming_message(client, binding, query)
++            if streaming
++            else await get_task(client, binding, 'missing', [], query)
++        )
++    error = response.json()['error']
++    if binding == 'rest':
++        assert response.status_code == 400
++    else:
++        assert error['code'] == -32009
++    assert repr(version) in error['message']
++    assert not any(character in error['message'] for character in '\r\n\t')
++    warnings = [
++        record.getMessage()
++        for record in caplog.records
++        if record.name in {error_handlers.__name__, version_validator.__name__}
++    ]
++    assert warnings
++    assert all(
++        not any(character in warning for character in '\r\n\t')
++        for warning in warnings
++    )
++    assert executor.executions == store.reads == 0
 diff --git a/tests/server/routes/test_rest_dispatcher.py b/tests/server/routes/test_rest_dispatcher.py
 index e0d72c4..0fb1829 100644
 --- a/tests/server/routes/test_rest_dispatcher.py
