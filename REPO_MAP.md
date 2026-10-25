@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 320 tracked files (287 `.py`, 8 `.md`, 25 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 321 tracked files (288 `.py`, 8 `.md`, 25 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -487,6 +487,8 @@ Repo entry points and standard project files.
   - `def test_vector_corpus_is_complete()`; `def test_vector_must_accept(vector)`; `def test_vector_must_reject(vector)`; `def test_vector_agrees_with_independent_implementation(vector)`; `def test_non_ascii_is_emitted_as_literal_utf8()`; `def test_line_and_paragraph_separators_are_not_escaped()`; `def test_mandatory_escapes_are_still_applied()`; `def test_non_bmp_characters_survive_as_literal_utf8()`; `…`
 - **tests/native_a2a/utils/test_proto_utils.py** — Tests for kestrel_sdk.native_a2a.utils.proto_utils module.
   - `class TestToStreamResponse`; `class TestDictSerialization`; `class TestFieldIsRepeatedFallback`; `class TestRestParams`; `class TestValidateProtoRequiredFields`; `class TestWarnOnMissingRequiredFields`; `class TestParseLenient`
+- **tests/native_a2a/utils/test_rest_error_response.py** — Actual native REST error responses preserve their media, status and body.
+  - `async def test_real_rest_error_response(error, code, status, reason)`
 - **tests/native_a2a/utils/test_signing.py** — —
   - `def create_key_provider(verification_key)`; `def sample_agent_card()`; `def test_signer_and_verifier_symmetric(sample_agent_card)`; `def test_signer_and_verifier_symmetric_multiple_signatures(sample_agent_card)`; `def test_signer_and_verifier_asymmetric(sample_agent_card)`; `def test_canonicalize_agent_card(sample_agent_card)`; `def test_canonicalize_agent_card_preserves_false_capability(sample_agent_card)`; `def test_canonicalize_agent_card_warns_about_missing_required_fields(caplog)`
 - **tests/native_a2a/utils/test_signing_interop.py** — Cross-SDK Agent Card signature tests.

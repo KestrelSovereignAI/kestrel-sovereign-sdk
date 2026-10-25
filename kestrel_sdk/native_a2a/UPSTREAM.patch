@@ -5407,6 +5407,28 @@ index 0000000..ea7133a
 +        """Test that __str__ still returns only the message."""
 +        error = InvalidParamsError('Invalid field', data={'field': 'id'})
 +        assert str(error) == 'Invalid field'
+diff --git a/tests/utils/test_error_handlers.py b/tests/utils/test_error_handlers.py
+index 3c30b09..614207a 100644
+--- a/tests/utils/test_error_handlers.py
++++ b/tests/utils/test_error_handlers.py
+@@ -46,7 +46,7 @@ async def test_rest_error_handler_server_error():
+ 
+     assert isinstance(result, MockJSONResponse)
+     assert result.status_code == 400
+-    assert result.media_type == 'application/json'
++    assert result.media_type == 'application/a2a+json'
+     assert result.content == {
+         'error': {
+             'code': 400,
+@@ -77,7 +77,7 @@ async def test_rest_error_handler_unknown_exception():
+ 
+     assert isinstance(result, MockJSONResponse)
+     assert result.status_code == 500
+-    assert result.media_type == 'application/json'
++    assert result.media_type == 'application/a2a+json'
+     assert result.content == {
+         'error': {
+             'code': 500,
 diff --git a/tests/utils/test_jcs.py b/tests/utils/test_jcs.py
 index 78992c3..1ccba64 100644
 --- a/tests/utils/test_jcs.py
@@ -5548,6 +5570,47 @@ index 594ed97..031aa2e 100644
 +        """Leniency covers unknown names, not a known field of the wrong type."""
 +        with pytest.raises(ParseError):
 +            proto_utils.parse_lenient({'messageId': 5}, Message())
+diff --git a/tests/utils/test_rest_error_response.py b/tests/utils/test_rest_error_response.py
+new file mode 100644
+index 0000000..5891696
+--- /dev/null
++++ b/tests/utils/test_rest_error_response.py
+@@ -0,0 +1,35 @@
++"""Actual native REST error responses preserve their media, status and body."""
++
++import json
++
++import pytest
++from starlette.responses import JSONResponse
++
++from a2a.utils.error_handlers import rest_error_handler
++from a2a.utils.errors import InvalidRequestError
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('error,code,status,reason', [
++    (InvalidRequestError(message='Bad request'), 400, 'INVALID_ARGUMENT', 'INVALID_REQUEST'),
++    (ValueError('Unexpected error'), 500, 'INTERNAL', None),
++])
++async def test_real_rest_error_response(error, code, status, reason):
++    @rest_error_handler
++    async def reject():
++        raise error
++
++    response = await reject()
++    assert isinstance(response, JSONResponse)
++    assert response.status_code == code
++    assert response.headers['content-type'] == 'application/a2a+json'
++    payload = json.loads(response.body)['error']
++    assert payload['code'] == code and payload['status'] == status
++    if reason is not None:
++        assert payload['message'] == 'Bad request'
++        assert payload['details'][0] == {
++            '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
++            'reason': reason, 'domain': 'a2a-protocol.org', 'metadata': {},
++        }
++    else:
++        assert payload == {'code': 500, 'status': 'INTERNAL', 'message': 'unknown exception'}
 diff --git a/tests/utils/test_signing.py b/tests/utils/test_signing.py
 index f22c605..418df34 100644
 --- a/tests/utils/test_signing.py

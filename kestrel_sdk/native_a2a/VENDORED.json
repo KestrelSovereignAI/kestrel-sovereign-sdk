@@ -3,7 +3,7 @@
   "protocol": "1.0.1",
   "base_release": "1.2.3",
   "base_commit": "44b2f761a99123370237afe6c828f4cd2a50c402",
-  "reviewed_source_tree": "2e1a47d97e8d21126c27025802c1c9491cae07a6",
+  "reviewed_source_tree": "427c0cb3791820a7419b0a757fad2cfaff78018b",
   "namespace": "kestrel_sdk.native_a2a",
   "modifications": "Reviewed signing, HTTP authorization and version negotiation, client ownership, discovery/response decoding, native-only client selection and HTTP error media-type fixes in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
   "files": {
@@ -706,7 +706,7 @@
   "provenance_sha256": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
     "UPSTREAM-PYPROJECT.toml": "5cdf8fdd9f297018cba28c9f91308f122264cab237acc41ee7c54bbb1f6ee776",
-    "UPSTREAM.patch": "e2b26f769aa35312e81b4cc5bed8279c0b9ae08710f4107368a96602be1f81e6",
+    "UPSTREAM.patch": "24e2be6063534dede8d0a89cba781c53cfc46e1c3d3498a085db4290d22f314d",
     "NOTICE": "4924afe3dab57b45b0ae6ed34529d8231904adf8d7eeb35be6b12546be7cd8c0"
   }
 }
