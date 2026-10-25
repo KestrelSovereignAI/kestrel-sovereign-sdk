@@ -7,6 +7,7 @@ from typing import NoReturn
 import httpx
 import pytest
 
+from kestrel_sdk.native_a2a.utils.errors import TaskNotFoundError
 from kestrel_sdk.native_a2a.server.context import ServerCallContext
 from kestrel_sdk.native_a2a.server.events.event_queue import Event
 from kestrel_sdk.native_a2a.server.request_handlers import RequestHandler
@@ -141,3 +142,65 @@ async def test_native_routes_preserve_http_authorization_errors(
     assert response.headers['www-authenticate'] == 'Bearer realm="a2a"'
     assert response.text == 'Recipient policy refused this principal'
     assert 'text/event-stream' not in response.headers['content-type']
+
+
+class ProtocolRejectingHandler(RejectingHandler):
+    """Raise a native protocol error at the same real route boundary."""
+
+    async def _reject(
+        self, params: ProtoMessage, context: ServerCallContext
+    ) -> NoReturn:
+        raise TaskNotFoundError('The requested task is absent')
+
+    on_get_task = _reject
+    on_list_tasks = _reject
+    on_cancel_task = _reject
+    on_message_send = _reject
+    on_create_task_push_notification_config = _reject
+    on_get_task_push_notification_config = _reject
+    on_list_task_push_notification_configs = _reject
+    on_delete_task_push_notification_config = _reject
+    on_get_extended_agent_card = _reject
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('tenant', ['', 'tenant-one'])
+@pytest.mark.parametrize('binding', ['JSONRPC', 'HTTP+JSON'])
+@pytest.mark.parametrize('method,path,operation,params', OPERATIONS)
+async def test_native_protocol_errors_use_their_binding_media_type(
+    tenant: str, binding: str, method: str, path: str,
+    operation: str, params: dict,
+) -> None:
+    handler = ProtocolRejectingHandler(404)
+    app = Starlette(routes=[*create_jsonrpc_routes(handler, rpc_url='/rpc'),
+                            *create_rest_routes(handler)])
+    body = dict(params)
+    if operation in {'SendMessage', 'SendStreamingMessage'}:
+        body['message'] = {'messageId': 'request', 'role': 'ROLE_USER',
+                           'parts': [{'text': 'request'}]}
+    if tenant:
+        body['tenant'] = tenant
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                 base_url='http://protocol.test',
+                                 headers={'A2A-Version': '1.0'}) as client:
+        if binding == 'JSONRPC':
+            response = await client.post('/rpc', json={
+                'jsonrpc': '2.0', 'id': 'request', 'method': operation, 'params': body,
+            })
+        else:
+            response = await client.request(method, (f'/{tenant}' if tenant else '') + path,
+                                            json=body if method == 'POST' else None)
+    if binding == 'JSONRPC':
+        assert response.status_code == 200
+        assert response.headers['content-type'] == 'application/json'
+        assert response.json()['error']['code'] == -32001
+        assert response.json()['id'] == 'request'
+    else:
+        assert response.status_code == 404
+        assert response.headers['content-type'] == 'application/a2a+json'
+        error = response.json()['error']
+        assert error['code'] == 404 and error['status'] == 'NOT_FOUND'
+        assert error['details'][0]['@type'] == 'type.googleapis.com/google.rpc.ErrorInfo'
+        assert error['details'][0]['reason'] == 'TASK_NOT_FOUND'
+        assert error['details'][0]['domain'] == 'a2a-protocol.org'
+    assert 'www-authenticate' not in response.headers

@@ -3,9 +3,9 @@
   "protocol": "1.0.1",
   "base_release": "1.2.3",
   "base_commit": "44b2f761a99123370237afe6c828f4cd2a50c402",
-  "reviewed_source_tree": "cfbe0d872ebc474daac04e68d3ccae78e988d37d",
+  "reviewed_source_tree": "427c0cb3791820a7419b0a757fad2cfaff78018b",
   "namespace": "kestrel_sdk.native_a2a",
-  "modifications": "Reviewed signing, HTTP authorization and version negotiation, client ownership, discovery/response decoding and native-only client selection fixes in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
+  "modifications": "Reviewed signing, HTTP authorization and version negotiation, client ownership, discovery/response decoding, native-only client selection and HTTP error media-type fixes in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
   "files": {
     "__init__.py": {
       "upstream_sha256": "071fb0057bdade6df2df0a6ee1c09348dc1f6f54defcba348fe7774b2ef09834",
@@ -643,8 +643,8 @@
       "namespace_modified": false
     },
     "utils/error_handlers.py": {
-      "upstream_sha256": "d04b40d736f9bdbcde18d07bff793df0bc2c136ac079c8446e2fd7bb4d0ee5f0",
-      "vendored_sha256": "84829e6025ca0dd75553136ee63dc5821475a8eafed49cd125fb58132b5e1fda",
+      "upstream_sha256": "1d9d3d943d0d01965bf43779030576bf617d5a7d64d346517529594614c357d8",
+      "vendored_sha256": "f75dc805ab65e099fabe2f11fd3b21f482e32ff8b6da8ce99b9b4d5f2c6f3f5f",
       "namespace_modified": true
     },
     "utils/errors.py": {
@@ -706,7 +706,7 @@
   "provenance_sha256": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
     "UPSTREAM-PYPROJECT.toml": "5cdf8fdd9f297018cba28c9f91308f122264cab237acc41ee7c54bbb1f6ee776",
-    "UPSTREAM.patch": "daa9a507347c2caa18219ad2c3be1ffca6262ee9ce1aaba9a15081aea9f4b5a6",
+    "UPSTREAM.patch": "24e2be6063534dede8d0a89cba781c53cfc46e1c3d3498a085db4290d22f314d",
     "NOTICE": "4924afe3dab57b45b0ae6ed34529d8231904adf8d7eeb35be6b12546be7cd8c0"
   }
 }

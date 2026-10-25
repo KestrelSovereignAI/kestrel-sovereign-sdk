@@ -1297,10 +1297,18 @@ index 93dc034..dfd589e 100644
              user=self.build_user(request),
              state=state,
 diff --git a/src/a2a/utils/error_handlers.py b/src/a2a/utils/error_handlers.py
-index ef81829..20a8bd2 100644
+index ef81829..5d471a3 100644
 --- a/src/a2a/utils/error_handlers.py
 +++ b/src/a2a/utils/error_handlers.py
-@@ -133,6 +133,14 @@ def build_rest_error_payload(error: Exception) -> dict[str, Any]:
+@@ -18,6 +18,7 @@ else:
+ 
+ from google.protobuf.json_format import MessageToDict, ParseError
+ 
++from a2a.utils.constants import A2A_JSON_MEDIA_TYPE
+ from a2a.utils.errors import (
+     A2A_ERROR_MAPPING,
+     A2A_ERROR_REASONS,
+@@ -133,6 +134,14 @@ def build_rest_error_payload(error: Exception) -> dict[str, Any]:
  
  def _create_error_response(error: Exception) -> Response:
      """Helper function to create a JSONResponse for an error."""
@@ -1315,6 +1323,15 @@ index ef81829..20a8bd2 100644
      if isinstance(error, A2AError):
          log_level = (
              logging.ERROR
+@@ -157,7 +166,7 @@ def _create_error_response(error: Exception) -> Response:
+     return JSONResponse(
+         content=payload,
+         status_code=http_code,
+-        media_type='application/json',
++        media_type=A2A_JSON_MEDIA_TYPE,
+     )
+ 
+ 
 diff --git a/src/a2a/utils/errors.py b/src/a2a/utils/errors.py
 index b55f470..18aa0f5 100644
 --- a/src/a2a/utils/errors.py
@@ -4825,10 +4842,10 @@ index f3cb03e..59c255b 100644
 +    )
 diff --git a/tests/server/routes/test_http_authorization_errors.py b/tests/server/routes/test_http_authorization_errors.py
 new file mode 100644
-index 0000000..04432a9
+index 0000000..f15b737
 --- /dev/null
 +++ b/tests/server/routes/test_http_authorization_errors.py
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,205 @@
 +"""HTTP authorization errors remain HTTP errors on both native bindings."""
 +
 +from collections.abc import AsyncGenerator
@@ -4837,6 +4854,7 @@ index 0000000..04432a9
 +import httpx
 +import pytest
 +
++from a2a.utils.errors import TaskNotFoundError
 +from a2a.server.context import ServerCallContext
 +from a2a.server.events.event_queue import Event
 +from a2a.server.request_handlers import RequestHandler
@@ -4971,6 +4989,68 @@ index 0000000..04432a9
 +    assert response.headers['www-authenticate'] == 'Bearer realm="a2a"'
 +    assert response.text == 'Recipient policy refused this principal'
 +    assert 'text/event-stream' not in response.headers['content-type']
++
++
++class ProtocolRejectingHandler(RejectingHandler):
++    """Raise a native protocol error at the same real route boundary."""
++
++    async def _reject(
++        self, params: ProtoMessage, context: ServerCallContext
++    ) -> NoReturn:
++        raise TaskNotFoundError('The requested task is absent')
++
++    on_get_task = _reject
++    on_list_tasks = _reject
++    on_cancel_task = _reject
++    on_message_send = _reject
++    on_create_task_push_notification_config = _reject
++    on_get_task_push_notification_config = _reject
++    on_list_task_push_notification_configs = _reject
++    on_delete_task_push_notification_config = _reject
++    on_get_extended_agent_card = _reject
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('tenant', ['', 'tenant-one'])
++@pytest.mark.parametrize('binding', ['JSONRPC', 'HTTP+JSON'])
++@pytest.mark.parametrize('method,path,operation,params', OPERATIONS)
++async def test_native_protocol_errors_use_their_binding_media_type(
++    tenant: str, binding: str, method: str, path: str,
++    operation: str, params: dict,
++) -> None:
++    handler = ProtocolRejectingHandler(404)
++    app = Starlette(routes=[*create_jsonrpc_routes(handler, rpc_url='/rpc'),
++                            *create_rest_routes(handler)])
++    body = dict(params)
++    if operation in {'SendMessage', 'SendStreamingMessage'}:
++        body['message'] = {'messageId': 'request', 'role': 'ROLE_USER',
++                           'parts': [{'text': 'request'}]}
++    if tenant:
++        body['tenant'] = tenant
++    async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
++                                 base_url='http://protocol.test',
++                                 headers={'A2A-Version': '1.0'}) as client:
++        if binding == 'JSONRPC':
++            response = await client.post('/rpc', json={
++                'jsonrpc': '2.0', 'id': 'request', 'method': operation, 'params': body,
++            })
++        else:
++            response = await client.request(method, (f'/{tenant}' if tenant else '') + path,
++                                            json=body if method == 'POST' else None)
++    if binding == 'JSONRPC':
++        assert response.status_code == 200
++        assert response.headers['content-type'] == 'application/json'
++        assert response.json()['error']['code'] == -32001
++        assert response.json()['id'] == 'request'
++    else:
++        assert response.status_code == 404
++        assert response.headers['content-type'] == 'application/a2a+json'
++        error = response.json()['error']
++        assert error['code'] == 404 and error['status'] == 'NOT_FOUND'
++        assert error['details'][0]['@type'] == 'type.googleapis.com/google.rpc.ErrorInfo'
++        assert error['details'][0]['reason'] == 'TASK_NOT_FOUND'
++        assert error['details'][0]['domain'] == 'a2a-protocol.org'
++    assert 'www-authenticate' not in response.headers
 diff --git a/tests/server/routes/test_http_version_parameters.py b/tests/server/routes/test_http_version_parameters.py
 new file mode 100644
 index 0000000..c9b984b
@@ -5327,6 +5407,28 @@ index 0000000..ea7133a
 +        """Test that __str__ still returns only the message."""
 +        error = InvalidParamsError('Invalid field', data={'field': 'id'})
 +        assert str(error) == 'Invalid field'
+diff --git a/tests/utils/test_error_handlers.py b/tests/utils/test_error_handlers.py
+index 3c30b09..614207a 100644
+--- a/tests/utils/test_error_handlers.py
++++ b/tests/utils/test_error_handlers.py
+@@ -46,7 +46,7 @@ async def test_rest_error_handler_server_error():
+ 
+     assert isinstance(result, MockJSONResponse)
+     assert result.status_code == 400
+-    assert result.media_type == 'application/json'
++    assert result.media_type == 'application/a2a+json'
+     assert result.content == {
+         'error': {
+             'code': 400,
+@@ -77,7 +77,7 @@ async def test_rest_error_handler_unknown_exception():
+ 
+     assert isinstance(result, MockJSONResponse)
+     assert result.status_code == 500
+-    assert result.media_type == 'application/json'
++    assert result.media_type == 'application/a2a+json'
+     assert result.content == {
+         'error': {
+             'code': 500,
 diff --git a/tests/utils/test_jcs.py b/tests/utils/test_jcs.py
 index 78992c3..1ccba64 100644
 --- a/tests/utils/test_jcs.py
@@ -5468,6 +5570,47 @@ index 594ed97..031aa2e 100644
 +        """Leniency covers unknown names, not a known field of the wrong type."""
 +        with pytest.raises(ParseError):
 +            proto_utils.parse_lenient({'messageId': 5}, Message())
+diff --git a/tests/utils/test_rest_error_response.py b/tests/utils/test_rest_error_response.py
+new file mode 100644
+index 0000000..5891696
+--- /dev/null
++++ b/tests/utils/test_rest_error_response.py
+@@ -0,0 +1,35 @@
++"""Actual native REST error responses preserve their media, status and body."""
++
++import json
++
++import pytest
++from starlette.responses import JSONResponse
++
++from a2a.utils.error_handlers import rest_error_handler
++from a2a.utils.errors import InvalidRequestError
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('error,code,status,reason', [
++    (InvalidRequestError(message='Bad request'), 400, 'INVALID_ARGUMENT', 'INVALID_REQUEST'),
++    (ValueError('Unexpected error'), 500, 'INTERNAL', None),
++])
++async def test_real_rest_error_response(error, code, status, reason):
++    @rest_error_handler
++    async def reject():
++        raise error
++
++    response = await reject()
++    assert isinstance(response, JSONResponse)
++    assert response.status_code == code
++    assert response.headers['content-type'] == 'application/a2a+json'
++    payload = json.loads(response.body)['error']
++    assert payload['code'] == code and payload['status'] == status
++    if reason is not None:
++        assert payload['message'] == 'Bad request'
++        assert payload['details'][0] == {
++            '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
++            'reason': reason, 'domain': 'a2a-protocol.org', 'metadata': {},
++        }
++    else:
++        assert payload == {'code': 500, 'status': 'INTERNAL', 'message': 'unknown exception'}
 diff --git a/tests/utils/test_signing.py b/tests/utils/test_signing.py
 index f22c605..418df34 100644
 --- a/tests/utils/test_signing.py
