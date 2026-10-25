@@ -19,6 +19,7 @@ else:
 
 from google.protobuf.json_format import MessageToDict, ParseError
 
+from kestrel_sdk.native_a2a.utils.constants import A2A_JSON_MEDIA_TYPE
 from kestrel_sdk.native_a2a.utils.errors import (
     A2A_ERROR_MAPPING,
     A2A_ERROR_REASONS,
@@ -166,7 +167,7 @@ def _create_error_response(error: Exception) -> Response:
     return JSONResponse(
         content=payload,
         status_code=http_code,
-        media_type='application/json',
+        media_type=A2A_JSON_MEDIA_TYPE,
     )
 
 

@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.42.3
+
+### Fixed
+
+- Native HTTP+JSON protocol errors use `application/a2a+json`, as recommended by
+  A2A 1.0.1. Unary and pre-stream errors preserve their Google RPC Status and
+  ErrorInfo payloads. JSON-RPC keeps its binding media type, and authorization
+  exceptions preserve their HTTP status and challenge headers. Addresses the
+  shared SDK part of [Core #3812](https://github.com/KestrelSovereignAI/kestrel-sovereign/issues/3812).
+- Regenerated the modified SDK's source/test patch and custody manifest from
+  the pinned public base and verified packaged runtime sources.
+
 ## 0.42.2
 
 ### Fixed

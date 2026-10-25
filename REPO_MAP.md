@@ -477,7 +477,7 @@ Repo entry points and standard project files.
 - **tests/native_a2a/server/routes/test_agent_card_routes.py** — —
   - `def agent_card()`; `def test_get_agent_card_success(agent_card)`; `def test_get_agent_card_with_modifier(agent_card)`; `def test_agent_card_custom_url(agent_card)`; `def card_client()`; `def test_response_carries_a_weak_etag()`; `def test_cache_control_is_sent_only_when_configured()`; `def test_etag_changes_with_the_card()`; `…`
 - **tests/native_a2a/server/routes/test_http_authorization_errors.py** — HTTP authorization errors remain HTTP errors on both native bindings.
-  - `class RejectingHandler`; `async def test_native_routes_preserve_http_authorization_errors(status_code, tenant, binding, method, …)`
+  - `class RejectingHandler`; `async def test_native_routes_preserve_http_authorization_errors(status_code, tenant, binding, method, …)`; `class ProtocolRejectingHandler`; `async def test_native_protocol_errors_use_their_binding_media_type(tenant, binding, method, path, …)`
 - **tests/native_a2a/server/routes/test_http_version_parameters.py** — Exercise version carriers through real HTTP routes and task storage.
   - `class ObservedExecutor`; `class ObservedTaskStore`; `def create_app(executor, store)`; `async def get_task(client, binding, task_id, headers, …)`; `async def send_streaming_message(client, binding, query)`; `async def test_http_version_carriers_before_task_read(binding, headers, query, accepted)`; `async def test_query_version_before_streaming_execution(binding, version)`; `async def test_version_query_rejection_escapes_error_and_warning_logs(binding, streaming, control, caplog)`
 - **tests/native_a2a/utils/jcs_depth_vectors.json** — (configuration)
