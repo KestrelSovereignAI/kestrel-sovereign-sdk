@@ -25,7 +25,7 @@ def selected_requirements(extra):
     return requirements
 
 
-@pytest.mark.parametrize("extra", ["a2a", "httpx", "httpx2"])
+@pytest.mark.parametrize("extra", ["a2a", "httpx", "httpx2", "tracing"])
 def test_every_https_profile_requires_the_current_post_incident_trust_bundle(extra):
     roots = [item for item in selected_requirements(extra)
              if canonicalize_name(item.name) == "certifi"]

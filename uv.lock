@@ -696,6 +696,7 @@ tls = [
     { name = "certifi" },
 ]
 tracing = [
+    { name = "certifi" },
     { name = "openinference-semantic-conventions" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
@@ -732,6 +733,7 @@ requires-dist = [
     { name = "kestrel-sovereign-sdk", extras = ["tls"], marker = "extra == 'a2a'" },
     { name = "kestrel-sovereign-sdk", extras = ["tls"], marker = "extra == 'httpx'" },
     { name = "kestrel-sovereign-sdk", extras = ["tls"], marker = "extra == 'httpx2'" },
+    { name = "kestrel-sovereign-sdk", extras = ["tls"], marker = "extra == 'tracing'" },
     { name = "openinference-semantic-conventions", marker = "extra == 'test'", specifier = ">=0.1.9" },
     { name = "openinference-semantic-conventions", marker = "extra == 'tracing'", specifier = ">=0.1.9" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'test'", specifier = ">=1.20,<2" },

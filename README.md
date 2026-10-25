@@ -69,7 +69,7 @@ With encryption helpers:
 uv pip install "kestrel-sovereign-sdk[crypto] @ git+https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk.git"
 ```
 
-The `[httpx]`, `[httpx2]` and `[a2a]` profiles select the shared `[tls]` extra,
+The `[httpx]`, `[httpx2]`, `[a2a]` and `[tracing]` profiles select the shared `[tls]` extra,
 which requires `certifi>=2026.10.23`. This uses the current post-incident CA
 baseline and permits future bundle updates. See the
 [CA-removal advisory](https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2)
