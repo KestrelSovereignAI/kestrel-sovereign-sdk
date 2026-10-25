@@ -69,11 +69,11 @@ wheels = [
 
 [[package]]
 name = "certifi"
-version = "2026.10.18"
+version = "2026.10.23"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7e/eb/a2aa1ac3ea30dd3f30ca57f40232138b6b0040719316ecb85daf61167771/certifi-2026.10.18.tar.gz", hash = "sha256:b9995d97b64d0431a5af837d8ca8cd6238104d1f319f04bd93ea43124d6c861e", size = 135227, upload-time = "2026-10-18T16:21:07.655Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/11/b524cbd9bbdaca58608e4cf4053fd463417549e1959fa8d3aa18319f9555/certifi-2026.10.23.tar.gz", hash = "sha256:a9895e6e2758b371e0545e321a3a8fd1fcfd9829ada8824a936dfb16aaaf36cd", size = 136225, upload-time = "2026-10-23T11:36:16.478Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/ba/95dd616042484f7c83a06974388b37b837732740ee70bc5dc715b5fcd55a/certifi-2026.10.18-py3-none-any.whl", hash = "sha256:73191c47aaa79da394e8fee2dbc2ec827432cab56311122c9e47abf79e390f62", size = 134093, upload-time = "2026-10-18T16:21:06.276Z" },
+    { url = "https://files.pythonhosted.org/packages/32/d1/a3652fe2c19134d0d15922177821d863cbd7e842d53a21bbe7e8e3a1b5ac/certifi-2026.10.23-py3-none-any.whl", hash = "sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1", size = 135082, upload-time = "2026-10-23T11:36:14.763Z" },
 ]
 
 [[package]]
@@ -621,7 +621,7 @@ wheels = [
 
 [[package]]
 name = "kestrel-sovereign-sdk"
-version = "0.42.3"
+version = "0.42.4"
 source = { editable = "." }
 dependencies = [
     { name = "idna" },
@@ -630,6 +630,7 @@ dependencies = [
 
 [package.optional-dependencies]
 a2a = [
+    { name = "certifi" },
     { name = "cryptography" },
     { name = "culsans", marker = "python_full_version < '3.13'" },
     { name = "google-api-core" },
@@ -647,10 +648,12 @@ crypto = [
     { name = "cryptography" },
 ]
 httpx = [
+    { name = "certifi" },
     { name = "httpcore", extra = ["asyncio"] },
     { name = "httpx" },
 ]
 httpx2 = [
+    { name = "certifi" },
     { name = "httpcore2", extra = ["asyncio"] },
     { name = "httpx2" },
 ]
@@ -660,6 +663,7 @@ metrics = [
 test = [
     { name = "aiosqlite" },
     { name = "alembic" },
+    { name = "certifi" },
     { name = "cryptography" },
     { name = "culsans", marker = "python_full_version < '3.13'" },
     { name = "google-api-core" },
@@ -688,6 +692,9 @@ test = [
     { name = "sse-starlette" },
     { name = "starlette" },
 ]
+tls = [
+    { name = "certifi" },
+]
 tracing = [
     { name = "openinference-semantic-conventions" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
@@ -706,6 +713,7 @@ test = [
 requires-dist = [
     { name = "aiosqlite", marker = "extra == 'test'", specifier = ">=0.21.0" },
     { name = "alembic", marker = "extra == 'test'", specifier = ">=1.14.0" },
+    { name = "certifi", marker = "extra == 'tls'", specifier = ">=2026.10.23" },
     { name = "cryptography", marker = "extra == 'a2a'", specifier = ">=48.0.1" },
     { name = "cryptography", marker = "extra == 'crypto'", specifier = ">=42.0" },
     { name = "cryptography", marker = "extra == 'test'", specifier = ">=42.0" },
@@ -721,6 +729,9 @@ requires-dist = [
     { name = "idna", specifier = ">=3.20,<4" },
     { name = "json-rpc", marker = "extra == 'a2a'", specifier = ">=1.15.0" },
     { name = "kestrel-sovereign-sdk", extras = ["a2a", "httpx", "httpx2"], marker = "extra == 'test'" },
+    { name = "kestrel-sovereign-sdk", extras = ["tls"], marker = "extra == 'a2a'" },
+    { name = "kestrel-sovereign-sdk", extras = ["tls"], marker = "extra == 'httpx'" },
+    { name = "kestrel-sovereign-sdk", extras = ["tls"], marker = "extra == 'httpx2'" },
     { name = "openinference-semantic-conventions", marker = "extra == 'test'", specifier = ">=0.1.9" },
     { name = "openinference-semantic-conventions", marker = "extra == 'tracing'", specifier = ">=0.1.9" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'test'", specifier = ">=1.20,<2" },
@@ -744,7 +755,7 @@ requires-dist = [
     { name = "sse-starlette", marker = "extra == 'a2a'" },
     { name = "starlette", marker = "extra == 'a2a'" },
 ]
-provides-extras = ["a2a", "httpx", "httpx2", "crypto", "metrics", "tracing", "test"]
+provides-extras = ["tls", "a2a", "httpx", "httpx2", "crypto", "metrics", "tracing", "test"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "kestrel-sovereign-sdk", extras = ["test"] }]
