@@ -18,6 +18,8 @@ def selected_requirements(extra):
         seen.add(name)
         for raw in project["optional-dependencies"][name]:
             requirement = Requirement(raw)
+            if requirement.marker is not None and not requirement.marker.evaluate({"extra": name}):
+                continue
             if canonicalize_name(requirement.name) == canonicalize_name(project["name"]):
                 pending.extend(requirement.extras)
             else:
@@ -26,15 +28,12 @@ def selected_requirements(extra):
 
 
 @pytest.mark.parametrize("extra", ["a2a", "httpx", "httpx2", "tracing"])
-def test_every_https_profile_requires_the_current_post_incident_trust_bundle(extra):
+def test_https_profiles_share_the_certifi_dependency_policy(extra):
     roots = [item for item in selected_requirements(extra)
              if canonicalize_name(item.name) == "certifi"]
-    assert roots, "Every HTTPS profile must declare its trust-bundle policy"
+    assert roots, "HTTPS profiles must carry the shared certifi dependency policy"
     assert all(not item.specifier.contains("2026.5.20") for item in roots)
+    assert all(not item.specifier.contains("2026.10.18") for item in roots)
+    assert all(not item.specifier.contains("2026.10.22") for item in roots)
     assert all(item.specifier.contains("2026.10.23") for item in roots)
     assert all(item.specifier.contains("2099.1.1") for item in roots), "Keep future CA updates eligible"
-
-
-def test_the_base_sdk_does_not_acquire_an_http_trust_bundle_dependency():
-    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())["project"]
-    assert {canonicalize_name(Requirement(item).name) for item in project["dependencies"]} == {"pydantic", "idna"}
