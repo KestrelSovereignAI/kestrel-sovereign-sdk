@@ -69,6 +69,14 @@ With encryption helpers:
 uv pip install "kestrel-sovereign-sdk[crypto] @ git+https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk.git"
 ```
 
+The `[httpx]`, `[httpx2]`, `[a2a]` and `[tracing]` profiles select the shared `[tls]` extra,
+which requires `certifi>=2026.10.23` for certifi users in the environment and
+permits future bundle updates. HTTPX and requests use certifi by default;
+HTTPX2 uses the operating-system trust store through truststore. Installing
+certifi does not update that operating-system store. See the
+[CA-removal advisory](https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2)
+and [subsequent trust-store update](https://github.com/certifi/python-certifi/releases/tag/2026.10.23).
+
 ## Vendored native A2A implementation
 
 The `[a2a]` extra supplies one reviewed, modified copy of the official A2A Python
@@ -131,6 +139,7 @@ supported value cannot hide a conflicting or empty value in another carrier.
 - Optional: `cryptography>=42.0` (via `[crypto]` extra)
 - Optional native HTTP clients: `[httpx]` or `[httpx2]`
 - Optional native A2A models: `[a2a]`
+- Optional certifi policy: `[tls]`, included by the HTTP clients, A2A and tracing profiles
 
 ### A2A skill contributions
 

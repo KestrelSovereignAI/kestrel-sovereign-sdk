@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.42.4
+
+### Fixed
+
+- The optional `[tls]` extra provides one `certifi>=2026.10.23` policy for the
+  `[a2a]`, `[httpx]`, `[httpx2]` and `[tracing]` profiles. Older certifi pins
+  cannot resolve with these profiles; future bundle updates remain eligible.
+  HTTPX2 retains its operating-system trust store through truststore.
+  Base dependencies and packaged runtime sources are unchanged.
+
 ## 0.42.3
 
 ### Fixed
