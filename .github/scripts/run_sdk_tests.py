@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import faulthandler
+import os
 import sys
 
 
-# Pytest's per-test faulthandler timer is cancelled when each test/session ends.
-# Own this process timer until interpreter shutdown, including non-daemon joins.
-# Disable only pytest's faulthandler plugin so it cannot cancel the same timer.
-faulthandler.enable(all_threads=True)
-faulthandler.dump_traceback_later(60, repeat=True)
+# Keep diagnostics outside pytest's file-descriptor capture, including crashes.
+_stderr = os.fdopen(os.dup(2), "w")
+# Pytest's exception/debugger hooks cancel the shared faulthandler timer.
+# Disable only that plugin; own this timer through interpreter thread joins.
+faulthandler.enable(file=_stderr, all_threads=True)
+faulthandler.dump_traceback_later(60, repeat=True, file=_stderr)
 
 import pytest  # noqa: E402
 
