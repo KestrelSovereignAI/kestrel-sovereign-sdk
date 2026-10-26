@@ -98,6 +98,18 @@ not encrypt it: Core must encrypt these bytes under the existing request key,
 in the SAME atomic row transaction as request/lease custody. The private codec
 must never be sent as tool output, logged or stored in a second provider store.
 
+The codec limit is not a promise that every valid `EnvironmentLease` fits:
+its inherited optional `actual_cost_usd` Decimal has no digit limit. Hosts must
+persist bounded minimal native custody on the SAME encrypted request row before
+optional billing enrichment. If that cost cannot fit, explicitly project only
+`actual_cost_usd=None` while retaining every other original lease fact, especially
+the native resource ID and expiry. `None` means unknown cost, never zero or a
+budget approval. Keep the unmodified provider observation private in its original
+operation; the codec does not silently strip, normalize, round or clamp it.
+Optional billing validation or a serialization failure must not discard known
+native custody, reset dispatch or permit another create. The concrete host
+adapter must verify this ordering; the SDK does not implement that adapter.
+
 Preparation/content digests and structured validation details are private.
 SDK error strings suppress input values, but unknown field names can remain;
 non-SDK enclosing models and TypeAdapters need their own hiding configuration.

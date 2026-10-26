@@ -339,6 +339,12 @@ class EnvironmentAcquisitionAttempt(Protocol):
     after authority loss while this lexical operation still owns the result.
     They do not call check_current or permit new IO. They cannot replace known
     identities, clear custody, extend expiry, or create a fresh attempt.
+
+    Hosts persist bounded minimal lease facts on the SAME encrypted row before
+    optional billing enrichment. An unbounded actual_cost_usd Decimal may exceed
+    the private codec limit: explicitly record that optional cost as None
+    (unknown, never zero) rather than lose the original native ID or expiry.
+    The codec never silently strips, rounds or clamps provider observations.
     """
 
     @property

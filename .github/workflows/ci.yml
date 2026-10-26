@@ -110,10 +110,10 @@ jobs:
         env:
           MATRIX_PYTHON_VERSION: ${{ matrix.python-version }}
           PYTHONUNBUFFERED: "1"
-        # A blocked native thread must leave test names and stacks in CI logs.
-        # The thread timeout terminates the process instead of waiting on the
-        # same event loop/executor that may be stuck. No platform is skipped.
-        run: uv run --no-sync --python "$MATRIX_PYTHON_VERSION" --group test pytest -vv --timeout=120 --timeout-method=thread -o faulthandler_timeout=60
+        # The process timer remains active through pytest teardown and native
+        # interpreter shutdown. Per-test thread timeouts still terminate a
+        # stuck test. No platform or test is skipped.
+        run: uv run --no-sync --python "$MATRIX_PYTHON_VERSION" --group test python -u -B .github/scripts/run_sdk_tests.py -vv --timeout=120 --timeout-method=thread
 
   build-check:
     runs-on: ubuntu-latest

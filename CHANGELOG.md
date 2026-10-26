@@ -51,18 +51,15 @@ All notable changes to this project are documented in this file.
   transport support and publication are separate delivery gates.
 - Human action checks accept pixel-free frame records. Pre-open revocation has
   an explicit durable tombstone result, and original-epoch revocation uses
-  `control_epoch`. Correlation rejects copied lease/request mismatches.
-
-### Changed
-
-- Direct SDK resource validation suppresses field input details. Non-SDK
-  enclosing models and TypeAdapters must configure the same hiding. Invalid
-  tags and unknown field names can still appear; log exception classes only.
-  Detailed Pydantic error payloads and content digests remain private.
-- Shared UTC digest normalization rejects offset overflow as a validation
-  failure. Non-whole-minute datetime offsets normalize to UTC during
-  computer/human/workspace validation, preserving the original instant and
-  digest across durable round trips; whole-minute representations stay unchanged.
+  `control_epoch`. Direct SDK resource validation suppresses field input details;
+  non-SDK enclosing models and TypeAdapters must configure the same hiding.
+  Invalid tags and unknown field names can still appear in error text; log
+  exception classes only.
+  Detailed Pydantic error payloads and content digests remain private. Correlation
+  rejects copied lease/request mismatches, and shared UTC digest normalization rejects offset overflow as a
+  validation failure. Non-whole-minute datetime offsets normalize to UTC during
+  computer/human/workspace validation, preserving the original instant
+  and digest across durable round trips; whole-minute representations stay unchanged.
 
 ### Fixed
 
