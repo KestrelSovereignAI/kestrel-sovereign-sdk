@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## 0.45.0
+## 0.44.1
 
 ### Added
 
@@ -11,6 +11,9 @@ All notable changes to this project are documented in this file.
   withholding private delivery if policy changed the public result. Copies and
   serialization cannot duplicate the private delivery capability. This is a
   local host contract; it does not provide tool permission or audit confirmation.
+- The SDK tool wrapper transfers private delivery while adding its canonical
+  metadata and buffered parts. Finalization requires the actual post-hook
+  object and reports withholding separately from an empty delivery.
 
 ## 0.44.0
 

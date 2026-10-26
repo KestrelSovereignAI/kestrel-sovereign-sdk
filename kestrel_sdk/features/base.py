@@ -563,6 +563,7 @@ class Feature(ABC):
 
                     async def execute(self, **kwargs) -> Dict[str, Any]:
                         from kestrel_sdk.tools.result import ToolResult
+                        from kestrel_sdk.tools.deferred import DeferredToolResult
 
                         # This wrapper is the one door every JSON-argument
                         # call passes through, and the only place that knows
@@ -618,6 +619,8 @@ class Feature(ABC):
                         # alongside as dispatch-layer metadata so
                         # audit logs can still identify which tool
                         # produced this row.
+                        if isinstance(result, DeferredToolResult):
+                            return result.for_tool(self.name, pending_parts)
                         if isinstance(result, ToolResult):
                             payload = result.to_dict()
                             payload["tool"] = self.name
