@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.44.1
+
+### Added
+
+- `DeferredToolResult` retains a private render-parts factory outside its JSON
+  envelope. Supporting hosts finalize it once after post-tool policy completes,
+  withholding private delivery if policy denies it, changes the public result
+  or replaces the result object. Copies and
+  serialization cannot duplicate the private delivery capability. This is a
+  local host contract; it does not provide tool permission or audit confirmation.
+- The SDK tool wrapper transfers private delivery while adding its canonical
+  metadata and buffered parts. Finalization requires the actual post-hook
+  object and an explicit boolean policy decision, and reports withholding
+  separately from an empty delivery. A typed optional host protocol identifies
+  the capability on the agent passed to a feature.
+
 ## 0.44.0
 
 ### Added
