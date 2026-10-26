@@ -1,9 +1,8 @@
 # Optional environment acquisition custody, API version 1
 
-This 0.45.0 source candidate combines acquisition custody with the merged
-human-control contracts introduced in 0.44.0 source. Those human-control
-contracts were unpublished at this review. Neither publication nor a concrete
-host/provider is implied.
+Version 0.45.0 combines acquisition custody with the human-control contracts
+introduced in 0.44.0. Concrete host/provider integration requires separate
+implementation and verification; these contracts alone do not enable it.
 It does not enable a provider, implement a Core store or authorize cloud use.
 `EnvironmentProvider` and its entry-point group remain unchanged. An optional
 `CustodiedEnvironmentProvider.acquire_with_custody(request, quote, custody)`

@@ -12,12 +12,12 @@ All notable changes to this project are documented in this file.
   factual unknown-result reconciliation without retry authority. Explicit private
   storage preserves bounded bytes while generic dumps omit them. This source
   does not register a provider or implement a concrete human-control channel.
+- Acquisition private fields require exact immutable bytes, including in the
+  storage codec, so size bounds and restart digests use the same bytes. Mutable
+  buffers and other wrapped types are refused before persistence.
 
 ### Fixed
 
-- Require exact immutable bytes inside acquisition SecretBytes values, including
-  the private storage codec, so size bounds and restart digests use the same
-  bytes. Refuse mutable buffers and other wrapped types before persistence.
 - Specify repeated pre-open revocation: the same request ID reconciles its
   original result; a new request ID for the same permanently fenced target gets
   its own correlated tombstone with the original fence time. Changed targets
