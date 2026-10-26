@@ -10,7 +10,7 @@ import math
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol
 from enum import Enum
 
 
@@ -176,9 +176,16 @@ class ToolSchema:
     examples: List[Dict[str, Any]] = field(default_factory=list)
     command_prefix: Optional[str] = None  # e.g., "!list-models"
     is_concurrency_safe: bool = False  # True = read-only, safe to run in parallel
+    # Hosts omit hidden tools from model schemas while keeping their governed
+    # registrations available to other admitted callers. Exposure is not a grant.
+    model_visible: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.model_visible, bool):
+            raise TypeError("model_visible must be a boolean")
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert schema to dictionary for LLM consumption."""
+        """Convert to a descriptor, including host model-exposure metadata."""
         return {
             "name": self.name,
             "description": self.description,
@@ -195,7 +202,8 @@ class ToolSchema:
                 for p in self.parameters
             ],
             "examples": self.examples,
-            "command_prefix": self.command_prefix
+            "command_prefix": self.command_prefix,
+            "model_visible": self.model_visible,
         }
 
     def to_openai_format(self) -> Dict[str, Any]:
@@ -247,6 +255,38 @@ class ToolSchema:
                 }
             }
         }
+
+
+class GovernedToolBinding(Protocol):
+    """A host-owned reference to one retained dynamic-tool registration.
+
+    This is an in-process interface, never a serialized authority token.
+    A binding does not grant permission: invocation must use the host's
+    normal hooks, approvals, argument checks and durable dispatch evidence.
+    Unregistering, eviction or replacement invalidates the original target.
+    """
+
+    @property
+    def name(self) -> str:
+        """The actual registered name after host normalization/disambiguation."""
+        ...
+
+    @property
+    def is_current(self) -> bool:
+        """Diagnostic only; invoke must independently recheck before execution."""
+        ...
+
+    async def invoke(
+        self, arguments: Dict[str, Any], *, session_id: str, source: str = "external",
+    ) -> Any:
+        """Dispatch against this exact registration through the governed path.
+
+        Stale bindings raise ResourceConflict before effect. An effect whose
+        dispatch evidence cannot be confirmed raises ResourceOutcomeUnknown;
+        callers must not automatically repeat it. Both errors are defined in
+        kestrel_sdk.resources.
+        """
+        ...
 
 
 class CommandParseError(ValueError):
