@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.43.0 (unreleased)
+
+### Added
+
+- `ToolSchema.model_visible` declares model exposure independently of the
+  tool's input schema and permissions. It defaults to true and requires a
+  boolean. Hosts retain hidden tools for other governed callers.
+- `GovernedToolBinding` describes a host-owned reference to the actual retained
+  dynamic registration, with target-currentness diagnostics and governed
+  invocation. A binding grants no permission and must not be serialized.
+
 ## 0.42.4
 
 ### Fixed

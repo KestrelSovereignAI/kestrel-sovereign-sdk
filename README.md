@@ -836,3 +836,22 @@ No environment variables required. This is a development-time dependency only.
 uv pip install kestrel-sovereign-sdk && uv pip install -e .
 uv run pytest
 ```
+
+
+### Governed dynamic-tool bindings
+
+`ToolSchema.model_visible` is model-exposure metadata. A host can keep an
+app-only tool in its governed registry while omitting it from model schemas.
+The flag does not grant permission or change the tool's argument schema.
+
+Hosts implementing `GovernedToolBinding` report the actual normalized tool
+name and retain the original registration identity. `invoke(arguments,
+session_id=..., source=...)` must re-enter normal permission, approval,
+argument-validation and dispatch-evidence handling and recheck the target
+before execution. `is_current` is diagnostic information; it is never
+permission to call a tool directly. Removed or replaced registrations fail
+with `ResourceConflict`. Unconfirmed effects/evidence fail with
+`ResourceOutcomeUnknown` and must not be automatically repeated.
+
+These bindings are in-process host interfaces, not wire credentials. The
+host implementation is required; the SDK itself does not execute tools.

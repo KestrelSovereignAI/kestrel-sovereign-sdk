@@ -10,7 +10,7 @@ import math
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol
 from enum import Enum
 
 
@@ -255,6 +255,38 @@ class ToolSchema:
                 }
             }
         }
+
+
+class GovernedToolBinding(Protocol):
+    """A host-owned reference to one retained dynamic-tool registration.
+
+    This is an in-process interface, never a serialized authority token.
+    A binding does not grant permission: invocation must use the host's
+    normal hooks, approvals, argument checks and durable dispatch evidence.
+    Unregistering, eviction or replacement invalidates the original target.
+    """
+
+    @property
+    def name(self) -> str:
+        """The actual registered name after host normalization/disambiguation."""
+        ...
+
+    @property
+    def is_current(self) -> bool:
+        """Diagnostic only; invoke must independently recheck before execution."""
+        ...
+
+    async def invoke(
+        self, arguments: Dict[str, Any], *, session_id: str, source: str = "external",
+    ) -> Any:
+        """Dispatch against this exact registration through the governed path.
+
+        Stale bindings raise ResourceConflict before effect. An effect whose
+        dispatch evidence cannot be confirmed raises ResourceOutcomeUnknown;
+        callers must not automatically repeat it. Both errors are defined in
+        kestrel_sdk.resources.
+        """
+        ...
 
 
 class CommandParseError(ValueError):
