@@ -125,8 +125,14 @@ def test_public_optional_protocol_does_not_extend_or_replace_agent_driver():
         method = getattr(HumanControl, name)
         assert inspect.iscoroutinefunction(method)
         assert tuple(inspect.signature(method).parameters) == parameters
-    assert inspect.signature(HumanControl.revoke).return_annotation == "HumanControlLease | HumanControlRevocationTombstone"
-    assert inspect.signature(HumanControl.status).return_annotation == "HumanControlLease"
+    expected_returns = {
+        "open": "HumanControlLease", "status": "HumanControlLease",
+        "observe": "HumanScreenObservation", "act": "HumanActionReceipt",
+        "action_status": "HumanActionReceipt",
+        "revoke": "HumanControlLease | HumanControlRevocationTombstone",
+    }
+    for name, annotation in expected_returns.items():
+        assert inspect.signature(getattr(HumanControl, name)).return_annotation == annotation
     assert tuple(inspect.signature(HumanActionRequest.require_lease).parameters) == ("self", "lease", "session", "frame", "at")
 
 
@@ -564,6 +570,20 @@ def test_human_records_keep_exact_instants_and_digests_through_json(offset):
     frame = observation(observed_at=(NOW + timedelta(seconds=2)).astimezone(zone)).frame_record
     assert HumanScreenFrame.model_validate_json(frame.model_dump_json()) == frame
     assert frame.frame.observed_at.tzinfo is UTC
+    receipt = HumanActionReceipt(
+        control_id="control", consumer_id="authenticated-consumer",
+        receipt=ActionReceipt(action_id="human-input", session_id="session",
+            observation_id="human-observation", control_epoch=2, outcome="unknown",
+            recorded_at=CHECK.astimezone(zone)),
+    )
+    restored_receipt = HumanActionReceipt.model_validate_json(receipt.model_dump_json())
+    assert restored_receipt == receipt and restored_receipt.receipt.recorded_at == CHECK
+    fence = HumanControlRevocationTombstone(
+        scope=SCOPE, lease_id="resource", driver_id="driver",
+        request=revocation(), fenced_at=CHECK.astimezone(zone),
+    )
+    restored_fence = HumanControlRevocationTombstone.model_validate_json(fence.model_dump_json())
+    assert restored_fence == fence and restored_fence.fenced_at == CHECK
 
 
 def test_action_deadline_allows_exact_inclusive_frame_age_limit():

@@ -167,9 +167,10 @@ class HumanActionRequest(ResourceContract):
     The request AND its unsalted content digest are private. A digest can expose
     low-entropy secrets through guessing; never log/expose it or the request.
     Serialize only into an approved encrypted transport/store. Direct validation
-    hides inputs in error text; enclosing non-SDK models and TypeAdapters must
-    also configure hide_input_in_errors=True. Detailed errors()/json() APIs can
-    still contain inputs and must not be logged. Durable receipt content
+    suppresses field input details in error text; enclosing non-SDK models and
+    TypeAdapters must also configure hide_input_in_errors=True. Invalid tags
+    and unknown field names can still appear, so log exception classes only.
+    Detailed errors()/json() APIs can still contain inputs and must not be logged. Durable receipt content
     authentication needs a host-keyed digest inside encrypted custody, not this
     public hash.
     """

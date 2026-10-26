@@ -193,7 +193,10 @@ in approved encrypted stores/transports, never logs or model context during
 takeover. The action content digest is private too: an unsalted hash can confirm
 guesses of short secrets. Do not expose/log it; durable receipt authentication
 needs a host-keyed digest inside encrypted custody. Direct validation of SDK
-resource records hides inputs in error text. Any non-SDK enclosing model or
+resource records suppresses field input details in error text. Invalid
+discriminator tags and unknown field names can still appear, including embedded
+newlines. Log exception classes only; full error text remains private. Any
+non-SDK enclosing model or
 `TypeAdapter` must also set
 `hide_input_in_errors=True` (or validate the private record separately first);
 the outer validator controls error formatting. SDK `ResourceContract` wrappers
@@ -202,7 +205,7 @@ and must not be logged. Shared digest date normalization rejects instants whose
 conversion to UTC falls outside years 1–9999 with `ValueError`, allowing enclosing
 validators to report a normal validation failure rather than raw overflow.
 Computer, human-control and workspace datetime fields normalize seconds-level
-or fractional UTC offsets to UTC before serialization, because JSON serializers
+or fractional UTC offsets to UTC during validation, because JSON serializers
 cannot retain those offsets exactly. Whole-minute offset representations and
 existing valid digests remain unchanged. Concrete host/worker/UI integration
 and adversarial transport tests remain separate from these pure SDK source contracts.

@@ -25,10 +25,11 @@ USD = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
 
 
 class ResourceContract(BaseModel):
-    """Strict immutable v1 record; direct error text omits rejected input values.
+    """Strict immutable v1 record; error text suppresses field input details.
 
     Non-SDK enclosing models/TypeAdapters must configure their own error hiding;
-    structured ValidationError details remain private and must not be logged.
+    invalid discriminator tags and unknown field names can still appear. Log
+    exception classes only; structured ValidationError details remain private.
     """
 
     model_config = ConfigDict(

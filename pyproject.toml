@@ -124,7 +124,7 @@ test = ["kestrel-sovereign-sdk[test]"]
 packages = ["kestrel_sdk"]
 
 [tool.hatch.build.targets.sdist]
-include = ["kestrel_sdk/**/*", "CHANGELOG.md", "README.md", "LICENSE", "pyproject.toml"]
+include = ["/kestrel_sdk/**/*", "/CHANGELOG.md", "/README.md", "/LICENSE", "/pyproject.toml"]
 
 [tool.pytest.ini_options]
 addopts = "-p no:kestrel"
