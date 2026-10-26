@@ -1,6 +1,7 @@
 """Private delivery cannot escape via serialization, copying or redaction."""
 
 from copy import copy, deepcopy
+from functools import partial
 import json
 import pickle
 from concurrent.futures import ThreadPoolExecutor
@@ -8,7 +9,7 @@ from threading import Barrier
 
 import pytest
 
-from kestrel_sdk.tools import DeferredToolResult, ToolResult
+from kestrel_sdk.tools import DeferredToolResult, DeferredToolResultHost, FinalizedToolResult, ToolResult
 from kestrel_sdk.features.base import Feature, tool
 from kestrel_sdk.tools import ToolCategory, current_tool_result_parts
 
@@ -25,7 +26,8 @@ def test_finalization_returns_plain_envelope_and_only_new_parts_once():
 
     result = DeferredToolResult(original, publish=publish)
     original["data"]["value"].append(2)
-    delivery = result.finalize(result)
+    delivery = result.finalize(result, allowed=True)
+    assert isinstance(delivery, FinalizedToolResult)
     envelope, parts = delivery.result, delivery.parts
     assert delivery.withheld is False
     assert type(envelope) is dict
@@ -35,7 +37,7 @@ def test_finalization_returns_plain_envelope_and_only_new_parts_once():
     extra[0]["data"]["reference"] = "changed"
     assert parts[0]["data"]["reference"] == "opaque"
     with pytest.raises(RuntimeError, match="already finalized"):
-        result.finalize(result)
+        result.finalize(result, allowed=True)
     assert calls == ["published"]
 
 
@@ -46,12 +48,12 @@ def test_post_tool_redaction_withholds_and_consumes_private_delivery():
     result = DeferredToolResult(ToolResult.ok("Complete", data={"secret": "original"}).to_dict(),
         publish=forbidden)
     result["data"]["secret"] = "redacted"
-    delivery = result.finalize(result)
+    delivery = result.finalize(result, allowed=True)
     envelope, parts = delivery.result, delivery.parts
     assert delivery.withheld is True
     assert envelope["data"] == {"secret": "redacted"} and not parts
     with pytest.raises(RuntimeError, match="already finalized"):
-        result.finalize(result)
+        result.finalize(result, allowed=True)
 
 
 def test_copies_and_json_carry_no_private_delivery_capability():
@@ -64,16 +66,16 @@ def test_copies_and_json_carry_no_private_delivery_capability():
         assert "must-never-serialize" not in repr(projection)
     with pytest.raises(TypeError, match="cannot be pickled"):
         pickle.dumps(result)
-    assert result.finalize(result).parts == [{"type": "view", "data": private}]
+    assert result.finalize(result, allowed=True).parts == [{"type": "view", "data": private}]
 
 
 @pytest.mark.parametrize("parts", [None, "invalid", [{"type": ""}], ["not-a-part"]])
 def test_invalid_delivery_uses_normal_parts_validation_and_cannot_retry(parts):
     result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=lambda: parts)
     with pytest.raises((TypeError, ValueError)):
-        result.finalize(result)
+        result.finalize(result, allowed=True)
     with pytest.raises(RuntimeError, match="already finalized"):
-        result.finalize(result)
+        result.finalize(result, allowed=True)
 
 
 def test_failed_factory_is_consumed_without_an_implicit_retry():
@@ -85,9 +87,9 @@ def test_failed_factory_is_consumed_without_an_implicit_retry():
 
     result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=fail)
     with pytest.raises(ValueError, match="failed delivery"):
-        result.finalize(result)
+        result.finalize(result, allowed=True)
     with pytest.raises(RuntimeError, match="already finalized"):
-        result.finalize(result)
+        result.finalize(result, allowed=True)
     assert calls == ["once"]
 
 
@@ -124,17 +126,17 @@ async def test_actual_sdk_decorator_preserves_deferred_delivery_and_part_order()
     assert isinstance(result, DeferredToolResult), "The SDK wrapped private delivery as a legacy nested result"
     assert result["status"] == "ok" and result["tool"] == "private_view"
     assert [item["type"] for item in result["parts"]] == ["buffered", "explicit"]
-    delivery = result.finalize(result)
+    delivery = result.finalize(result, allowed=True)
     envelope, parts = delivery.result, delivery.parts
     assert [item["type"] for item in envelope["parts"]] == ["buffered", "explicit", "deferred"]
     with pytest.raises(RuntimeError, match="already finalized"):
-        feature.original.finalize(feature.original)
+        feature.original.finalize(feature.original, allowed=True)
 
 
 def test_delivered_parts_cannot_mutate_the_envelope_copy():
     result = DeferredToolResult(ToolResult.ok("Complete").to_dict(),
         publish=lambda: [{"type": "view", "data": {"reference": "original"}}])
-    delivery = result.finalize(result)
+    delivery = result.finalize(result, allowed=True)
     envelope, parts = delivery.result, delivery.parts
     assert envelope["parts"][0] is not parts[0]
     parts[0]["data"]["reference"] = "changed"
@@ -155,7 +157,7 @@ def test_parts_are_validated_after_their_copy():
     result = DeferredToolResult(ToolResult.ok("Complete").to_dict(),
         publish=lambda: [ChangesWhenCopied(type="apparently-valid")])
     with pytest.raises(ValueError, match="non-empty string"):
-        result.finalize(result)
+        result.finalize(result, allowed=True)
 
 
 @pytest.mark.parametrize("redact", [False, True])
@@ -166,16 +168,16 @@ def test_a_replaced_post_hook_object_withholds_even_if_its_values_are_unchanged(
     replacement = deepcopy(result)
     if redact:
         replacement["data"]["value"] = "redacted"
-    delivery = result.finalize(replacement)
+    delivery = result.finalize(replacement, allowed=True)
     assert delivery.withheld is True and delivery.parts == []
     assert delivery.result == replacement and not calls
     with pytest.raises(RuntimeError, match="already finalized"):
-        result.finalize(result)
+        result.finalize(result, allowed=True)
 
 
 def test_an_empty_delivery_is_distinct_from_policy_withholding():
     result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=lambda: [])
-    delivery = result.finalize(result)
+    delivery = result.finalize(result, allowed=True)
     assert delivery.withheld is False and delivery.parts == []
 
 
@@ -187,7 +189,7 @@ def test_wrapper_cannot_rebaseline_an_already_changed_public_result():
     with pytest.raises(ValueError, match="changed before wrapper"):
         result.for_tool("owned", [])
     with pytest.raises(RuntimeError, match="already finalized"):
-        result.finalize(result)
+        result.finalize(result, allowed=True)
     assert not calls
 
 
@@ -199,7 +201,7 @@ def test_shared_delivery_has_only_one_successful_consumer_across_threads():
     def consume():
         barrier.wait(timeout=5)
         try:
-            return result.finalize(result).withheld
+            return result.finalize(result, allowed=True).withheld
         except RuntimeError as error:
             assert "already finalized" in str(error)
             return "consumed"
@@ -216,4 +218,65 @@ def test_core_wrapper_can_add_its_canonical_success_projection(original, success
     result = DeferredToolResult(original.to_dict(), publish=lambda: [])
     wrapped = result.for_tool("owned", [], include_success=True)
     assert wrapped["success"] is success
-    assert wrapped.finalize(wrapped).withheld is False
+    assert wrapped.finalize(wrapped, allowed=True).withheld is False
+
+
+def test_decision_only_withholding_consumes_unchanged_delivery_without_calling_the_factory():
+    calls = []
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(),
+        publish=lambda: calls.append("must-not-publish") or [])
+    delivery = result.finalize(result, allowed=False)
+    assert delivery.withheld and delivery.parts == []
+    assert delivery.result == dict(result) and calls == []
+    with pytest.raises(RuntimeError, match="already finalized"):
+        result.finalize(result, allowed=True)
+
+
+@pytest.mark.parametrize("allowed", [None, 1, "yes", []])
+def test_invalid_policy_decisions_fail_and_consume_without_publication(allowed):
+    calls = []
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(),
+        publish=lambda: calls.append("must-not-publish") or [])
+    with pytest.raises(TypeError, match="explicit boolean"):
+        result.finalize(result, allowed=allowed)
+    with pytest.raises(RuntimeError, match="already finalized"):
+        result.finalize(result, allowed=True)
+    assert not calls
+
+
+@pytest.mark.parametrize("arguments", [
+    {"name": ""}, {"name": None}, {"pending_parts": None},
+    {"pending_parts": "invalid"}, {"pending_parts": [{"type": ""}]},
+    {"include_success": "yes"},
+])
+def test_bad_wrapper_metadata_consumes_the_original_factory(arguments):
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=lambda: [])
+    options = {"name": "owned", "pending_parts": [], **arguments}
+    with pytest.raises((TypeError, ValueError)):
+        result.for_tool(**options)
+    with pytest.raises(RuntimeError, match="already finalized"):
+        result.finalize(result, allowed=True)
+
+
+def test_partial_async_callable_is_refused_without_creating_a_coroutine():
+    class AsyncFactory:
+        async def __call__(self):
+            return []
+
+    with pytest.raises(TypeError, match="synchronous callable"):
+        DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=partial(AsyncFactory()))
+
+
+def test_direct_serialization_hooks_cannot_return_a_private_factory():
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=lambda: [])
+    for operation in (result.__reduce__, result.__getstate__):
+        with pytest.raises(TypeError, match="cannot be pickled"):
+            operation()
+
+
+def test_host_protocol_names_the_actual_agent_capability():
+    class Agent:
+        supports_deferred_tool_results = True
+
+    assert isinstance(Agent(), DeferredToolResultHost)
+    assert Agent().supports_deferred_tool_results is True

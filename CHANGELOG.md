@@ -13,7 +13,9 @@ All notable changes to this project are documented in this file.
   local host contract; it does not provide tool permission or audit confirmation.
 - The SDK tool wrapper transfers private delivery while adding its canonical
   metadata and buffered parts. Finalization requires the actual post-hook
-  object and reports withholding separately from an empty delivery.
+  object and an explicit boolean policy decision, and reports withholding
+  separately from an empty delivery. A typed optional host protocol identifies
+  the capability on the agent passed to a feature.
 
 ## 0.44.0
 

@@ -853,19 +853,30 @@ private render delivery until the host finishes post-tool hooks. It wraps an
 ordinary tool-result dictionary and a synchronous `publish` factory returning
 typed parts. A tool wrapper calls `for_tool(name, pending_parts)` to transfer
 the factory once while adding its metadata and ordered buffered parts. The
-host calls `finalize(post_hook_result)` once after policy, passing the actual
-post-hook object. Its `FinalizedToolResult` carries the plain `result`, only
+host calls `finalize(post_hook_result, allowed=decision)` once after policy,
+passing the actual post-hook object and a real boolean decision. Any post-tool
+DENY, ASK or stop must set `allowed=False`, even when the public envelope is
+unchanged. Its `FinalizedToolResult` carries the plain `result`, only
 the new `parts`, and a `withheld` flag. The host then applies its normal part
 sanitization and delivery.
 Existing envelope parts keep their ordering. If a hook changed the public
 envelope or replaced the object, the private factory is consumed without being
-called. A host advertises this boundary with
-`supports_deferred_tool_results = True`. JSON and copies
+called. The optional `DeferredToolResultHost` protocol lives on the **agent
+passed to `Feature.__init__`**: a feature checks
+`getattr(self.agent, "supports_deferred_tool_results", False) is True` before
+advertising dependent UI. `for_tool(..., include_success=True)` additionally
+provides Core's status-derived `success` field; the default preserves the SDK
+wrapper's envelope. JSON and copies
 carry only public data; pickling the private capability is refused. Hosts must
 explicitly implement this boundary before features advertise dependent UI.
 Finalization does not itself confirm a durable audit or authorize an HTTP reader.
 Generic reconstruction helpers that recreate the subclass (including
 `dataclasses.asdict`) are unsupported; convert to `dict` for a public projection.
+Transfer and finalization errors propagate after consuming the factory. They
+must be reported as delivery failures; they never justify replaying a tool that
+may already have acted. Hosts must not silently treat failed private delivery as
+success or retry the factory. The post-hook public projection is still available
+separately from the private capability for an explicit failure report.
 
 ## Development
 

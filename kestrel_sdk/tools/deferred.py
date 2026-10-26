@@ -11,9 +11,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, fields
+from functools import partial
 from inspect import iscoroutinefunction
 from threading import Lock
-from typing import Callable
+from typing import Callable, Protocol, runtime_checkable
 
 from .result import ToolResult
 
@@ -25,6 +26,18 @@ class FinalizedToolResult:
     withheld: bool
 
 
+@runtime_checkable
+class DeferredToolResultHost(Protocol):
+    """Optional contract on the agent passed to ``Feature.__init__``.
+
+    Features must require this flag to be exactly True before advertising UI
+    that depends on deferred delivery. It grants no reader/tool authority.
+    """
+
+    @property
+    def supports_deferred_tool_results(self) -> bool: ...
+
+
 def _validate_envelope(result: dict) -> None:
     names = {item.name for item in fields(ToolResult)}
     ToolResult(**{name: value for name, value in result.items() if name in names})
@@ -33,7 +46,7 @@ def _validate_envelope(result: dict) -> None:
 class DeferredToolResult(dict):
     """A tool envelope with one private, synchronous render-parts factory.
 
-    ``finalize(post_hook_result)`` consumes the factory even when policy
+    ``finalize(post_hook_result, allowed=...)`` consumes the factory even when policy
     replaced or changed the public envelope, in which case it is withheld.
     Existing parts retain their original host ordering; the host emits only
     the newly delivered parts after policy.
@@ -46,8 +59,11 @@ class DeferredToolResult(dict):
     def __init__(self, result: dict, *, publish: Callable[[], list[dict]]):
         if not isinstance(result, dict):
             raise TypeError("Deferred tool result must be a dictionary")
-        if (not callable(publish) or iscoroutinefunction(publish)
-                or iscoroutinefunction(getattr(publish, "__call__", None))):
+        target = publish
+        while isinstance(target, partial):
+            target = target.func
+        if (not callable(publish) or iscoroutinefunction(target)
+                or iscoroutinefunction(getattr(target, "__call__", None))):
             raise TypeError("Deferred render delivery requires a synchronous callable")
         payload = deepcopy(dict(result))
         _validate_envelope(payload)
@@ -79,6 +95,8 @@ class DeferredToolResult(dict):
             raise ValueError("Deferred tool wrapper requires a non-empty tool name")
         if type(include_success) is not bool:
             raise TypeError("Deferred tool wrapper success projection must be a boolean")
+        if not isinstance(pending_parts, list):
+            raise TypeError("Deferred tool wrapper requires a list of buffered parts")
         ToolResult.ok("Buffered render parts", parts=pending_parts)
         payload["tool"] = name
         if include_success:
@@ -87,13 +105,15 @@ class DeferredToolResult(dict):
             payload["parts"] = [*deepcopy(pending_parts), *(payload.get("parts") or [])]
         return DeferredToolResult(payload, publish=publish)
 
-    def finalize(self, post_hook_result: dict) -> FinalizedToolResult:
+    def finalize(self, post_hook_result: dict, *, allowed: bool) -> FinalizedToolResult:
         """Consume once against the actual object returned by post-tool policy."""
         publish = self._take_factory()
+        if type(allowed) is not bool:
+            raise TypeError("Deferred render delivery requires an explicit boolean policy decision")
         if not isinstance(post_hook_result, dict):
             raise TypeError("Post-tool policy must return a dictionary envelope")
         result = deepcopy(dict(post_hook_result))
-        if post_hook_result is not self or result != self._baseline:
+        if not allowed or post_hook_result is not self or result != self._baseline:
             return FinalizedToolResult(result, [], withheld=True)
         parts = deepcopy(publish())
         if parts is None:
