@@ -621,7 +621,7 @@ wheels = [
 
 [[package]]
 name = "kestrel-sovereign-sdk"
-version = "0.44.1"
+version = "0.45.0"
 source = { editable = "." }
 dependencies = [
     { name = "idna" },

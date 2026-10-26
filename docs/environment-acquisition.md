@@ -1,6 +1,7 @@
 # Optional environment acquisition custody, API version 1
 
-This follow-on source contract is independent of the human-control 0.44 release.
+This 0.45.0 follow-on source candidate is independent of the human-control 0.44
+release. Neither publication nor a concrete host/provider is implied.
 It does not enable a provider, implement a Core store or authorize cloud use.
 `EnvironmentProvider` and its entry-point group remain unchanged. An optional
 `CustodiedEnvironmentProvider.acquire_with_custody(request, quote, custody)`
