@@ -848,6 +848,17 @@ with `ResourceConflict`. Unconfirmed effects/evidence fail with
 These bindings are in-process host interfaces, not wire credentials. The
 host implementation is required; the SDK itself does not execute tools.
 
+`DeferredToolResult` (from `kestrel_sdk.tools`) lets an installed feature defer
+private render delivery until the host finishes post-tool hooks. It wraps an
+ordinary tool-result dictionary and a synchronous `publish` factory returning
+typed parts. The host calls `finalize()` once, receives a plain result envelope
+and only the new parts, then applies its normal part sanitization and delivery.
+Existing envelope parts keep their ordering. If a hook changed the public
+envelope, the private factory is consumed without being called. JSON and copies
+carry only public data; pickling the private capability is refused. Hosts must
+explicitly implement this boundary before features advertise dependent UI.
+Finalization does not itself confirm a durable audit or authorize an HTTP reader.
+
 ## Development
 
 ```bash
