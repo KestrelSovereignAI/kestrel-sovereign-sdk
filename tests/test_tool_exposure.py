@@ -32,3 +32,9 @@ def test_model_exposure_does_not_change_the_native_provider_schema():
     assert hidden.to_openai_format() == visible.to_openai_format()
     assert set(hidden.to_openai_format()) == {"type", "function"}
     assert set(hidden.to_openai_format()["function"]) == {"name", "description", "parameters"}
+
+
+@pytest.mark.parametrize("invalid", [None, 0, 1, "false", []])
+def test_model_exposure_requires_an_explicit_boolean(invalid):
+    with pytest.raises(TypeError, match="model_visible must be a boolean"):
+        schema(model_visible=invalid)

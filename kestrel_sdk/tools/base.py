@@ -176,9 +176,16 @@ class ToolSchema:
     examples: List[Dict[str, Any]] = field(default_factory=list)
     command_prefix: Optional[str] = None  # e.g., "!list-models"
     is_concurrency_safe: bool = False  # True = read-only, safe to run in parallel
+    # Hosts omit hidden tools from model schemas while keeping their governed
+    # registrations available to other admitted callers. Exposure is not a grant.
+    model_visible: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.model_visible, bool):
+            raise TypeError("model_visible must be a boolean")
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert schema to dictionary for LLM consumption."""
+        """Convert to a descriptor, including host model-exposure metadata."""
         return {
             "name": self.name,
             "description": self.description,
@@ -195,7 +202,8 @@ class ToolSchema:
                 for p in self.parameters
             ],
             "examples": self.examples,
-            "command_prefix": self.command_prefix
+            "command_prefix": self.command_prefix,
+            "model_visible": self.model_visible,
         }
 
     def to_openai_format(self) -> Dict[str, Any]:
