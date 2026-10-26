@@ -96,14 +96,15 @@ operation scopes at application/egress boundaries and restrict ambiguous
 pixel-only workflows. No implicit host access or unauthenticated public driver
 endpoint is permitted by the contract.
 
-## Optional human control (SDK 0.44.0)
+## Optional human control
 
 `HumanControlProvider.human_control()` negotiates the optional `HumanControl`
 transport alongside the session's `takeover` capability. Missing either refuses
 manual pixels/input. This additive source is not part of published SDK 0.43.0.
 No provider advertises support until it implements this contract and a reviewed
 SDK release containing it is actually published and locked by the consumer.
-The source candidate is version 0.44.0; building it does not publish a release.
+These contracts began in 0.44.0 source and are included in the 0.45.0 source
+candidate; building it does not publish a release.
 There is no new entry point, browser/CDP endpoint or agent-act compatibility shim.
 
 The host first authenticates an operator, acknowledges `ComputerDriver.control`

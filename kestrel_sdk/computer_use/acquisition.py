@@ -58,7 +58,10 @@ class EnvironmentAcquisitionPreparation(ResourceContract):
             (self.create_payload, MAX_ACQUISITION_CREATE_BYTES),
             (self.worker_identity, MAX_ACQUISITION_IDENTITY_BYTES),
         ):
-            if not 0 < len(value.get_secret_value()) <= limit:
+            raw = value.get_secret_value()
+            if type(raw) is not bytes:
+                raise ValueError("acquisition preparation requires immutable exact bytes")
+            if not 0 < len(raw) <= limit:
                 raise ValueError("acquisition preparation exceeds private byte bounds")
         return self
 
@@ -295,7 +298,7 @@ class EnvironmentAcquisitionStorage(ResourceContract):
         if not isinstance(value, SecretBytes):
             raise ValueError("private acquisition storage requires secret bytes")
         raw = value.get_secret_value()
-        if not 0 < len(raw) <= MAX_ACQUISITION_STORAGE_BYTES:
+        if type(raw) is not bytes or not 0 < len(raw) <= MAX_ACQUISITION_STORAGE_BYTES:
             raise ValueError("private acquisition storage exceeds byte bounds")
         try:
             values = json.loads(raw)
@@ -384,6 +387,11 @@ class CustodiedEnvironmentProvider(EnvironmentProvider, Protocol):
     this contract must explicitly refuse legacy acquire, never create a private
     authority store or silently retry. Ordinary provider/driver contracts and
     plugin groups remain unchanged; implementing this is not registration.
+
+    Version 1 has no terminal rejection/reset after the dispatch CAS, even
+    when a native rejection or pre-send abort is known. Without an original
+    accepted lease, retain dispatching/unknown and raise ResourceOutcomeUnknown;
+    never invent a lease or permit another create for that attempt.
     """
 
     async def acquire_with_custody(

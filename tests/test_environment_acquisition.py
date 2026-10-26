@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import json
 import sqlite3
+import threading
 from uuid import uuid4
 
 from cryptography.fernet import Fernet
@@ -111,6 +112,7 @@ class EncryptedRowHost:
         self.allocated = 0
         self.lose_dispatch_ack = False
         self.lose_prepare_ack = False
+        self.before_write = None
 
     def load(self):
         row = self.db.execute("SELECT value FROM requests WHERE id='request'").fetchone()
@@ -132,6 +134,8 @@ class EncryptedRowHost:
         if actual.checkpoint != expected.checkpoint:
             raise ResourceConflict("durable checkpoint changed")
         encrypted = self.key.encrypt(value.serialize_private().get_secret_value())
+        if self.before_write is not None:
+            self.before_write()
         cursor = self.db.execute(
             "UPDATE requests SET value=? WHERE id='request' AND value=?", (encrypted, prior)
         )
@@ -593,9 +597,118 @@ def test_storage_detects_tampered_original_payload_and_strict_nested_round_trip(
         EnvironmentAcquisitionStorage.deserialize_private(SecretBytes(json.dumps(raw).encode()))
 
 
-def test_extension_does_not_change_existing_protocol_or_import_runtime_dependencies():
+def test_extension_keeps_existing_protocol_and_hides_error_inputs():
     from kestrel_sdk.computer_use import EnvironmentProvider
 
     assert "acquire_with_custody" not in EnvironmentProvider.__dict__
     assert "acquire_with_custody" in CustodiedEnvironmentProvider.__dict__
     assert EnvironmentAcquisitionStorage.model_config["hide_input_in_errors"] is True
+
+
+class BytesSubclass(bytes):
+    pass
+
+
+def _noncanonical_secret_values():
+    import array
+
+    return [
+        bytearray(b"private"),
+        memoryview(b"private"),
+        array.array("B", b"private"),
+        memoryview(array.array("I", range(1000))),
+        memoryview(array.array("H", range(1000))),
+        memoryview(bytes(600 * 1024)).cast("Q"),
+        "private",
+        BytesSubclass(b"private"),
+    ]
+
+
+@pytest.mark.parametrize("field", ["create_payload", "worker_identity"])
+@pytest.mark.parametrize("raw", _noncanonical_secret_values())
+def test_preparation_requires_exact_immutable_bytes_before_serialization(field, raw):
+    values = dict(create_payload=SecretBytes(b"payload"), worker_identity=SecretBytes(b"identity"))
+    values[field] = SecretBytes(raw)
+    with pytest.raises(ValidationError, match="immutable exact bytes"):
+        EnvironmentAcquisitionPreparation(**values)
+    # Pydantic model_copy/construct are not authority or validation bypasses.
+    forged = preparation().model_copy(update={field: SecretBytes(raw)})
+    with pytest.raises(ValidationError, match="immutable exact bytes"):
+        forged.digest()
+
+
+@pytest.mark.parametrize("raw", _noncanonical_secret_values())
+def test_private_storage_codec_requires_exact_bytes_container(raw):
+    with pytest.raises(ValueError, match="private acquisition storage"):
+        EnvironmentAcquisitionStorage.deserialize_private(SecretBytes(raw))
+
+
+@pytest.mark.asyncio
+async def test_nonbytes_preparation_cannot_poison_durable_row(host):
+    import array
+
+    request, quote = originals()
+    async with host.operation(request, quote) as attempt:
+        forged = preparation().model_copy(update={
+            "create_payload": SecretBytes(memoryview(array.array("I", range(1000))))
+        })
+        with pytest.raises(ValidationError, match="immutable exact bytes"):
+            await attempt.prepare_once(forged)
+        assert host.load().checkpoint.state == "unprepared"
+        await attempt.prepare_once(preparation())
+        assert await attempt.begin_dispatch()
+    async with host.operation(request, quote) as restored:
+        assert restored.preparation == preparation()
+        assert restored.checkpoint.state == "dispatching"
+        assert not await restored.begin_dispatch()
+
+
+@pytest.mark.asyncio
+async def test_two_native_sqlite_connections_contend_after_read_before_dispatch_cas(host, tmp_path):
+    request, quote = originals()
+    async with host.operation(request, quote) as attempt:
+        await attempt.prepare_once(preparation())
+        original_id = attempt.checkpoint.attempt_id
+    barrier = threading.Barrier(2)
+    creates = []
+
+    def contender():
+        other = EncryptedRowHost(tmp_path / "canonical.sqlite", host.fernet_key)
+        other.before_write = lambda: barrier.wait(timeout=5)
+
+        async def run():
+            async with other.operation(request, quote) as borrowed:
+                assert borrowed.checkpoint.attempt_id == original_id
+                try:
+                    if await borrowed.begin_dispatch():
+                        creates.append(original_id)
+                        return "acknowledged"
+                except ResourceConflict:
+                    return "cas-conflict"
+                pytest.fail("both contenders must have read the prepared row")
+
+        try:
+            return asyncio.run(run())
+        finally:
+            other.db.close()
+
+    results = await asyncio.gather(asyncio.to_thread(contender), asyncio.to_thread(contender))
+    assert sorted(results) == ["acknowledged", "cas-conflict"]
+    assert creates == [original_id]
+    assert host.load().checkpoint.state == "dispatching"
+    async with host.operation(request, quote) as restored:
+        assert not await restored.begin_dispatch()
+
+
+@pytest.mark.parametrize("wrap", [bytearray, BytesSubclass, lambda value: value.decode()])
+def test_even_valid_private_json_requires_an_exact_bytes_container(wrap):
+    request, quote = originals()
+    value = preparation()
+    stored = EnvironmentAcquisitionStorage(
+        checkpoint=EnvironmentAcquisitionCheckpoint.from_original("attempt", request, quote).prepared(value),
+        preparation=value,
+    )
+    raw = stored.serialize_private().get_secret_value()
+    assert EnvironmentAcquisitionStorage.deserialize_private(SecretBytes(raw)) == stored
+    with pytest.raises(ValueError, match="private acquisition storage"):
+        EnvironmentAcquisitionStorage.deserialize_private(SecretBytes(wrap(raw)))

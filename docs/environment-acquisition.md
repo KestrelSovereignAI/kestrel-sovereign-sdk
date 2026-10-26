@@ -1,7 +1,9 @@
 # Optional environment acquisition custody, API version 1
 
-This 0.45.0 follow-on source candidate is independent of the human-control 0.44
-release. Neither publication nor a concrete host/provider is implied.
+This 0.45.0 source candidate combines acquisition custody with the merged
+human-control contracts introduced in 0.44.0 source. Those human-control
+contracts were unpublished at this review. Neither publication nor a concrete
+host/provider is implied.
 It does not enable a provider, implement a Core store or authorize cloud use.
 `EnvironmentProvider` and its entry-point group remain unchanged. An optional
 `CustodiedEnvironmentProvider.acquire_with_custody(request, quote, custody)`
@@ -22,7 +24,9 @@ location and request expiry. It is a factual record, not a bearer token.
 The attempt exposes read-only `checkpoint` and `preparation` views. When no
 preparation exists, the provider constructs one exact `create_payload` and
 `worker_identity` and calls `await attempt.prepare_once(preparation)`. Both
-fields are nonempty `SecretBytes`: at most 512 KiB and 128 KiB respectively.
+fields are nonempty `SecretBytes` wrapping exact immutable `bytes` (including
+no bytes subclasses): at most 512 KiB and 128 KiB respectively. Mutable buffers,
+memoryviews, arrays and strings are refused before any persistence or digest.
 The identity contains all original per-request TLS keys/certificates and other
 worker credentials needed after a restart. The payload contains the EXACT
 native create bytes referencing those identities. A retry uses the original
@@ -55,8 +59,12 @@ sequence. The durable states are:
 CAS. `False` means reconciliation only. Any exception or lost acknowledgement
 forbids native create, even if no POST was actually sent. Restart reads
 `dispatching` and reconciles; it cannot reset the state, prepare another intent
-or invent an idempotency key. This sacrifices availability when native APIs
-cannot prove absence, preventing duplicate paid capacity.
+or invent an idempotency key. Version 1 has no terminal rejection or reset after
+the dispatch CAS, even for a definitive native rejection or an abort before
+sending any bytes. Such an attempt remains dispatching/unknown; without an
+original accepted lease, the provider raises `ResourceOutcomeUnknown`, never
+a fabricated lease. It cannot create again even if native absence is known.
+This conservative availability limit prevents duplicate paid capacity.
 
 `record_accepted(lease)` requires a known original native resource.
 `record_unknown(lease=None)` preserves any existing lease/native ID. An unknown
@@ -98,7 +106,10 @@ Log exception classes only. Pure validation and a successful TLS exchange are
 neither caller authentication nor proof of remote sandbox/readiness.
 
 The SDK tests include a conformance-only encrypted SQLite row fixture proving
-restart identity, lost acknowledgements, concurrent first dispatch, original
-payload conflict, unknown custody and lexical revocation. That fixture is not
+restart identity, lost acknowledgements, original payload conflict, unknown
+custody and lexical revocation. A two-thread/two-connection SQLite test pauses
+both contenders after reading the same ciphertext and before its UPDATE CAS,
+then proves only one acknowledged dispatch. The simpler event-loop contenders
+also share the original attempt, but alone do not prove a CAS race. That fixture is not
 Core integration, production HTTP final-write validation, remote worker
 conformance, AMD64 image evidence or a paid Runpod trial.

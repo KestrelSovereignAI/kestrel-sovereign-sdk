@@ -328,7 +328,8 @@ class HumanControl(Protocol):
     target. Unknown acceptance never becomes a tombstone: retain the original
     lease/input retirement.
     status of a pre-open tombstoned control ID raises ResourceConflict, not
-    ResourceNotFound; reconcile its fence by retrying the original revoke.
+    ResourceNotFound; reconcile with the original revoke or a new revocation
+    for that exact fenced target, preserving its original fenced_at.
     """
 
     async def open(self, session: ComputerSession, request: HumanControlRequest) -> HumanControlLease: ...
