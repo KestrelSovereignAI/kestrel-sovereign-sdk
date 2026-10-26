@@ -10,8 +10,15 @@ All notable changes to this project are documented in this file.
   create bytes and worker identity on the host's existing encrypted request row.
   Exact request/quote/attempt checkpoints support one atomic first dispatch and
   factual unknown-result reconciliation without retry authority. Explicit private
-  storage preserves bounded bytes while generic dumps omit them. This separate
-  follow-on source does not enable a provider or alter the human-control release.
+  storage preserves bounded bytes while generic dumps omit them. This source
+  does not register a provider or implement a concrete human-control channel.
+
+### Fixed
+
+- Specify repeated pre-open revocation: the same request ID reconciles its
+  original result; a new request ID for the same permanently fenced target gets
+  its own correlated tombstone with the original fence time. Changed targets
+  still conflict. Distinguish a wrong response request ID from a wrong target.
 
 ## 0.44.1
 
@@ -41,15 +48,18 @@ All notable changes to this project are documented in this file.
   transport support and publication are separate delivery gates.
 - Human action checks accept pixel-free frame records. Pre-open revocation has
   an explicit durable tombstone result, and original-epoch revocation uses
-  `control_epoch`. Direct SDK resource validation suppresses field input details;
-  non-SDK enclosing models and TypeAdapters must configure the same hiding.
-  Invalid tags and unknown field names can still appear in error text; log
-  exception classes only.
-  Detailed Pydantic error payloads and content digests remain private. Correlation
-  rejects copied lease/request mismatches, and shared UTC digest normalization rejects offset overflow as a
-  validation failure. Non-whole-minute datetime offsets normalize to UTC during
-  computer/human/workspace validation, preserving the original instant
-  and digest across durable round trips; whole-minute representations stay unchanged.
+  `control_epoch`. Correlation rejects copied lease/request mismatches.
+
+### Changed
+
+- Direct SDK resource validation suppresses field input details. Non-SDK
+  enclosing models and TypeAdapters must configure the same hiding. Invalid
+  tags and unknown field names can still appear; log exception classes only.
+  Detailed Pydantic error payloads and content digests remain private.
+- Shared UTC digest normalization rejects offset overflow as a validation
+  failure. Non-whole-minute datetime offsets normalize to UTC during
+  computer/human/workspace validation, preserving the original instant and
+  digest across durable round trips; whole-minute representations stay unchanged.
 
 ### Fixed
 

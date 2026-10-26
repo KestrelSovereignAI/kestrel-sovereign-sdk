@@ -173,14 +173,20 @@ original revocation and exact scope/resource lease/driver; it does not claim a
 lease was accepted. It may be returned only when no open was accepted. Every
 in-flight or late `open` compares that fence in its acceptance transaction.
 The fenced ID can never install a lease, including
-changed consumer/payload retries. Repeated revoke reconciles the original request
-ID and target. Absence of an open record alone is insufficient; possibly accepted
-work retains the original lease as unknown/revoking until drained/reconciled.
+changed consumer/payload retries. Repeating the same revocation request ID
+reconciles its original result. A new revocation request ID for the exact same
+already-fenced control/session/consumer/epoch must atomically confirm that fence
+and return a tombstone bound to the new request, with the original `fenced_at`.
+It must not replace the permanent fence, accept a changed target, or reopen the
+control. The strict `require_revocation` helper rejects a response bound to a
+different request ID. Absence of an open record alone is insufficient; possibly
+accepted work retains the original lease as unknown/revoking until drained/reconciled.
 The tombstone's `require_revocation` helper correlates supplied records; only
 the worker's actual durable transaction can establish that the fence exists.
 `status` for a pre-open tombstoned control ID raises `ResourceConflict` rather
 than claiming no record exists. Retry the original revoke to reconcile the
-fence; status of an accepted open still returns its exact original lease.
+fence, or submit a new revocation for the same target as specified above.
+Status of an accepted open still returns its exact original lease.
 
 The SDK's `require_session`, `require_active` and `require_lease` helpers validate
 live snapshot facts using a trusted aware clock. `require_request`,

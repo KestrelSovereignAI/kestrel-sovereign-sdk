@@ -267,8 +267,15 @@ class HumanControlRevocationTombstone(ResourceContract):
 
     def require_revocation(self, request: HumanControlRevocation, session: ComputerSession) -> None:
         """Correlate a pre-open fence; this does not prove actual durable storage."""
-        if request != self.request or (self.scope, self.lease_id, self.driver_id, request.session_id) != (
+        if (self.scope, self.lease_id, self.driver_id, request.session_id) != (
                 session.scope, session.lease_id, session.driver_id, session.session_id):
+            raise ValueError("human pre-open fence differs from the original retirement target")
+        if request != self.request:
+            target = (request.control_id, request.session_id, request.consumer_id, request.control_epoch)
+            original = (self.request.control_id, self.request.session_id,
+                        self.request.consumer_id, self.request.control_epoch)
+            if target == original:
+                raise ValueError("human pre-open fence belongs to another revocation request ID")
             raise ValueError("human pre-open fence differs from the original retirement target")
 
 
@@ -314,8 +321,12 @@ class HumanControl(Protocol):
     and return HumanControlRevocationTombstone. Late open of that control ID
     conflicts, including changed consumer/payload retries. Absence of an open
     record is not enough: acceptance must compare the same durable fence.
-    Revoke repeats reconcile the original target/request ID. Unknown acceptance
-    never becomes a tombstone: retain the original lease/input retirement.
+    Repeating the same revocation request ID reconciles its original result.
+    A new request ID for the same already-fenced target must atomically confirm
+    the existing fence and return a tombstone bound to the new request, retaining
+    the original fenced_at. It must not replace the fence or accept a changed
+    target. Unknown acceptance never becomes a tombstone: retain the original
+    lease/input retirement.
     status of a pre-open tombstoned control ID raises ResourceConflict, not
     ResourceNotFound; reconcile its fence by retrying the original revoke.
     """

@@ -593,3 +593,26 @@ def test_action_deadline_allows_exact_inclusive_frame_age_limit():
     with pytest.raises(ValueError, match="deadline"):
         action(not_after=bound + timedelta(microseconds=1)).require_lease(
             lease(), session(), frame, at=CHECK)
+
+
+def test_new_revocation_of_existing_preopen_fence_correlates_new_request_and_original_time():
+    original = revocation(request_id="stop-original")
+    fence = HumanControlRevocationTombstone(
+        request=original, scope=SCOPE, lease_id="resource", driver_id="driver", fenced_at=CHECK,
+    )
+    second = revocation(request_id="close-later")
+    advanced = session(control_epoch=3)
+    fence.require_revocation(original, advanced)
+    with pytest.raises(ValueError, match="revocation request ID"):
+        fence.require_revocation(second, advanced)
+    # This is response correlation only; the worker must atomically confirm its
+    # original durable fence before constructing this request-bound response.
+    confirmed = HumanControlRevocationTombstone(
+        request=second, scope=fence.scope, lease_id=fence.lease_id,
+        driver_id=fence.driver_id, fenced_at=fence.fenced_at,
+    )
+    confirmed.require_revocation(second, advanced)
+    assert confirmed.fenced_at == fence.fenced_at
+    assert fence.request.request_id == "stop-original"
+    with pytest.raises(ValueError, match="retirement target"):
+        confirmed.require_revocation(revocation(request_id="close-later", consumer_id="foreign"), advanced)
