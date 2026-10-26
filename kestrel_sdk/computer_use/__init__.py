@@ -10,6 +10,11 @@ from .models import (
 from .protocols import (
     ComputerDriver, ComputerDriverFactory, EnvironmentProvider, EnvironmentProviderFactory,
 )
+from .human_control import (
+    HumanActionReceipt, HumanActionRequest, HumanCapability, HumanControl,
+    HumanControlLease, HumanControlProvider, HumanControlRequest,
+    HumanControlRevocation, HumanScreenObservation,
+)
 
 __all__ = [
     "COMPUTER_DRIVER_ENTRY_POINT_GROUP", "ENVIRONMENT_PROVIDER_ENTRY_POINT_GROUP",
@@ -19,4 +24,7 @@ __all__ = [
     "EnvironmentCapabilities", "EnvironmentLease", "EnvironmentProvider",
     "EnvironmentQuote", "EnvironmentRequest", "Key", "Navigate", "ScreenFrame",
     "ScreenObservation", "Scroll", "SessionRequest", "TypeText", "Wait",
+    "HumanActionReceipt", "HumanActionRequest", "HumanCapability", "HumanControl",
+    "HumanControlLease", "HumanControlProvider", "HumanControlRequest",
+    "HumanControlRevocation", "HumanScreenObservation",
 ]

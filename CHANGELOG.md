@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+
+- Optional human computer control contracts bind an authenticated host-resolved
+  consumer to one fixed session/control-epoch lease. Private human observations,
+  canonical input wrappers and original receipts remain separate from agent
+  operations. Pure validation helpers cover owner/consumer/session correlation,
+  capability/frame/deadline bounds and original-epoch retirement. Concrete
+  transport support and publication are separate delivery gates.
+
 ## 0.43.0
 
 ### Added

@@ -96,6 +96,76 @@ operation scopes at application/egress boundaries and restrict ambiguous
 pixel-only workflows. No implicit host access or unauthenticated public driver
 endpoint is permitted by the contract.
 
+## Optional human control (unreleased source)
+
+`HumanControlProvider.human_control()` negotiates the optional `HumanControl`
+transport alongside the session's `takeover` capability. Missing either refuses
+manual pixels/input. This additive source is not part of published SDK 0.43.0.
+No provider advertises support until it implements this contract and a reviewed
+SDK release containing it is actually published and locked by the consumer.
+There is no new entry point, browser/CDP endpoint or agent-act compatibility shim.
+
+The host first authenticates an operator, acknowledges `ComputerDriver.control`
+takeover and persists the paused/human session at its new epoch. It resolves a
+`consumer_id` from that exact authenticated operator and creates a
+`HumanControlRequest` with the original owner, session/resource lease/driver,
+control ID/epoch, fixed issue/expiry, capability subset and maximum frame age.
+These records grant no permission. An attribution frame, known consumer ID,
+old lease or previous receipt cannot authenticate an operator or grant access.
+The host holds original current grants/privacy and exact consumer binding
+through delivery and effects. Driver connection authentication alone does not
+establish the human consumer: the authenticated host transport must bind each
+call to the admitted consumer, and the worker verifies its installed lease.
+
+`open(session, request)` durably installs the canonical request digest. One
+consumer lease is allowed per epoch; no replacement, renewal or reconnect may
+restart input. Identical retries reconcile the original binding. Changed
+retries conflict, while expired/revoked IDs never reopen. A new consumer needs
+a fresh explicit takeover epoch. Lease expiry must not exceed the admitted
+session or original driver connection expiry. A lease state of `active` in a
+stored snapshot is not proof that the worker's installed lease remains active.
+
+`observe(session, lease)` returns `HumanScreenObservation`: exact consumer and
+control IDs around the canonical private `ScreenObservation`. Its observation
+namespace is distinct from agent frames and other consumers. `act` accepts
+`HumanActionRequest`, which wraps the same canonical action payload with exact
+consumer/control IDs; this uses a dedicated authenticated human dispatch, never
+the agent `act` method. The driver rechecks current installed lease, epoch,
+expiry, current frame/display/focus, capability, coordinates and deadline just
+before effect. Maximum frame age and fixed expiry also bound `not_after`.
+Canonical navigation syntax never grants destination/egress access.
+
+The driver persists human input intent/digest before effect and retains its
+original action ID and `HumanActionReceipt`. Action IDs cannot alias an agent
+request or another consumer/lease with different content. Unknown input is
+reconciled with `action_status(session, lease, original_action_id)` and never
+automatically replayed. `status(session, original_request)` returns the original
+lease binding; the host checks its digest with `require_request`. Status calls
+require current metadata-read policy, including after expiry/revocation. A
+missing record raises `ResourceNotFound` and does not prove an in-flight call
+cannot finish. No reconciliation operation exposes private pixels or adds input.
+
+`revoke(session, HumanControlRevocation)` targets the original consumer/control
+ID and epoch even after lease expiry or a later session epoch; its digest binds
+the retirement request ID and complete target for idempotent retries. Authenticated
+original custody permits retirement, not new data/effects. The priority control
+path fences and drains/reconciles accepted input before `revoked` is confirmed;
+timeouts remain `unknown`/`revoking`, retaining original lease and receipt custody.
+Stop, takeover, close and release must not queue behind ordinary input/privacy
+admission. Handback revokes human leases, drains/reconciles input, advances the
+epoch and revalidates display before agent observation/input resumes. Uncertain
+input prevents handback until reconciled or its original process is retired.
+
+The SDK's `require_session`, `require_active`, `require_lease`, `require_request`
+and `require_target` helpers validate supplied facts with a trusted aware clock;
+they cannot prove current authentication, installed worker state, frame currency
+or physical effects. A consumer must still validate returned records and invoke
+these checks at the real boundary. Generic observation serialization omits
+pixels. Human action serialization contains private text/URLs and belongs only
+in approved encrypted stores/transports, never logs or model context during
+takeover. Concrete host/worker/UI integration and adversarial transport tests
+remain separate from these pure SDK source contracts.
+
 ## Saved outputs
 
 Stage bytes under the currently authenticated `OperatorContext`. The host
