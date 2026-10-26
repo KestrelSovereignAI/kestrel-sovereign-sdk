@@ -830,14 +830,6 @@ For a full timeline implementation with persistence, embeddings, and IPFS export
 
 No environment variables required. This is a development-time dependency only.
 
-## Development
-
-```bash
-uv pip install kestrel-sovereign-sdk && uv pip install -e .
-uv run pytest
-```
-
-
 ### Governed dynamic-tool bindings
 
 `ToolSchema.model_visible` is model-exposure metadata. A host can keep an
@@ -855,3 +847,10 @@ with `ResourceConflict`. Unconfirmed effects/evidence fail with
 
 These bindings are in-process host interfaces, not wire credentials. The
 host implementation is required; the SDK itself does not execute tools.
+
+## Development
+
+```bash
+uv pip install kestrel-sovereign-sdk && uv pip install -e .
+uv run pytest
+```
