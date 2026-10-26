@@ -135,8 +135,16 @@ expiry, current frame/display/focus, capability, coordinates and deadline just
 before effect. Maximum frame age and fixed expiry also bound `not_after`.
 Canonical navigation syntax never grants destination/egress access.
 
-The driver persists human input intent/digest before effect and retains its
-original action ID and `HumanActionReceipt`. Action IDs cannot alias an agent
+`observation.frame_record` yields a pixel-free `HumanScreenFrame`, which contains
+only consumer/control IDs and canonical `ScreenFrame` metadata. Persist or pass
+that record to `HumanActionRequest.require_lease` rather than retaining private
+pixels. It roundtrips through JSON without image bytes. The driver still compares
+these supplied facts to its installed lease and current display; frame metadata
+alone cannot prove currency. Host policy must choose a suitable maximum frame
+age and lifetime: the SDK checks internal consistency, not a universal duration.
+
+The driver persists human input intent and its private digest before effect and
+retains its original action ID and `HumanActionReceipt`. Action IDs cannot alias an agent
 request or another consumer/lease with different content. Unknown input is
 reconciled with `action_status(session, lease, original_action_id)` and never
 automatically replayed. `status(session, original_request)` returns the original
@@ -146,7 +154,9 @@ missing record raises `ResourceNotFound` and does not prove an in-flight call
 cannot finish. No reconciliation operation exposes private pixels or adds input.
 
 `revoke(session, HumanControlRevocation)` targets the original consumer/control
-ID and epoch even after lease expiry or a later session epoch; its digest binds
+ID and original `control_epoch` even after expiry or a later session epoch. Unlike
+`ControlRequest.expected_control_epoch`, this names the original lease epoch,
+not the current session epoch. The revocation digest binds
 the retirement request ID and complete target for idempotent retries. Authenticated
 original custody permits retirement, not new data/effects. The priority control
 path fences and drains/reconciles accepted input before `revoked` is confirmed;
@@ -156,15 +166,37 @@ admission. Handback revokes human leases, drains/reconciles input, advances the
 epoch and revalidates display before agent observation/input resumes. Uncertain
 input prevents handback until reconciled or its original process is retired.
 
-The SDK's `require_session`, `require_active`, `require_lease`, `require_request`
-and `require_target` helpers validate supplied facts with a trusted aware clock;
-they cannot prove current authentication, installed worker state, frame currency
-or physical effects. A consumer must still validate returned records and invoke
+Revoking an unknown control ID must atomically record a durable pre-open fence
+before returning `HumanControlRevocationTombstone`. The record correlates the
+original revocation and exact scope/resource lease/driver; it does not claim a
+lease was accepted. It may be returned only when no open was accepted. Every
+in-flight or late `open` compares that fence in its acceptance transaction.
+The fenced ID can never install a lease, including
+changed consumer/payload retries. Repeated revoke reconciles the original request
+ID and target. Absence of an open record alone is insufficient; possibly accepted
+work retains the original lease as unknown/revoking until drained/reconciled.
+The tombstone's `require_revocation` helper correlates supplied records; only
+the worker's actual durable transaction can establish that the fence exists.
+`status` for a pre-open tombstoned control ID raises `ResourceConflict` rather
+than claiming no record exists. Retry the original revoke to reconcile the
+fence; status of an accepted open still returns its exact original lease.
+
+The SDK's `require_session`, `require_active` and `require_lease` helpers validate
+live snapshot facts using a trusted aware clock. `require_request`,
+`require_target` and `require_revocation` correlate original records without
+granting authority or asserting freshness. None proves authentication, installed
+worker state, frame currency or physical effects. A consumer must still validate returned records and invoke
 these checks at the real boundary. Generic observation serialization omits
 pixels. Human action serialization contains private text/URLs and belongs only
 in approved encrypted stores/transports, never logs or model context during
-takeover. Concrete host/worker/UI integration and adversarial transport tests
-remain separate from these pure SDK source contracts.
+takeover. The action content digest is private too: an unsalted hash can confirm
+guesses of short secrets. Do not expose/log it; durable receipt authentication
+needs a host-keyed digest inside encrypted custody. Text validation error
+messages hide inputs, but Pydantic `errors()`/`json()` details may retain them and
+must not be logged. Shared digest date normalization rejects out-of-range UTC
+offsets with `ValueError`, allowing enclosing validators to report a normal
+validation failure rather than raw overflow. Concrete host/worker/UI integration
+and adversarial transport tests remain separate from these pure SDK source contracts.
 
 ## Saved outputs
 

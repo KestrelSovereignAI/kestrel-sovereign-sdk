@@ -6,15 +6,14 @@ is not an approval. Inference routes are intentionally absent from this module.
 
 from __future__ import annotations
 
-from datetime import UTC
 import hashlib
 import json
 from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import AwareDatetime, Field, SecretBytes, SecretStr, field_validator, model_validator
+from pydantic import AwareDatetime, ConfigDict, Field, SecretBytes, SecretStr, field_validator, model_validator
 
-from kestrel_sdk._validation import browser_safe_string
+from kestrel_sdk._validation import browser_safe_string, canonical_utc_datetime
 from kestrel_sdk.resources import (
     Identifier, NonNegativeInt, PositiveInt, ResourceContract, ResourceScope, USD,
 )
@@ -79,7 +78,7 @@ class EnvironmentRequest(ResourceContract):
         payload = self.model_dump(mode="json")
         payload["required_capabilities"] = sorted(self.required_capabilities)
         for name in ("requested_at", "expires_at"):
-            payload[name] = getattr(self, name).astimezone(UTC).isoformat()
+            payload[name] = canonical_utc_datetime(getattr(self, name))
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
@@ -234,6 +233,8 @@ class Click(ResourceContract):
 
 
 class TypeText(ResourceContract):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     kind: Literal["type"] = "type"
     text: Annotated[str, Field(min_length=1, max_length=16384, repr=False)]
 
@@ -262,6 +263,8 @@ class Wait(ResourceContract):
 class Navigate(ResourceContract):
     """Untrusted URL; the driver and network boundary must enforce host policy."""
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     kind: Literal["navigate"] = "navigate"
     url: Annotated[str, Field(min_length=1, max_length=4096, repr=False)]
 
@@ -288,6 +291,8 @@ class ActionRequest(ResourceContract):
 The action payload is private content: serialize only into an authorized,
 encrypted transport/store. Do not log a model_dump of this record.
 """
+
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     action_id: Identifier
     session_id: Identifier

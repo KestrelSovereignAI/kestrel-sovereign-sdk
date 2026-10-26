@@ -13,7 +13,7 @@ from .protocols import (
 from .human_control import (
     HumanActionReceipt, HumanActionRequest, HumanCapability, HumanControl,
     HumanControlLease, HumanControlProvider, HumanControlRequest,
-    HumanControlRevocation, HumanScreenObservation,
+    HumanControlRevocation, HumanControlRevocationTombstone, HumanScreenFrame, HumanScreenObservation,
 )
 
 __all__ = [
@@ -26,5 +26,5 @@ __all__ = [
     "ScreenObservation", "Scroll", "SessionRequest", "TypeText", "Wait",
     "HumanActionReceipt", "HumanActionRequest", "HumanCapability", "HumanControl",
     "HumanControlLease", "HumanControlProvider", "HumanControlRequest",
-    "HumanControlRevocation", "HumanScreenObservation",
+    "HumanControlRevocation", "HumanControlRevocationTombstone", "HumanScreenFrame", "HumanScreenObservation",
 ]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import TypeVar
 
 
@@ -20,6 +21,16 @@ _SEMANTIC_VERSION = re.compile(
 )
 
 _T = TypeVar("_T")
+
+
+def canonical_utc_datetime(value: datetime) -> str:
+    """Stable UTC digest input; offset overflow is a normal validation failure."""
+    try:
+        if not isinstance(value, datetime) or value.utcoffset() is None:
+            raise ValueError("canonical datetime requires an aware value")
+        return value.astimezone(UTC).isoformat()
+    except (OverflowError, ValueError):
+        raise ValueError("canonical datetime is outside the supported UTC range") from None
 
 # Unicode's White_Space property, expressed as code points so validation does
 # not vary with the Unicode database bundled with the running interpreter.

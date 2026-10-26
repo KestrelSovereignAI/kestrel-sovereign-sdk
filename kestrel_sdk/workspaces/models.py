@@ -8,6 +8,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, AwareDatetime, Field, model_validator
 
+from kestrel_sdk._validation import canonical_utc_datetime
 from kestrel_sdk.artifacts import ArtifactFile, ArtifactManifest, ArtifactRef
 from kestrel_sdk.resources import Identifier, NonNegativeInt, PositiveInt, ResourceContract
 
@@ -49,9 +50,8 @@ workspace_id names a contained sandbox workspace, not an absolute path or URI.
     limits: TransferLimits
 
     def digest(self) -> str:
-        from datetime import UTC
         payload = self.model_dump(mode="json")
-        payload["expires_at"] = self.expires_at.astimezone(UTC).isoformat()
+        payload["expires_at"] = canonical_utc_datetime(self.expires_at)
         if "paths" in payload:
             payload["paths"] = sorted(payload["paths"])
         if "manifest" in payload:

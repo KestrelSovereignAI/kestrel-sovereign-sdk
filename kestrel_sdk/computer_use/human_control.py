@@ -7,19 +7,20 @@ effect boundary. The validation helpers below cannot replace either check.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 import hashlib
 import json
 from typing import Literal, Protocol, Self, runtime_checkable
 
-from pydantic import AwareDatetime, Field, model_validator
+from pydantic import AwareDatetime, ConfigDict, Field, model_validator
 
+from kestrel_sdk._validation import canonical_utc_datetime
 from kestrel_sdk.resources import (
     Identifier, NonNegativeInt, PositiveInt, ResourceContract, ResourceScope,
 )
 from .models import (
     ActionReceipt, ActionRequest, Click, ComputerSession, ImageDigest,
-    ScreenObservation,
+    ScreenFrame, ScreenObservation,
 )
 
 HumanCapability = Literal["screenshot", "click", "type", "key", "scroll", "wait", "navigate"]
@@ -65,7 +66,7 @@ the previous lease was revoked. No implicit replacement or renewal is allowed.
         payload = self.model_dump(mode="json")
         payload["capabilities"] = sorted(self.capabilities)
         for name in ("issued_at", "expires_at"):
-            payload[name] = getattr(self, name).astimezone(UTC).isoformat()
+            payload[name] = canonical_utc_datetime(getattr(self, name))
         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def require_session(self, session: ComputerSession, *, at: datetime) -> None:
@@ -109,25 +110,30 @@ These records do not establish that such physical retirement actually occurred.
         return self
 
     def require_request(self, request: HumanControlRequest) -> None:
-        if request.digest() != self.request_sha256:
+        if not request.digest() == self.request_sha256 == self.request.digest():
             raise ValueError("human control request differs from the accepted binding")
 
     def require_active(self, session: ComputerSession, *, at: datetime) -> None:
+        self.require_request(self.request)
         self.request.require_session(session, at=at)
         if self.state != "active" or at < self.accepted_at:
             raise ValueError("human lease is not active")
 
 
-class HumanScreenObservation(ResourceContract):
-    """Private frame in the installed consumer's distinct observation namespace."""
+class HumanScreenFrame(ResourceContract):
+    """Pixel-free current human frame facts, suitable for bounded retention.
+
+    This record is not proof that a display remains current or grants access.
+    The driver must compare its installed lease and latest frame at the effect.
+    """
 
     control_id: Identifier
     consumer_id: Identifier
-    observation: ScreenObservation
+    frame: ScreenFrame
 
     def require_lease(self, lease: HumanControlLease, session: ComputerSession, *, at: datetime) -> None:
         lease.require_active(session, at=at)
-        request, frame = lease.request, self.observation.frame
+        request, frame = lease.request, self.frame
         if (self.control_id, self.consumer_id, frame.session_id, frame.control_epoch) != (
                 request.control_id, request.consumer_id, request.session_id, request.control_epoch):
             raise ValueError("human observation belongs to another consumer/session/epoch")
@@ -137,28 +143,51 @@ class HumanScreenObservation(ResourceContract):
             raise ValueError("human observation is stale")
 
 
+class HumanScreenObservation(ResourceContract):
+    """Private pixels; retain only frame_record when input needs metadata."""
+
+    control_id: Identifier
+    consumer_id: Identifier
+    observation: ScreenObservation
+
+    @property
+    def frame_record(self) -> HumanScreenFrame:
+        return HumanScreenFrame(control_id=self.control_id, consumer_id=self.consumer_id,
+                                frame=self.observation.frame)
+
+    def require_lease(self, lease: HumanControlLease, session: ComputerSession, *, at: datetime) -> None:
+        self.frame_record.require_lease(lease, session, at=at)
+
+
 class HumanActionRequest(ResourceContract):
     """Human input with canonical payload, separate from the agent act channel.
 
-The digest includes private typed text/URLs. Serialize only into an approved
-encrypted transport/store; never log this request or its model dump.
-"""
+    The request AND its unsalted content digest are private. A digest can expose
+    low-entropy secrets through guessing; never log/expose it or the request.
+    Serialize only into an approved encrypted transport/store. Validation error
+    text hides inputs, but errors()/json() detail APIs can still contain them and
+    must not be logged. If durable receipts need content authentication, the
+    host uses a keyed digest inside encrypted custody, not this public hash.
+    """
+
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     control_id: Identifier
     consumer_id: Identifier
     action: ActionRequest = Field(repr=False)
 
     def digest(self) -> str:
+        """Private content correlation; never log or expose this unsalted hash."""
         payload = self.model_dump(mode="json")
-        payload["action"]["not_after"] = self.action.not_after.astimezone(UTC).isoformat()
+        payload["action"]["not_after"] = canonical_utc_datetime(self.action.not_after)
         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def require_lease(
         self, lease: HumanControlLease, session: ComputerSession,
-        observation: HumanScreenObservation, *, at: datetime,
+        frame: HumanScreenFrame, *, at: datetime,
     ) -> None:
-        observation.require_lease(lease, session, at=at)
-        request, action, frame = lease.request, self.action, observation.observation.frame
+        frame.require_lease(lease, session, at=at)
+        request, action, frame = lease.request, self.action, frame.frame
         if (self.control_id, self.consumer_id) != (request.control_id, request.consumer_id):
             raise ValueError("human action belongs to another consumer lease")
         if (action.session_id, action.control_epoch, action.observation_id) != (
@@ -197,7 +226,7 @@ class HumanControlRevocation(ResourceContract):
     control_id: Identifier
     session_id: Identifier
     consumer_id: Identifier
-    expected_control_epoch: NonNegativeInt
+    control_epoch: NonNegativeInt
 
     def digest(self) -> str:
         return hashlib.sha256(json.dumps(
@@ -205,14 +234,36 @@ class HumanControlRevocation(ResourceContract):
         ).encode()).hexdigest()
 
     def require_target(self, lease: HumanControlLease, session: ComputerSession) -> None:
-        """Allow original-owner retirement after expiry/epoch change, no data access."""
+        """Correlate original retirement after expiry/epoch change; grants are external."""
         request = lease.request
         if (request.scope, request.session_id, request.lease_id, request.driver_id) != (
                 session.scope, session.session_id, session.lease_id, session.driver_id):
             raise ValueError("human retirement belongs to another owner/session")
-        if (self.control_id, self.session_id, self.consumer_id, self.expected_control_epoch) != (
+        if (self.control_id, self.session_id, self.consumer_id, self.control_epoch) != (
                 request.control_id, request.session_id, request.consumer_id, request.control_epoch):
             raise ValueError("human retirement differs from the original consumer lease")
+
+
+class HumanControlRevocationTombstone(ResourceContract):
+    """Confirmed durable pre-open fence; no accepted lease/input is implied.
+
+    A worker may return this only after atomically establishing that no open
+    has been accepted AND recording the target control ID as permanently fenced.
+    An in-flight open must compare that fence in the same acceptance transaction.
+    Unknown acceptance instead retains the original lease and its work custody.
+    """
+
+    request: HumanControlRevocation
+    scope: ResourceScope
+    lease_id: Identifier
+    driver_id: Identifier
+    fenced_at: AwareDatetime
+
+    def require_revocation(self, request: HumanControlRevocation, session: ComputerSession) -> None:
+        """Correlate a pre-open fence; this does not prove actual durable storage."""
+        if request != self.request or (self.scope, self.lease_id, self.driver_id, request.session_id) != (
+                session.scope, session.lease_id, session.driver_id, session.session_id):
+            raise ValueError("human pre-open fence differs from the original retirement target")
 
 
 @runtime_checkable
@@ -236,7 +287,7 @@ resource lease, epoch, expiry and current host admission at execution/delivery,
 not merely validated snapshots. Human observation IDs use a namespace distinct
 from agent and other consumers. Recheck latest frame/display/focus, action
 support, coordinates and deadline immediately before effect. Persist input
-intent and its digest before input; original action IDs are deduplicated across
+    intent and its PRIVATE digest before input; original action IDs are deduplicated across
 agent and human channels. Changed ID bindings conflict. Unknown outcomes retain
 original receipt/lease/input custody and reconcile; never automatically replay.
 
@@ -250,7 +301,17 @@ Priority Stop/takeover/close/release revoke and drain through an independent
 control path, without waiting for ordinary observation/input admission. Resume
 revokes every human lease, drains/reconciles input, advances the epoch and
 revalidates display before agent observation/input resumes. An uncertain input
-prevents handback until reconciled or the original process is retired.
+    prevents handback until reconciled or the original process is retired.
+
+    revoke racing open must durably fence its original control ID before it can
+    return. If no open has been accepted, atomically record a pre-open tombstone
+    and return HumanControlRevocationTombstone. Late open of that control ID
+    conflicts, including changed consumer/payload retries. Absence of an open
+    record is not enough: acceptance must compare the same durable fence.
+    Revoke repeats reconcile the original target/request ID. Unknown acceptance
+    never becomes a tombstone: retain the original lease/input retirement.
+    status of a pre-open tombstoned control ID raises ResourceConflict, not
+    ResourceNotFound; reconcile its fence by retrying the original revoke.
 """
 
     async def open(self, session: ComputerSession, request: HumanControlRequest) -> HumanControlLease: ...
@@ -262,7 +323,9 @@ prevents handback until reconciled or the original process is retired.
     async def action_status(
         self, session: ComputerSession, lease: HumanControlLease, action_id: str,
     ) -> HumanActionReceipt: ...
-    async def revoke(self, session: ComputerSession, request: HumanControlRevocation) -> HumanControlLease: ...
+    async def revoke(
+        self, session: ComputerSession, request: HumanControlRevocation,
+    ) -> HumanControlLease | HumanControlRevocationTombstone: ...
 
 
 @runtime_checkable

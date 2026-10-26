@@ -12,6 +12,12 @@ All notable changes to this project are documented in this file.
   operations. Pure validation helpers cover owner/consumer/session correlation,
   capability/frame/deadline bounds and original-epoch retirement. Concrete
   transport support and publication are separate delivery gates.
+- Human action checks accept pixel-free frame records. Pre-open revocation has
+  an explicit durable tombstone result, and original-epoch revocation uses
+  `control_epoch`. Typed input validation hides private payloads in error text;
+  content digests remain private. Correlation rejects copied lease/request
+  mismatches, and shared UTC digest normalization rejects offset overflow as a
+  validation failure.
 
 ## 0.43.0
 
