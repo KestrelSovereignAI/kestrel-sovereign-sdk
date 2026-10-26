@@ -8,8 +8,11 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, AwareDatetime, Field, model_validator
 
+from kestrel_sdk._validation import canonical_utc_datetime, json_roundtrip_datetime
 from kestrel_sdk.artifacts import ArtifactFile, ArtifactManifest, ArtifactRef
 from kestrel_sdk.resources import Identifier, NonNegativeInt, PositiveInt, ResourceContract
+
+_WireAwareDatetime = Annotated[AwareDatetime, AfterValidator(json_roundtrip_datetime)]
 
 WorkspacePath = Annotated[str, AfterValidator(ArtifactFile.contained_path)]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -45,13 +48,12 @@ workspace_id names a contained sandbox workspace, not an absolute path or URI.
     lease_id: Identifier
     control_epoch: NonNegativeInt
     workspace_id: Identifier
-    expires_at: AwareDatetime
+    expires_at: _WireAwareDatetime
     limits: TransferLimits
 
     def digest(self) -> str:
-        from datetime import UTC
         payload = self.model_dump(mode="json")
-        payload["expires_at"] = self.expires_at.astimezone(UTC).isoformat()
+        payload["expires_at"] = canonical_utc_datetime(self.expires_at)
         if "paths" in payload:
             payload["paths"] = sorted(payload["paths"])
         if "manifest" in payload:
@@ -118,7 +120,7 @@ class WorkspaceMaterialization(ResourceContract):
     source: ArtifactRef
     manifest_sha256: Digest
     request_sha256: Digest
-    completed_at: AwareDatetime
+    completed_at: _WireAwareDatetime
 
 
 class WorkspaceTransferStatus(ResourceContract):

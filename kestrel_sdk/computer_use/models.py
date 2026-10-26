@@ -6,18 +6,19 @@ is not an approval. Inference routes are intentionally absent from this module.
 
 from __future__ import annotations
 
-from datetime import UTC
 import hashlib
 import json
 from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import AwareDatetime, Field, SecretBytes, SecretStr, field_validator, model_validator
+from pydantic import AfterValidator, AwareDatetime, ConfigDict, Field, SecretBytes, SecretStr, field_validator, model_validator
 
-from kestrel_sdk._validation import browser_safe_string
+from kestrel_sdk._validation import browser_safe_string, canonical_utc_datetime, json_roundtrip_datetime
 from kestrel_sdk.resources import (
     Identifier, NonNegativeInt, PositiveInt, ResourceContract, ResourceScope, USD,
 )
+
+_WireAwareDatetime = Annotated[AwareDatetime, AfterValidator(json_roundtrip_datetime)]
 
 ENVIRONMENT_PROVIDER_ENTRY_POINT_GROUP = "kestrel_sovereign.environment_providers"
 COMPUTER_DRIVER_ENTRY_POINT_GROUP = "kestrel_sovereign.computer_drivers"
@@ -54,8 +55,8 @@ class EnvironmentRequest(ResourceContract):
     surface: Literal["browser", "desktop"]
     required_capabilities: frozenset[ComputerCapability]
     location: Location
-    requested_at: AwareDatetime
-    expires_at: AwareDatetime
+    requested_at: _WireAwareDatetime
+    expires_at: _WireAwareDatetime
     idle_ttl_seconds: PositiveInt
     ready_timeout_seconds: PositiveInt
     max_hourly_cost_usd: USD
@@ -79,7 +80,7 @@ class EnvironmentRequest(ResourceContract):
         payload = self.model_dump(mode="json")
         payload["required_capabilities"] = sorted(self.required_capabilities)
         for name in ("requested_at", "expires_at"):
-            payload[name] = getattr(self, name).astimezone(UTC).isoformat()
+            payload[name] = canonical_utc_datetime(getattr(self, name))
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
@@ -94,7 +95,7 @@ class EnvironmentQuote(ResourceContract):
     provider_id: Identifier
     location: Location
     region: Identifier | None = None
-    expires_at: AwareDatetime
+    expires_at: _WireAwareDatetime
     hourly_cost_usd: USD
     estimated_total_cost_usd: USD
     capabilities: EnvironmentCapabilities
@@ -118,10 +119,10 @@ class EnvironmentLease(ResourceContract):
     provider_id: Identifier
     location: Location
     state: Literal["pending", "ready", "unknown", "failed", "releasing", "released"]
-    expires_at: AwareDatetime
+    expires_at: _WireAwareDatetime
     # Azure ARM paths and AWS ARNs are opaque provider IDs, not SDK tokens.
     provider_resource_id: Annotated[str, Field(min_length=1, max_length=2048)] | None = None
-    released_at: AwareDatetime | None = None
+    released_at: _WireAwareDatetime | None = None
     actual_cost_usd: USD | None = None
 
     @model_validator(mode="after")
@@ -140,7 +141,7 @@ class DriverConnection(ResourceContract):
     driver_id: Identifier
     endpoint: SecretStr = Field(exclude=True, repr=False)
     credential: SecretStr = Field(exclude=True, repr=False)
-    expires_at: AwareDatetime
+    expires_at: _WireAwareDatetime
 
     @model_validator(mode="after")
     def nonempty_connection(self) -> Self:
@@ -157,7 +158,7 @@ class SessionRequest(ResourceContract):
     lease_id: Identifier
     surface: Literal["browser", "desktop"]
     required_capabilities: frozenset[ComputerCapability]
-    expires_at: AwareDatetime
+    expires_at: _WireAwareDatetime
 
     @model_validator(mode="after")
     def visual_surface(self) -> Self:
@@ -176,7 +177,7 @@ class ComputerSession(ResourceContract):
     state: Literal["ready", "paused", "unknown", "closing", "closed"]
     controller: Literal["agent", "human", "none"]
     control_epoch: NonNegativeInt
-    expires_at: AwareDatetime
+    expires_at: _WireAwareDatetime
 
     @model_validator(mode="after")
     def controller_state(self) -> Self:
@@ -193,7 +194,7 @@ class ScreenFrame(ResourceContract):
     observation_id: Identifier
     session_id: Identifier
     control_epoch: NonNegativeInt
-    observed_at: AwareDatetime
+    observed_at: _WireAwareDatetime
     width: Annotated[int, Field(ge=1, le=16384)]
     height: Annotated[int, Field(ge=1, le=16384)]
     image_sha256: ImageDigest
@@ -234,6 +235,8 @@ class Click(ResourceContract):
 
 
 class TypeText(ResourceContract):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     kind: Literal["type"] = "type"
     text: Annotated[str, Field(min_length=1, max_length=16384, repr=False)]
 
@@ -262,6 +265,8 @@ class Wait(ResourceContract):
 class Navigate(ResourceContract):
     """Untrusted URL; the driver and network boundary must enforce host policy."""
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     kind: Literal["navigate"] = "navigate"
     url: Annotated[str, Field(min_length=1, max_length=4096, repr=False)]
 
@@ -289,11 +294,13 @@ The action payload is private content: serialize only into an authorized,
 encrypted transport/store. Do not log a model_dump of this record.
 """
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     action_id: Identifier
     session_id: Identifier
     observation_id: Identifier
     control_epoch: NonNegativeInt
-    not_after: AwareDatetime
+    not_after: _WireAwareDatetime
     action: ComputerAction = Field(repr=False)
 
 
@@ -303,7 +310,7 @@ class ActionReceipt(ResourceContract):
     observation_id: Identifier
     control_epoch: NonNegativeInt
     outcome: Literal["completed", "denied", "unknown"]
-    recorded_at: AwareDatetime
+    recorded_at: _WireAwareDatetime
     reason_code: Identifier | None = None
 
 

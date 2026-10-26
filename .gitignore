@@ -7,3 +7,6 @@ __pycache__/
 
 # Independent public canonicalization/interoperability vectors.
 !tests/native_a2a/**/*.json
+
+# Local test environments are not release source.
+.venv*/

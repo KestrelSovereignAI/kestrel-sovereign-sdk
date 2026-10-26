@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.44.0
+
+### Added
+
+- Optional human computer control contracts bind an authenticated host-resolved
+  consumer to one fixed session/control-epoch lease. Private human observations,
+  canonical input wrappers and original receipts remain separate from agent
+  operations. Pure validation helpers cover owner/consumer/session correlation,
+  capability/frame/deadline bounds and original-epoch retirement. Concrete
+  transport support and publication are separate delivery gates.
+- Human action checks accept pixel-free frame records. Pre-open revocation has
+  an explicit durable tombstone result, and original-epoch revocation uses
+  `control_epoch`. Direct SDK resource validation suppresses field input details;
+  non-SDK enclosing models and TypeAdapters must configure the same hiding.
+  Invalid tags and unknown field names can still appear in error text; log
+  exception classes only.
+  Detailed Pydantic error payloads and content digests remain private. Correlation
+  rejects copied lease/request mismatches, and shared UTC digest normalization rejects offset overflow as a
+  validation failure. Non-whole-minute datetime offsets normalize to UTC during
+  computer/human/workspace validation, preserving the original instant
+  and digest across durable round trips; whole-minute representations stay unchanged.
+
+### Fixed
+
+- Source archive inclusion uses root-anchored paths, excluding local virtual
+  environment license files from builds made in a developer checkout.
+- Base Pydantic minimum is 2.4.0: earlier versions cannot reliably validate
+  strict nested resource records through JSON. The optional A2A/test profiles
+  retain their existing Pydantic 2.11.3 minimum. Verified for 0.44.0 on Python
+  3.11: Pydantic 2.4.0 base profile and 2.11.3 full profile.
+
 ## 0.43.0
 
 ### Added
