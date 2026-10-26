@@ -125,6 +125,7 @@ async def test_actual_sdk_decorator_preserves_deferred_delivery_and_part_order()
     result = await wrapped.execute()
     assert isinstance(result, DeferredToolResult), "The SDK wrapped private delivery as a legacy nested result"
     assert result["status"] == "ok" and result["tool"] == "private_view"
+    assert "success" not in result
     assert [item["type"] for item in result["parts"]] == ["buffered", "explicit"]
     delivery = result.finalize(result, allowed=True)
     envelope, parts = delivery.result, delivery.parts
@@ -280,3 +281,34 @@ def test_host_protocol_names_the_actual_agent_capability():
 
     assert isinstance(Agent(), DeferredToolResultHost)
     assert Agent().supports_deferred_tool_results is True
+
+
+@pytest.mark.parametrize("flag", [False, 1])
+def test_structural_host_introspection_cannot_replace_the_positive_capability_gate(flag):
+    class Agent:
+        supports_deferred_tool_results = flag
+
+    agent = Agent()
+    assert isinstance(agent, DeferredToolResultHost)
+    assert (getattr(agent, "supports_deferred_tool_results", False) is True) is False
+
+
+def test_non_dictionary_policy_result_consumes_delivery_without_publication():
+    calls = []
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(),
+        publish=lambda: calls.append("must-not-run") or [])
+    with pytest.raises(TypeError, match="dictionary envelope"):
+        result.finalize([], allowed=True)
+    with pytest.raises(RuntimeError, match="already finalized"):
+        result.finalize(result, allowed=True)
+    assert not calls
+
+
+def test_missing_policy_argument_fails_before_entering_the_delivery_method():
+    calls = []
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(),
+        publish=lambda: calls.append("must-not-run") or [])
+    with pytest.raises(TypeError, match="allowed"):
+        result.finalize(result)
+    assert result.finalize(result, allowed=False).withheld
+    assert not calls

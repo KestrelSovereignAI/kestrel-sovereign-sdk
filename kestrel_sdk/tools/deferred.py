@@ -32,6 +32,7 @@ class DeferredToolResultHost(Protocol):
 
     Features must require this flag to be exactly True before advertising UI
     that depends on deferred delivery. It grants no reader/tool authority.
+    Runtime isinstance checks inspect structure only, not the flag's value.
     """
 
     @property
@@ -47,7 +48,8 @@ class DeferredToolResult(dict):
     """A tool envelope with one private, synchronous render-parts factory.
 
     ``finalize(post_hook_result, allowed=...)`` consumes the factory even when policy
-    replaced or changed the public envelope, in which case it is withheld.
+    denied delivery, replaced or changed the public envelope, in which case it
+    is withheld.
     Existing parts retain their original host ordering; the host emits only
     the newly delivered parts after policy.
 

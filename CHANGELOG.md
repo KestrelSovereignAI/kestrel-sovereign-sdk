@@ -8,7 +8,8 @@ All notable changes to this project are documented in this file.
 
 - `DeferredToolResult` retains a private render-parts factory outside its JSON
   envelope. Supporting hosts finalize it once after post-tool policy completes,
-  withholding private delivery if policy changed the public result. Copies and
+  withholding private delivery if policy denies it, changes the public result
+  or replaces the result object. Copies and
   serialization cannot duplicate the private delivery capability. This is a
   local host contract; it does not provide tool permission or audit confirmation.
 - The SDK tool wrapper transfers private delivery while adding its canonical

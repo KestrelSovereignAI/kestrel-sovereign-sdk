@@ -872,7 +872,11 @@ explicitly implement this boundary before features advertise dependent UI.
 Finalization does not itself confirm a durable audit or authorize an HTTP reader.
 Generic reconstruction helpers that recreate the subclass (including
 `dataclasses.asdict`) are unsupported; convert to `dict` for a public projection.
-Transfer and finalization errors propagate after consuming the factory. They
+`isinstance(agent, DeferredToolResultHost)` is structural introspection; it
+does not check the flag's value and must not be used as the capability gate.
+Transfer and finalization errors raised after arguments are accepted propagate
+after consuming the factory. Missing required arguments fail before entry and
+do not consume it. These failures
 must be reported as delivery failures; they never justify replaying a tool that
 may already have acted. Hosts must not silently treat failed private delivery as
 success or retry the factory. The post-hook public projection is still available
