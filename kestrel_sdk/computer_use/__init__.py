@@ -15,6 +15,11 @@ from .human_control import (
     HumanControlLease, HumanControlProvider, HumanControlRequest,
     HumanControlRevocation, HumanControlRevocationTombstone, HumanScreenFrame, HumanScreenObservation,
 )
+from .acquisition import (
+    MAX_ACQUISITION_CREATE_BYTES, MAX_ACQUISITION_IDENTITY_BYTES, MAX_ACQUISITION_STORAGE_BYTES,
+    CustodiedEnvironmentProvider, EnvironmentAcquisitionAttempt, EnvironmentAcquisitionCheckpoint,
+    EnvironmentAcquisitionCustody, EnvironmentAcquisitionPreparation, EnvironmentAcquisitionStorage,
+)
 
 __all__ = [
     "COMPUTER_DRIVER_ENTRY_POINT_GROUP", "ENVIRONMENT_PROVIDER_ENTRY_POINT_GROUP",
@@ -27,4 +32,7 @@ __all__ = [
     "HumanActionReceipt", "HumanActionRequest", "HumanCapability", "HumanControl",
     "HumanControlLease", "HumanControlProvider", "HumanControlRequest",
     "HumanControlRevocation", "HumanControlRevocationTombstone", "HumanScreenFrame", "HumanScreenObservation",
+    "MAX_ACQUISITION_CREATE_BYTES", "MAX_ACQUISITION_IDENTITY_BYTES", "MAX_ACQUISITION_STORAGE_BYTES",
+    "CustodiedEnvironmentProvider", "EnvironmentAcquisitionAttempt", "EnvironmentAcquisitionCheckpoint",
+    "EnvironmentAcquisitionCustody", "EnvironmentAcquisitionPreparation", "EnvironmentAcquisitionStorage",
 ]

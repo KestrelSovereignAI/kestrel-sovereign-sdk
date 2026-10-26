@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+
+- Optional environment acquisition-custody API version 1 keeps original private
+  create bytes and worker identity on the host's existing encrypted request row.
+  Exact request/quote/attempt checkpoints support one atomic first dispatch and
+  factual unknown-result reconciliation without retry authority. Explicit private
+  storage preserves bounded bytes while generic dumps omit them. This separate
+  follow-on source does not enable a provider or alter the human-control release.
+
 ## 0.44.1
 
 ### Added

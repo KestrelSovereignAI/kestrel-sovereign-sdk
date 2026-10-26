@@ -56,6 +56,9 @@ defines saved deliverables with immutable revisions, conflict-aware publication
 and ownership independent of the producing run or computer. These are typed
 contracts, not enabled runtime capabilities. See the
 [contract and host-enforcement guide](docs/computer-use.md).
+The optional [acquisition-custody contract](docs/environment-acquisition.md)
+defines host-owned durable preparation for APIs without idempotent create;
+compatible host/transport integration and publication remain separate gates.
 
 ## Installation
 
