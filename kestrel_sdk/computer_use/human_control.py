@@ -10,11 +10,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import hashlib
 import json
-from typing import Literal, Protocol, Self, runtime_checkable
+from typing import Annotated, Literal, Protocol, Self, runtime_checkable
 
-from pydantic import AwareDatetime, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, AwareDatetime, ConfigDict, Field, model_validator
 
-from kestrel_sdk._validation import canonical_utc_datetime
+from kestrel_sdk._validation import canonical_utc_datetime, json_roundtrip_datetime
 from kestrel_sdk.resources import (
     Identifier, NonNegativeInt, PositiveInt, ResourceContract, ResourceScope,
 )
@@ -22,6 +22,8 @@ from .models import (
     ActionReceipt, ActionRequest, Click, ComputerSession, ImageDigest,
     ScreenFrame, ScreenObservation,
 )
+
+_WireAwareDatetime = Annotated[AwareDatetime, AfterValidator(json_roundtrip_datetime)]
 
 HumanCapability = Literal["screenshot", "click", "type", "key", "scroll", "wait", "navigate"]
 
@@ -47,8 +49,8 @@ the previous lease was revoked. No implicit replacement or renewal is allowed.
     driver_id: Identifier
     consumer_id: Identifier
     control_epoch: NonNegativeInt
-    issued_at: AwareDatetime
-    expires_at: AwareDatetime
+    issued_at: _WireAwareDatetime
+    expires_at: _WireAwareDatetime
     capabilities: frozenset[HumanCapability]
     max_frame_age_seconds: PositiveInt
 
@@ -94,8 +96,8 @@ These records do not establish that such physical retirement actually occurred.
     request: HumanControlRequest
     request_sha256: ImageDigest
     state: Literal["active", "revoking", "revoked", "unknown"]
-    accepted_at: AwareDatetime
-    revoked_at: AwareDatetime | None = None
+    accepted_at: _WireAwareDatetime
+    revoked_at: _WireAwareDatetime | None = None
 
     @model_validator(mode="after")
     def correlated_acceptance(self) -> Self:
@@ -164,10 +166,12 @@ class HumanActionRequest(ResourceContract):
 
     The request AND its unsalted content digest are private. A digest can expose
     low-entropy secrets through guessing; never log/expose it or the request.
-    Serialize only into an approved encrypted transport/store. Validation error
-    text hides inputs, but errors()/json() detail APIs can still contain them and
-    must not be logged. If durable receipts need content authentication, the
-    host uses a keyed digest inside encrypted custody, not this public hash.
+    Serialize only into an approved encrypted transport/store. Direct validation
+    hides inputs in error text; enclosing non-SDK models and TypeAdapters must
+    also configure hide_input_in_errors=True. Detailed errors()/json() APIs can
+    still contain inputs and must not be logged. Durable receipt content
+    authentication needs a host-keyed digest inside encrypted custody, not this
+    public hash.
     """
 
     model_config = ConfigDict(hide_input_in_errors=True)
@@ -235,6 +239,7 @@ class HumanControlRevocation(ResourceContract):
 
     def require_target(self, lease: HumanControlLease, session: ComputerSession) -> None:
         """Correlate original retirement after expiry/epoch change; grants are external."""
+        lease.require_request(lease.request)
         request = lease.request
         if (request.scope, request.session_id, request.lease_id, request.driver_id) != (
                 session.scope, session.session_id, session.lease_id, session.driver_id):
@@ -257,7 +262,7 @@ class HumanControlRevocationTombstone(ResourceContract):
     scope: ResourceScope
     lease_id: Identifier
     driver_id: Identifier
-    fenced_at: AwareDatetime
+    fenced_at: _WireAwareDatetime
 
     def require_revocation(self, request: HumanControlRevocation, session: ComputerSession) -> None:
         """Correlate a pre-open fence; this does not prove actual durable storage."""
@@ -270,37 +275,37 @@ class HumanControlRevocationTombstone(ResourceContract):
 class HumanControl(Protocol):
     """Optional driver-owned authenticated transport, with no new public endpoint.
 
-The host resolves the exact human consumer from current authentication and
-holds original privacy/grants through each delivery/effect. Request records,
-consumer IDs, causation and prior receipts grant no authority. Transport must
-bind the authenticated consumer to the installed lease; do not expose CDP or
-reuse ComputerDriver.act/observe as a human control shim.
+    The host resolves the exact human consumer from current authentication and
+    holds original privacy/grants through each delivery/effect. Request records,
+    consumer IDs, causation and prior receipts grant no authority. Transport must
+    bind the authenticated consumer to the installed lease; do not expose CDP or
+    reuse ComputerDriver.act/observe as a human control shim.
 
-open requires current paused/human state, takeover capability and a capability
-subset. It durably binds the original request digest before acceptance. Same
-ID/digest reconciles, changed retries conflict; revoked/expired IDs never reopen.
-Only one consumer lease may be installed per control epoch; replacing it needs
-a fresh takeover epoch. No implicit renewal or reconnect resumes input.
+    open requires current paused/human state, takeover capability and a capability
+    subset. It durably binds the original request digest before acceptance. Same
+    ID/digest reconciles, changed retries conflict; revoked/expired IDs never reopen.
+    Only one consumer lease may be installed per control epoch; replacing it needs
+    a fresh takeover epoch. No implicit renewal or reconnect resumes input.
 
-All data/effects require the exact live installed consumer lease, session,
-resource lease, epoch, expiry and current host admission at execution/delivery,
-not merely validated snapshots. Human observation IDs use a namespace distinct
-from agent and other consumers. Recheck latest frame/display/focus, action
-support, coordinates and deadline immediately before effect. Persist input
-    intent and its PRIVATE digest before input; original action IDs are deduplicated across
-agent and human channels. Changed ID bindings conflict. Unknown outcomes retain
-original receipt/lease/input custody and reconcile; never automatically replay.
+    All data/effects require the exact live installed consumer lease, session,
+    resource lease, epoch, expiry and current host admission at execution/delivery,
+    not merely validated snapshots. Human observation IDs use a namespace distinct
+    from agent and other consumers. Recheck latest frame/display/focus, action
+    support, coordinates and deadline immediately before effect. Persist input
+    intent and its PRIVATE digest before input; original action IDs are
+    deduplicated across agent and human channels. Changed ID bindings conflict. Unknown outcomes retain
+    original receipt/lease/input custody and reconcile; never automatically replay.
 
-status/action_status require current metadata-read authority and may reconcile
-expired/revoked bindings without exposing pixels or accepting input. No visible
-record raises ResourceNotFound; absence is not proof an in-flight open/action
-cannot finish. Safety revoke retains original authenticated ownership, targets
-the original epoch even after expiry, and fences/drains accepted work before
-acknowledging revoked. A timeout remains unknown, never retirement evidence.
-Priority Stop/takeover/close/release revoke and drain through an independent
-control path, without waiting for ordinary observation/input admission. Resume
-revokes every human lease, drains/reconciles input, advances the epoch and
-revalidates display before agent observation/input resumes. An uncertain input
+    status/action_status require current metadata-read authority and may reconcile
+    expired/revoked bindings without exposing pixels or accepting input. No visible
+    record raises ResourceNotFound; absence is not proof an in-flight open/action
+    cannot finish. Safety revoke retains original authenticated ownership, targets
+    the original epoch even after expiry, and fences/drains accepted work before
+    acknowledging revoked. A timeout remains unknown, never retirement evidence.
+    Priority Stop/takeover/close/release revoke and drain through an independent
+    control path, without waiting for ordinary observation/input admission. Resume
+    revokes every human lease, drains/reconciles input, advances the epoch and
+    revalidates display before agent observation/input resumes. An uncertain input
     prevents handback until reconciled or the original process is retired.
 
     revoke racing open must durably fence its original control ID before it can
@@ -312,7 +317,7 @@ revalidates display before agent observation/input resumes. An uncertain input
     never becomes a tombstone: retain the original lease/input retirement.
     status of a pre-open tombstoned control ID raises ResourceConflict, not
     ResourceNotFound; reconcile its fence by retrying the original revoke.
-"""
+    """
 
     async def open(self, session: ComputerSession, request: HumanControlRequest) -> HumanControlLease: ...
     async def status(self, session: ComputerSession, request: HumanControlRequest) -> HumanControlLease: ...

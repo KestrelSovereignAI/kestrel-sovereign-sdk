@@ -7,7 +7,7 @@ import json
 import subprocess
 import sys
 
-from pydantic import SecretBytes, ValidationError
+from pydantic import BaseModel, ConfigDict, SecretBytes, TypeAdapter, ValidationError
 import pytest
 
 import kestrel_sdk.computer_use as public
@@ -18,7 +18,7 @@ from kestrel_sdk.computer_use import (
     HumanScreenObservation, Key, Navigate, ScreenFrame, ScreenObservation,
     Scroll, TypeText, Wait,
 )
-from kestrel_sdk.resources import ResourceScope
+from kestrel_sdk.resources import ResourceContract, ResourceScope
 
 NOW = datetime(2026, 10, 26, tzinfo=UTC)
 SCOPE = ResourceScope(tenant_id="tenant", principal_id="operator", agent_id="agent")
@@ -493,3 +493,83 @@ def test_retirement_targets_exact_original_consumer_lease(changes):
 def test_cleanup_never_borrows_another_owners_resource_custody(changes):
     with pytest.raises(ValueError, match="owner/session"):
         revocation().require_target(lease(), session(**changes))
+
+
+@pytest.mark.parametrize("record", ["human", "agent"])
+@pytest.mark.parametrize("outer", ["resource", "configured-model", "configured-adapter"])
+@pytest.mark.parametrize("content", ["text", "credentialed-url"])
+def test_wrapped_private_input_errors_obey_outer_validation_privacy(record, outer, content):
+    secret = "SECRET5"
+    payload = action(action=TypeText(text=secret)).model_dump(mode="json")
+    if content == "credentialed-url":
+        payload["action"]["action"] = {
+            "kind": "navigate", "url": "https://operator:" + secret + "@example.test/",
+        }
+    else:
+        payload.pop("consumer_id")
+    model = HumanActionRequest
+    if record == "agent":
+        payload = payload["action"]
+        model = ActionRequest
+        if content == "text":
+            payload.pop("action_id")
+    if outer == "resource":
+        class Custody(ResourceContract):
+            item: model
+        validate = lambda: Custody.model_validate_json(json.dumps({"item": payload}))
+    elif outer == "configured-model":
+        class Custody(BaseModel):
+            model_config = ConfigDict(hide_input_in_errors=True)
+            item: model
+        validate = lambda: Custody.model_validate_json(json.dumps({"item": payload}))
+    else:
+        adapter = TypeAdapter(list[model], config=ConfigDict(hide_input_in_errors=True))
+        validate = lambda: adapter.validate_json(json.dumps([payload]))
+    with pytest.raises(ValidationError) as caught:
+        validate()
+    assert secret not in str(caught.value) and secret not in repr(caught.value)
+    assert "input_value=" not in str(caught.value)
+    # Structured error detail remains private even when error text is hidden.
+    assert secret in repr(caught.value.errors())
+
+
+@pytest.mark.parametrize("changes", [
+    {"consumer_id": "intruder"}, {"lease_id": "other"}, {"driver_id": "other"},
+])
+def test_revocation_correlation_rejects_unchecked_copied_original_binding(changes):
+    copied = lease().model_copy(update={"request": request(**changes)})
+    target = revocation(**({"consumer_id": changes["consumer_id"]} if "consumer_id" in changes else {}))
+    current = session(**{k: v for k, v in changes.items() if k != "consumer_id"})
+    with pytest.raises(ValueError, match="binding"):
+        target.require_target(copied, current)
+
+
+@pytest.mark.parametrize("offset", [timedelta(seconds=30), timedelta(microseconds=1),
+                                    -timedelta(hours=5, seconds=7)])
+def test_human_records_keep_exact_instants_and_digests_through_json(offset):
+    zone = timezone(offset)
+    original = request(issued_at=NOW.astimezone(zone),
+                       expires_at=(NOW + timedelta(minutes=1)).astimezone(zone))
+    assert original.issued_at.tzinfo is UTC and original.expires_at.tzinfo is UTC
+    assert original.digest() == request().digest()
+    accepted = lease(request=original, accepted_at=(NOW + timedelta(seconds=1)).astimezone(zone),
+                     state="revoked", revoked_at=CHECK.astimezone(zone))
+    restored = HumanControlLease.model_validate_json(accepted.model_dump_json())
+    assert restored == accepted and restored.request.digest() == original.digest()
+    assert restored.accepted_at == NOW + timedelta(seconds=1)
+    assert restored.revoked_at == CHECK
+    intent = action(not_after=(NOW + timedelta(seconds=10)).astimezone(zone))
+    assert HumanActionRequest.model_validate_json(intent.model_dump_json()) == intent
+    assert intent.digest() == action().digest()
+    frame = observation(observed_at=(NOW + timedelta(seconds=2)).astimezone(zone)).frame_record
+    assert HumanScreenFrame.model_validate_json(frame.model_dump_json()) == frame
+    assert frame.frame.observed_at.tzinfo is UTC
+
+
+def test_action_deadline_allows_exact_inclusive_frame_age_limit():
+    frame = observation().frame_record
+    bound = frame.frame.observed_at + timedelta(seconds=request().max_frame_age_seconds)
+    action(not_after=bound).require_lease(lease(), session(), frame, at=CHECK)
+    with pytest.raises(ValueError, match="deadline"):
+        action(not_after=bound + timedelta(microseconds=1)).require_lease(
+            lease(), session(), frame, at=CHECK)

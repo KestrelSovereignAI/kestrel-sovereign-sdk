@@ -14,10 +14,19 @@ All notable changes to this project are documented in this file.
   transport support and publication are separate delivery gates.
 - Human action checks accept pixel-free frame records. Pre-open revocation has
   an explicit durable tombstone result, and original-epoch revocation uses
-  `control_epoch`. Typed input validation hides private payloads in error text;
-  content digests remain private. Correlation rejects copied lease/request
-  mismatches, and shared UTC digest normalization rejects offset overflow as a
-  validation failure.
+  `control_epoch`. Direct SDK resource validation hides inputs in error text;
+  non-SDK enclosing models and TypeAdapters must configure the same hiding.
+  Detailed Pydantic error payloads and content digests remain private. Correlation
+  rejects copied lease/request mismatches, and shared UTC digest normalization rejects offset overflow as a
+  validation failure. Seconds-level datetime offsets normalize to UTC before
+  computer/human/workspace JSON serialization, preserving the original instant
+  and digest across durable round trips; whole-minute representations stay unchanged.
+
+### Fixed
+
+- Base Pydantic minimum is 2.4.0: earlier versions cannot reliably validate
+  strict nested resource records through JSON. The optional A2A/test profiles
+  retain their existing Pydantic 2.11.3 minimum. Both profile floors are tested.
 
 ## 0.43.0
 

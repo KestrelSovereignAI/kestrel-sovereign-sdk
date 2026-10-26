@@ -744,7 +744,7 @@ requires-dist = [
     { name = "prometheus-client", marker = "extra == 'metrics'", specifier = ">=0.21.0" },
     { name = "prometheus-client", marker = "extra == 'test'", specifier = ">=0.21.0" },
     { name = "protobuf", marker = "extra == 'a2a'", specifier = ">=5.29.5" },
-    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydantic", specifier = ">=2.4.0" },
     { name = "pydantic", marker = "extra == 'a2a'", specifier = ">=2.11.3" },
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'a2a'", specifier = ">=2.13.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },

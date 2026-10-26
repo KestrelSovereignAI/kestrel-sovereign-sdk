@@ -25,10 +25,15 @@ USD = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
 
 
 class ResourceContract(BaseModel):
-    """Strict, immutable v1 wire record; unknown fields/versions fail closed."""
+    """Strict immutable v1 record; direct error text omits rejected input values.
+
+    Non-SDK enclosing models/TypeAdapters must configure their own error hiding;
+    structured ValidationError details remain private and must not be logged.
+    """
 
     model_config = ConfigDict(
         frozen=True, extra="forbid", strict=True, validate_default=True,
+        hide_input_in_errors=True,
         revalidate_instances="always",
     )
     schema_version: Annotated[int, Strict(), Field(ge=1, le=1)] = 1

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TypeVar
 
 
@@ -24,13 +24,32 @@ _T = TypeVar("_T")
 
 
 def canonical_utc_datetime(value: datetime) -> str:
-    """Stable UTC digest input; offset overflow is a normal validation failure."""
+    """Stable UTC digest input; UTC conversion overflow is a validation failure."""
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        raise ValueError("canonical datetime requires an aware value")
     try:
-        if not isinstance(value, datetime) or value.utcoffset() is None:
-            raise ValueError("canonical datetime requires an aware value")
         return value.astimezone(UTC).isoformat()
     except (OverflowError, ValueError):
         raise ValueError("canonical datetime is outside the supported UTC range") from None
+
+
+def json_roundtrip_datetime(value: datetime) -> datetime:
+    """Normalize only offsets JSON datetime serializers cannot retain exactly.
+
+    Whole-minute offsets preserve their existing representation and digest.
+    Pydantic truncates seconds/microseconds in an offset when writing JSON;
+    convert those values to UTC first so durable records preserve the instant.
+    """
+    offset = value.utcoffset()
+    if offset is None:
+        raise ValueError("JSON datetime requires an aware value")
+    if offset % timedelta(minutes=1):
+        try:
+            return value.astimezone(UTC)
+        except (OverflowError, ValueError):
+            raise ValueError("canonical datetime is outside the supported UTC range") from None
+    return value
+
 
 # Unicode's White_Space property, expressed as code points so validation does
 # not vary with the Unicode database bundled with the running interpreter.

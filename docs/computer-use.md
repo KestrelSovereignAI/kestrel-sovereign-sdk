@@ -96,7 +96,7 @@ operation scopes at application/egress boundaries and restrict ambiguous
 pixel-only workflows. No implicit host access or unauthenticated public driver
 endpoint is permitted by the contract.
 
-## Optional human control (unreleased source)
+## Optional human control (SDK 0.44.0)
 
 `HumanControlProvider.human_control()` negotiates the optional `HumanControl`
 transport alongside the session's `takeover` capability. Missing either refuses
@@ -192,11 +192,19 @@ pixels. Human action serialization contains private text/URLs and belongs only
 in approved encrypted stores/transports, never logs or model context during
 takeover. The action content digest is private too: an unsalted hash can confirm
 guesses of short secrets. Do not expose/log it; durable receipt authentication
-needs a host-keyed digest inside encrypted custody. Text validation error
-messages hide inputs, but Pydantic `errors()`/`json()` details may retain them and
-must not be logged. Shared digest date normalization rejects out-of-range UTC
-offsets with `ValueError`, allowing enclosing validators to report a normal
-validation failure rather than raw overflow. Concrete host/worker/UI integration
+needs a host-keyed digest inside encrypted custody. Direct validation of SDK
+resource records hides inputs in error text. Any non-SDK enclosing model or
+`TypeAdapter` must also set
+`hide_input_in_errors=True` (or validate the private record separately first);
+the outer validator controls error formatting. SDK `ResourceContract` wrappers
+inherit this setting. Pydantic `errors()`/`json()` details may still retain inputs
+and must not be logged. Shared digest date normalization rejects instants whose
+conversion to UTC falls outside years 1–9999 with `ValueError`, allowing enclosing
+validators to report a normal validation failure rather than raw overflow.
+Computer, human-control and workspace datetime fields normalize seconds-level
+or fractional UTC offsets to UTC before serialization, because JSON serializers
+cannot retain those offsets exactly. Whole-minute offset representations and
+existing valid digests remain unchanged. Concrete host/worker/UI integration
 and adversarial transport tests remain separate from these pure SDK source contracts.
 
 ## Saved outputs

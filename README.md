@@ -134,7 +134,7 @@ supported value cannot hide a conflicting or empty value in another carrier.
 
 ## Dependencies
 
-- `pydantic>=2.0`
+- `pydantic>=2.4.0` (base contracts; optional `[a2a]`/`[test]` require `>=2.11.3`)
 - `idna>=3.20,<4` for canonical IDNA 2008 host identity
 - Optional: `cryptography>=42.0` (via `[crypto]` extra)
 - Optional native HTTP clients: `[httpx]` or `[httpx2]`
