@@ -99,6 +99,12 @@ jobs:
           MATRIX_PYTHON_VERSION: ${{ matrix.python-version }}
         run: uv python install "$MATRIX_PYTHON_VERSION"
 
+      - name: Install SDK test dependencies
+        timeout-minutes: 3
+        env:
+          MATRIX_PYTHON_VERSION: ${{ matrix.python-version }}
+        run: uv sync --locked --python "$MATRIX_PYTHON_VERSION" --group test
+
       - name: Run SDK test suite
         timeout-minutes: 5
         env:
@@ -107,7 +113,7 @@ jobs:
         # A blocked native thread must leave test names and stacks in CI logs.
         # The thread timeout terminates the process instead of waiting on the
         # same event loop/executor that may be stuck. No platform is skipped.
-        run: uv run --python "$MATRIX_PYTHON_VERSION" --group test pytest -vv --timeout=120 --timeout-method=thread -o faulthandler_timeout=60
+        run: uv run --no-sync --python "$MATRIX_PYTHON_VERSION" --group test pytest -vv --timeout=120 --timeout-method=thread -o faulthandler_timeout=60
 
   build-check:
     runs-on: ubuntu-latest
