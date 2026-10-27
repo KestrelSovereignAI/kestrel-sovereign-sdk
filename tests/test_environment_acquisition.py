@@ -277,6 +277,92 @@ def test_combined_maximum_preparation_round_trips_inside_storage_bound():
     assert EnvironmentAcquisitionStorage.deserialize_private(encoded) == stored
 
 
+def test_storage_rejects_valid_row_above_byte_limit_before_json_decode(monkeypatch):
+    request, quote = originals()
+    value = preparation()
+    stored = EnvironmentAcquisitionStorage(
+        checkpoint=EnvironmentAcquisitionCheckpoint.from_original(
+            "attempt", request, quote
+        ).prepared(value),
+        preparation=value,
+    )
+    canonical = stored.serialize_private().get_secret_value()
+    at_limit = canonical + b" " * (MAX_ACQUISITION_STORAGE_BYTES - len(canonical))
+    assert len(at_limit) == MAX_ACQUISITION_STORAGE_BYTES
+    assert EnvironmentAcquisitionStorage.deserialize_private(SecretBytes(at_limit)) == stored
+    above_limit = at_limit + b" "
+    assert len(above_limit) == MAX_ACQUISITION_STORAGE_BYTES + 1
+    # The extra byte is valid JSON whitespace, so syntax cannot hide a lost cap.
+    assert json.loads(above_limit) == json.loads(canonical)
+
+    def decoder_must_not_run(*args, **kwargs):
+        pytest.fail("oversize private row reached the JSON decoder")
+
+    monkeypatch.setattr("kestrel_sdk.computer_use.acquisition.json.loads", decoder_must_not_run)
+    with pytest.raises(ValueError, match="^private acquisition storage exceeds byte bounds$"):
+        EnvironmentAcquisitionStorage.deserialize_private(SecretBytes(above_limit))
+
+
+@pytest.mark.parametrize("state", ("accepted", "unknown"), ids=("accepted", "unknown"))
+def test_storage_encode_cap_preserves_original_facts_and_minimal_round_trip(state):
+    request, quote = originals()
+    value = preparation(
+        b"x" * MAX_ACQUISITION_CREATE_BYTES,
+        b"y" * MAX_ACQUISITION_IDENTITY_BYTES,
+    )
+    checkpoint = (
+        EnvironmentAcquisitionCheckpoint.from_original("attempt", request, quote)
+        .prepared(value)
+        .dispatched()
+    )
+    original_cost = Decimal("7" * 200_000)
+    original_lease = lease(actual_cost_usd=original_cost)
+    original_facts = original_lease.model_dump(exclude={"actual_cost_usd"})
+    full = EnvironmentAcquisitionStorage(
+        checkpoint=getattr(checkpoint, state)(original_lease), preparation=value
+    )
+    with pytest.raises(ValueError, match="^private acquisition storage exceeds byte bounds$"):
+        full.serialize_private()
+
+    minimal_lease = original_lease.model_copy(update={"actual_cost_usd": None})
+    minimal = EnvironmentAcquisitionStorage(
+        checkpoint=getattr(checkpoint, state)(minimal_lease), preparation=value
+    )
+    encoded = minimal.serialize_private()
+    assert len(encoded.get_secret_value()) <= MAX_ACQUISITION_STORAGE_BYTES
+    restored = EnvironmentAcquisitionStorage.deserialize_private(encoded)
+    assert restored == minimal
+    restored.checkpoint.require_original(request, quote)
+    assert restored.checkpoint.lease.model_dump(exclude={"actual_cost_usd"}) == original_facts
+    assert restored.checkpoint.lease.actual_cost_usd is None
+    assert restored.preparation.create_payload.get_secret_value() == value.create_payload.get_secret_value()
+    assert restored.preparation.worker_identity.get_secret_value() == value.worker_identity.get_secret_value()
+
+    # JSON null occupies four bytes; a quoted n-digit Decimal occupies n + 2.
+    # Size from the real minimal row so both states exercise the exact boundary.
+    digits_at_limit = MAX_ACQUISITION_STORAGE_BYTES - len(encoded.get_secret_value()) + 2
+
+    def cost_row(digits):
+        bounded_lease = original_lease.model_copy(
+            update={"actual_cost_usd": Decimal("8" * digits)}
+        )
+        return EnvironmentAcquisitionStorage(
+            checkpoint=getattr(checkpoint, state)(bounded_lease), preparation=value
+        )
+
+    at_limit = cost_row(digits_at_limit)
+    at_limit_bytes = at_limit.serialize_private()
+    assert len(at_limit_bytes.get_secret_value()) == MAX_ACQUISITION_STORAGE_BYTES
+    assert EnvironmentAcquisitionStorage.deserialize_private(at_limit_bytes) == at_limit
+    with pytest.raises(ValueError, match="^private acquisition storage exceeds byte bounds$"):
+        cost_row(digits_at_limit + 1).serialize_private()
+
+    # Failing serialization or projecting unknown cost must not clamp the source.
+    assert original_lease.actual_cost_usd.as_tuple() == original_cost.as_tuple()
+    assert full.checkpoint.lease.actual_cost_usd.as_tuple() == original_cost.as_tuple()
+    assert len(original_lease.actual_cost_usd.as_tuple().digits) == 200_000
+
+
 @pytest.mark.parametrize(
     "name,limit",
     [
