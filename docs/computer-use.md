@@ -13,7 +13,7 @@ caller-supplied scope or provenance is never authority.
 
 | Boundary | Public contract | Responsibility |
 | --- | --- | --- |
-| Provisioning | `EnvironmentProvider` | Quote, idempotent acquire, inspect, release, authenticated host connection |
+| Provisioning | `EnvironmentProvider`, optional `CustodiedEnvironmentProvider` | Quote, idempotent acquire or [host-owned acquisition custody](environment-acquisition.md), inspect, release, authenticated host connection |
 | Interaction | `ComputerDriver` | Open/status, observe, action/status, fenced pause/takeover/resume/close |
 | Persistence | `ArtifactService` | Stage, commit/status, head/read/history/list, link/unlink/delete |
 | Inference | Existing LLM contracts | Model/vision routing after host privacy checks |
