@@ -18,6 +18,7 @@ state = {
     'source_candidate': 'a24c7b7fa97f37c6011cc771485f967714802a65',
     'diagnostic_only': True, 'all14_source_ci_success': False, 'probes': [],
 }
+(out/'state.json').write_text(json.dumps(state, indent=2))
 changed = subprocess.check_output(['git', 'diff', '--name-only', state['source_candidate'], 'HEAD'], text=True).splitlines()
 assert set(changed) == {'.github/workflows/ci.yml', '.github/scripts/diagnose_sdk_ci.py'}, changed
 state['changed_paths'] = changed
