@@ -99,10 +99,21 @@ jobs:
           MATRIX_PYTHON_VERSION: ${{ matrix.python-version }}
         run: uv python install "$MATRIX_PYTHON_VERSION"
 
-      - name: Run SDK test suite
+      - name: Install SDK test dependencies
+        timeout-minutes: 3
         env:
           MATRIX_PYTHON_VERSION: ${{ matrix.python-version }}
-        run: uv run --python "$MATRIX_PYTHON_VERSION" --group test pytest
+        run: uv sync --locked --python "$MATRIX_PYTHON_VERSION" --group test
+
+      - name: Run SDK test suite
+        timeout-minutes: 5
+        env:
+          MATRIX_PYTHON_VERSION: ${{ matrix.python-version }}
+          PYTHONUNBUFFERED: "1"
+        # The process timer remains active through pytest teardown and native
+        # interpreter shutdown. Per-test thread timeouts still terminate a
+        # stuck test. No platform or test is skipped.
+        run: uv run --no-sync --python "$MATRIX_PYTHON_VERSION" --group test python -u -B .github/scripts/run_sdk_tests.py -vv --timeout=120 --timeout-method=thread
 
   build-check:
     runs-on: ubuntu-latest
