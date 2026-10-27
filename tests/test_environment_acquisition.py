@@ -576,6 +576,16 @@ def test_original_unknown_lease_can_learn_native_id_without_changing_lease_ident
         b"x" * (MAX_ACQUISITION_STORAGE_BYTES + 1),
         b'{"schema_version":1,"checkpoint":{},"preparation":{"create_payload":"!","worker_identity":"AA=="}}',
     ],
+    # Pytest copies the node ID into PYTEST_CURRENT_TEST. Keep hostile payloads
+    # out of that ID as well as diagnostics (Windows caps each env value).
+    ids=(
+        "json-array",
+        "json-null",
+        "missing-fields",
+        "malformed-json",
+        "over-byte-limit",
+        "invalid-secret-encoding",
+    ),
 )
 def test_storage_refuses_malformed_or_oversize_bytes_without_echoing(raw):
     with pytest.raises(ValueError, match="private acquisition storage") as error:
