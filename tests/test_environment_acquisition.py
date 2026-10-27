@@ -337,6 +337,26 @@ def test_storage_encode_cap_preserves_original_facts_and_minimal_round_trip(stat
     assert restored.checkpoint.lease.actual_cost_usd is None
     assert restored.preparation.create_payload.get_secret_value() == value.create_payload.get_secret_value()
     assert restored.preparation.worker_identity.get_secret_value() == value.worker_identity.get_secret_value()
+
+    # JSON null occupies four bytes; a quoted n-digit Decimal occupies n + 2.
+    # Size from the real minimal row so both states exercise the exact boundary.
+    digits_at_limit = MAX_ACQUISITION_STORAGE_BYTES - len(encoded.get_secret_value()) + 2
+
+    def cost_row(digits):
+        bounded_lease = original_lease.model_copy(
+            update={"actual_cost_usd": Decimal("8" * digits)}
+        )
+        return EnvironmentAcquisitionStorage(
+            checkpoint=getattr(checkpoint, state)(bounded_lease), preparation=value
+        )
+
+    at_limit = cost_row(digits_at_limit)
+    at_limit_bytes = at_limit.serialize_private()
+    assert len(at_limit_bytes.get_secret_value()) == MAX_ACQUISITION_STORAGE_BYTES
+    assert EnvironmentAcquisitionStorage.deserialize_private(at_limit_bytes) == at_limit
+    with pytest.raises(ValueError, match="^private acquisition storage exceeds byte bounds$"):
+        cost_row(digits_at_limit + 1).serialize_private()
+
     # Failing serialization or projecting unknown cost must not clamp the source.
     assert original_lease.actual_cost_usd.as_tuple() == original_cost.as_tuple()
     assert full.checkpoint.lease.actual_cost_usd.as_tuple() == original_cost.as_tuple()
