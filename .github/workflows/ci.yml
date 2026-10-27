@@ -29,6 +29,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+      - name: Check out immutable candidate separately from diagnostic workflow
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 9babef0becd5a3c8f7d0217fc16f6a8e92d622f3
+          path: source-candidate
+          fetch-depth: 0
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
@@ -39,9 +45,11 @@ jobs:
         run: uv python install "$MATRIX_PYTHON_VERSION"
       - name: Install unchanged candidate test dependencies
         timeout-minutes: 3
+        working-directory: source-candidate
         run: uv sync --locked --python "$MATRIX_PYTHON_VERSION" --group test
       - name: Record uv entry and direct native test exit with retained output
         timeout-minutes: 5
+        working-directory: source-candidate
         run: |
           set -eu
           printf '%s\n' SDK_DIAGNOSTIC_SHELL_ENTRY
@@ -50,7 +58,7 @@ jobs:
           else
             SDK_PYTHON=.venv/bin/python
           fi
-          "$SDK_PYTHON" -u -B .github/scripts/diagnose_sdk_ci.py
+          "$SDK_PYTHON" -u -B ../.github/scripts/diagnose_sdk_ci.py
       - name: Upload raw diagnostic output and native exit evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

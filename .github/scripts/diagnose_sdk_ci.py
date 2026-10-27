@@ -15,12 +15,13 @@ out.mkdir(exist_ok=False)
 state = {
     'python': sys.version, 'executable': sys.executable,
     'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
-    'source_candidate': 'a24c7b7fa97f37c6011cc771485f967714802a65',
+    'source_candidate': '9babef0becd5a3c8f7d0217fc16f6a8e92d622f3',
     'diagnostic_only': True, 'all14_source_ci_success': False, 'probes': [],
 }
 (out/'state.json').write_text(json.dumps(state, indent=2))
-changed = subprocess.check_output(['git', 'diff', '--name-only', state['source_candidate'], 'HEAD'], text=True).splitlines()
-assert set(changed) == {'.github/workflows/ci.yml', '.github/scripts/diagnose_sdk_ci.py'}, changed
+assert state['head'] == state['source_candidate'], state
+changed = subprocess.check_output(['git', 'diff', '--name-only', 'a24c7b7fa97f37c6011cc771485f967714802a65', 'HEAD'], text=True).splitlines()
+assert changed == ['tests/test_environment_acquisition.py'], changed
 state['changed_paths'] = changed
 state['wrapper_sha256'] = hashlib.sha256((root/'.github/scripts/run_sdk_tests.py').read_bytes()).hexdigest()
 
