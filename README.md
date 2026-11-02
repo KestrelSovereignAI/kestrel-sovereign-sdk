@@ -885,6 +885,25 @@ may already have acted. Hosts must not silently treat failed private delivery as
 success or retry the factory. The post-hook public projection is still available
 separately from the private capability for an explicit failure report.
 
+For a concrete chat destination, a host passes an optional
+`ToolPublicationContext(agent_id=..., session_id=...)` to `finalize(...,
+context=...)`. A publisher reads its original result's `publication_context`
+property **inside the factory**. Wrapper transfers preserve that association;
+concurrent results have independent destinations. The property is `None`
+outside the callback, including after errors, and for headless delivery. The
+context never enters the public dictionary or its JSON. Existing zero-argument
+factories and context-free finalization retain their contract.
+
+Features that require a chat destination must check both host flags exactly:
+`supports_deferred_tool_results is True` and
+`supports_tool_publication_context is True`. The optional `ToolPublicationHost`
+protocol describes that host surface; structural `isinstance` alone does not
+check the values. This second flag promises host-selected chat context **after
+completed post-tool policy and required dispatch persistence**. The SDK does
+not perform that persistence. IDs in `ToolPublicationContext` are association
+metadata, not authorization: a view controller still authenticates the reader
+and checks agent/session access and connection lifetime on every operation.
+
 ## Development
 
 ```bash

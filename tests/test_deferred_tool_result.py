@@ -6,12 +6,236 @@ import json
 import pickle
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from threading import Event
+import signal
+import sys
+import inspect
 
 import pytest
 
-from kestrel_sdk.tools import DeferredToolResult, DeferredToolResultHost, FinalizedToolResult, ToolResult
+from kestrel_sdk.tools import (
+    DeferredToolResult, DeferredToolResultHost, FinalizedToolResult, ToolResult,
+    ToolPublicationContext, ToolPublicationHost,
+)
 from kestrel_sdk.features.base import Feature, tool
 from kestrel_sdk.tools import ToolCategory, current_tool_result_parts
+
+
+def test_publication_context_exists_only_during_the_original_transferred_factory():
+    context = ToolPublicationContext("did:test:publication", "owned-chat")
+    observed = []
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(),
+        publish=lambda: observed.append(result.publication_context) or [])
+    first = result.for_tool("first_wrapper", [])
+    transferred = first.for_tool("owned_tool", [])
+    assert result.publication_context is None and transferred.publication_context is None
+    assert first.publication_context is None
+    delivery = transferred.finalize(transferred, allowed=True, context=context)
+    assert observed == [context] and delivery.withheld is False
+    assert result.publication_context is None and transferred.publication_context is None
+    assert "owned-chat" not in json.dumps(delivery.result)
+    with pytest.raises(RuntimeError, match="already finalized"):
+        result.finalize(result, allowed=True, context=context)
+
+
+@pytest.mark.parametrize("failure", ["deny", "redact", "replace", "factory-error", "invalid-parts"])
+def test_failed_or_withheld_publication_never_retains_a_host_destination(failure):
+    context = ToolPublicationContext("did:test:publication", "owned-chat")
+    observed = []
+
+    def publish():
+        observed.append(result.publication_context)
+        if failure == "factory-error":
+            raise RuntimeError("Owned publication failed")
+        return None if failure == "invalid-parts" else []
+
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=publish)
+    projected = result
+    if failure == "redact":
+        result["confirmation"] = "Reviewed redaction"
+    if failure == "replace":
+        projected = ToolResult.ok("Reviewed replacement").to_dict()
+    if failure in {"factory-error", "invalid-parts"}:
+        with pytest.raises((RuntimeError, TypeError)):
+            result.finalize(projected, allowed=True, context=context)
+    else:
+        assert result.finalize(projected, allowed=failure != "deny", context=context).withheld
+    assert result.publication_context is None
+    assert observed == ([context] if failure in {"factory-error", "invalid-parts"} else [])
+    with pytest.raises(RuntimeError, match="already finalized"):
+        result.finalize(result, allowed=True, context=context)
+
+
+def test_nested_publications_have_independent_destinations_and_headless_is_explicit():
+    outer_context = ToolPublicationContext("did:test:outer", "outer-chat")
+    inner_context = ToolPublicationContext("did:test:inner", "inner-chat")
+    observed = []
+    inner = DeferredToolResult(ToolResult.ok("Inner").to_dict(),
+        publish=lambda: observed.append(("inner", inner.publication_context)) or [])
+    headless = DeferredToolResult(ToolResult.ok("Headless").to_dict(),
+        publish=lambda: observed.append(("headless", headless.publication_context)) or [])
+
+    def publish_outer():
+        observed.append(("outer", outer.publication_context))
+        inner.finalize(inner, allowed=True, context=inner_context)
+        headless.finalize(headless, allowed=True)
+        observed.append(("outer-after", outer.publication_context))
+        assert inner.publication_context is None and headless.publication_context is None
+        return []
+
+    outer = DeferredToolResult(ToolResult.ok("Outer").to_dict(), publish=publish_outer)
+    outer.finalize(outer, allowed=True, context=outer_context)
+    assert observed == [("outer", outer_context), ("inner", inner_context),
+                        ("headless", None), ("outer-after", outer_context)]
+    assert outer.publication_context is None
+
+
+def test_concurrent_results_cannot_borrow_each_others_publication_destination():
+    barrier = Barrier(2, timeout=5)
+    contexts = [ToolPublicationContext(f"did:test:agent-{i}", f"owned-chat-{i}") for i in range(2)]
+    results = []
+    observed = [None, None]
+    for index in range(2):
+        def publish(index=index):
+            barrier.wait()
+            observed[index] = results[index].publication_context
+            barrier.wait()
+            return []
+        results.append(DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=publish))
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        completed = [executor.submit(result.finalize, result, allowed=True, context=context)
+                     for result, context in zip(results, contexts)]
+        for future in completed:
+            assert future.result(timeout=10).withheld is False
+    assert observed == contexts
+    assert all(result.publication_context is None for result in results)
+
+
+def test_invalid_publication_context_is_rejected_and_consumes_the_factory():
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(),
+        publish=lambda: pytest.fail("Untrusted destination reached publication"))
+    with pytest.raises(TypeError, match="ToolPublicationContext"):
+        result.finalize(result, allowed=True, context={"agent_id": "forged", "session_id": "forged"})
+    assert result.publication_context is None
+    with pytest.raises(RuntimeError, match="already finalized"):
+        result.finalize(result, allowed=True)
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt, SystemExit])
+def test_publication_context_is_cleared_on_base_exception(error):
+    context = ToolPublicationContext("did:test:publication", "owned-chat")
+    original = error("Owned interrupted publication")
+
+    def publish():
+        assert result.publication_context is context
+        raise original
+
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=publish)
+    with pytest.raises(error) as captured:
+        result.finalize(result, allowed=True, context=context)
+    assert captured.value is original and result.publication_context is None
+
+
+def test_a_physical_interrupt_after_context_assignment_cannot_retain_the_destination():
+    context = ToolPublicationContext("did:test:publication", "owned-chat")
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=lambda: [])
+    previous_trace = sys.gettrace()
+    previous_handler = signal.signal(signal.SIGINT, signal.default_int_handler)
+    lines, first_line = inspect.getsourcelines(DeferredToolResult.finalize)
+    assignment_line = next(first_line + i for i, line in enumerate(lines)
+                           if line.strip() == "self._delivery_state.context = context")
+
+    def interrupt_after_assignment(frame, event, arg):
+        if (frame.f_code is DeferredToolResult.finalize.__code__ and event == "line"
+                and frame.f_lineno > assignment_line
+                and result._delivery_state.context is context):
+            sys.settrace(None)
+            signal.raise_signal(signal.SIGINT)
+        return interrupt_after_assignment
+
+    try:
+        sys.settrace(interrupt_after_assignment)
+        with pytest.raises(KeyboardInterrupt):
+            result.finalize(result, allowed=True, context=context)
+    finally:
+        sys.settrace(previous_trace)
+        signal.signal(signal.SIGINT, previous_handler)
+    assert result.publication_context is None
+
+
+def test_publication_cleanup_does_not_wait_for_a_suspended_metadata_reader():
+    context = ToolPublicationContext("did:test:publication", "owned-chat")
+    started, release = Event(), Event()
+
+    def publish():
+        started.set()
+        assert release.wait(5)
+        return []
+
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=publish)
+    waited_for_reader = False
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(result.finalize, result, allowed=True, context=context)
+        assert started.wait(5)
+        # A reader may be descheduled while holding its real lock. Completing
+        # publication must clear metadata without that reader's cooperation.
+        with result._delivery_state.lock:
+            release.set()
+            try:
+                future.result(timeout=0.2)
+            except TimeoutError:
+                waited_for_reader = True
+        assert future.result(timeout=5).withheld is False
+    assert not waited_for_reader
+    assert result.publication_context is None
+
+
+def test_subclass_cannot_replace_the_frozen_host_destination_contract():
+    class MutableContext(ToolPublicationContext):
+        pass
+
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=lambda: [])
+    with pytest.raises(TypeError, match="ToolPublicationContext"):
+        result.finalize(result, allowed=True, context=MutableContext("agent", "chat"))
+    with pytest.raises(RuntimeError, match="already finalized"):
+        result.finalize(result, allowed=True)
+
+
+def test_publication_context_does_not_extend_into_part_copying():
+    context = ToolPublicationContext("did:test:publication", "owned-chat")
+    observed = []
+
+    class Part(dict):
+        def __deepcopy__(self, memo):
+            observed.append(result.publication_context)
+            return dict(self)
+
+    def publish():
+        assert result.publication_context is context
+        assert "owned-chat" not in json.dumps(result)
+        return [Part(type="owned_view", data={"id": "opaque-reference"})]
+
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=publish)
+    delivery = result.finalize(result, allowed=True, context=context)
+    assert observed == [None] and delivery.parts[0]["type"] == "owned_view"
+    assert result.publication_context is None
+
+
+@pytest.mark.parametrize("agent_id,session_id", [("", "chat"), ("agent", " "), (None, "chat"), ("agent", 1)])
+def test_publication_destination_requires_actual_host_identifiers(agent_id, session_id):
+    with pytest.raises(ValueError, match="non-empty string"):
+        ToolPublicationContext(agent_id, session_id)
+
+
+@pytest.mark.parametrize("flag", [True, False, 1, None])
+def test_publication_host_is_structural_and_consumers_must_check_the_exact_flag(flag):
+    class Host:
+        supports_deferred_tool_results = True
+        supports_tool_publication_context = flag
+
+    assert isinstance(Host(), ToolPublicationHost)
+    assert not isinstance(object(), ToolPublicationHost)
+    assert (getattr(Host(), "supports_tool_publication_context", False) is True) is (flag is True)
 
 
 def test_finalization_returns_plain_envelope_and_only_new_parts_once():

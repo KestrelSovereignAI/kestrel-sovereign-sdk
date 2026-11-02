@@ -13,7 +13,10 @@ from .base import (
 )
 from .parts import current_tool_result_parts, tool_result_parts_buffer
 from .result import ToolResult, ToolResultStatus
-from .deferred import DeferredToolResult, DeferredToolResultHost, FinalizedToolResult
+from .deferred import (
+    DeferredToolResult, DeferredToolResultHost, FinalizedToolResult,
+    ToolPublicationContext, ToolPublicationHost,
+)
 from .waitable import MonitorableWaitable, Outcome, WaitStatus, Waitable
 
 __all__ = [
@@ -31,6 +34,8 @@ __all__ = [
     "DeferredToolResult",
     "DeferredToolResultHost",
     "FinalizedToolResult",
+    "ToolPublicationContext",
+    "ToolPublicationHost",
     "current_tool_result_parts",
     "tool_result_parts_buffer",
     "Outcome",
