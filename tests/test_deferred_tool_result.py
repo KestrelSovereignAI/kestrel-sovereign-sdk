@@ -6,6 +6,10 @@ import json
 import pickle
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from threading import Event
+import signal
+import sys
+import inspect
 
 import pytest
 
@@ -132,6 +136,71 @@ def test_publication_context_is_cleared_on_base_exception(error):
     assert captured.value is original and result.publication_context is None
 
 
+def test_a_physical_interrupt_after_context_assignment_cannot_retain_the_destination():
+    context = ToolPublicationContext("did:test:publication", "owned-chat")
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=lambda: [])
+    previous_trace = sys.gettrace()
+    previous_handler = signal.signal(signal.SIGINT, signal.default_int_handler)
+    lines, first_line = inspect.getsourcelines(DeferredToolResult.finalize)
+    assignment_line = next(first_line + i for i, line in enumerate(lines)
+                           if line.strip() == "self._delivery_state.context = context")
+
+    def interrupt_after_assignment(frame, event, arg):
+        if (frame.f_code is DeferredToolResult.finalize.__code__ and event == "line"
+                and frame.f_lineno > assignment_line
+                and result._delivery_state.context is context):
+            sys.settrace(None)
+            signal.raise_signal(signal.SIGINT)
+        return interrupt_after_assignment
+
+    try:
+        sys.settrace(interrupt_after_assignment)
+        with pytest.raises(KeyboardInterrupt):
+            result.finalize(result, allowed=True, context=context)
+    finally:
+        sys.settrace(previous_trace)
+        signal.signal(signal.SIGINT, previous_handler)
+    assert result.publication_context is None
+
+
+def test_publication_cleanup_does_not_wait_for_a_suspended_metadata_reader():
+    context = ToolPublicationContext("did:test:publication", "owned-chat")
+    started, release = Event(), Event()
+
+    def publish():
+        started.set()
+        assert release.wait(5)
+        return []
+
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=publish)
+    waited_for_reader = False
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(result.finalize, result, allowed=True, context=context)
+        assert started.wait(5)
+        # A reader may be descheduled while holding its real lock. Completing
+        # publication must clear metadata without that reader's cooperation.
+        with result._delivery_state.lock:
+            release.set()
+            try:
+                future.result(timeout=0.2)
+            except TimeoutError:
+                waited_for_reader = True
+        assert future.result(timeout=5).withheld is False
+    assert not waited_for_reader
+    assert result.publication_context is None
+
+
+def test_subclass_cannot_replace_the_frozen_host_destination_contract():
+    class MutableContext(ToolPublicationContext):
+        pass
+
+    result = DeferredToolResult(ToolResult.ok("Complete").to_dict(), publish=lambda: [])
+    with pytest.raises(TypeError, match="ToolPublicationContext"):
+        result.finalize(result, allowed=True, context=MutableContext("agent", "chat"))
+    with pytest.raises(RuntimeError, match="already finalized"):
+        result.finalize(result, allowed=True)
+
+
 def test_publication_context_does_not_extend_into_part_copying():
     context = ToolPublicationContext("did:test:publication", "owned-chat")
     observed = []
@@ -158,13 +227,15 @@ def test_publication_destination_requires_actual_host_identifiers(agent_id, sess
         ToolPublicationContext(agent_id, session_id)
 
 
-def test_publication_host_is_an_optional_value_checked_host_contract():
+@pytest.mark.parametrize("flag", [True, False, 1, None])
+def test_publication_host_is_structural_and_consumers_must_check_the_exact_flag(flag):
     class Host:
         supports_deferred_tool_results = True
-        supports_tool_publication_context = True
+        supports_tool_publication_context = flag
 
     assert isinstance(Host(), ToolPublicationHost)
     assert not isinstance(object(), ToolPublicationHost)
+    assert (getattr(Host(), "supports_tool_publication_context", False) is True) is (flag is True)
 
 
 def test_finalization_returns_plain_envelope_and_only_new_parts_once():

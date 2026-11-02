@@ -10,7 +10,8 @@ All notable changes to this project are documented in this file.
   during a private `DeferredToolResult` publication callback. The context
   follows wrapper transfers and is cleared on every exit, including control
   errors. Headless calls receive no destination. The optional
-  `ToolPublicationHost` flag promises completed policy and required audit before
+  `ToolPublicationHost` protocol's `supports_tool_publication_context` flag
+  promises completed policy and required audit before
   supplying this metadata; HTTP reader and tool authorization remain separate.
 
 ## 0.45.0

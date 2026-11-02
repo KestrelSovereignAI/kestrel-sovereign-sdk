@@ -88,7 +88,7 @@ def _validate_envelope(result: dict) -> None:
 class DeferredToolResult(dict):
     """A tool envelope with one private, synchronous render-parts factory.
 
-    ``finalize(post_hook_result, allowed=...)`` consumes the factory even when policy
+    ``finalize(post_hook_result, allowed=..., context=...)`` consumes the factory even when policy
     denied delivery, replaced or changed the public envelope, in which case it
     is withheld.
     Existing parts retain their original host ordering; the host emits only
@@ -167,20 +167,21 @@ class DeferredToolResult(dict):
         publish = self._take_factory()
         if type(allowed) is not bool:
             raise TypeError("Deferred render delivery requires an explicit boolean policy decision")
-        if context is not None and not isinstance(context, ToolPublicationContext):
+        if context is not None and type(context) is not ToolPublicationContext:
             raise TypeError("Deferred render delivery requires a host ToolPublicationContext")
         if not isinstance(post_hook_result, dict):
             raise TypeError("Post-tool policy must return a dictionary envelope")
         result = deepcopy(dict(post_hook_result))
         if not allowed or post_hook_result is not self or result != self._baseline:
             return FinalizedToolResult(result, [], withheld=True)
-        with self._delivery_state.lock:
-            self._delivery_state.context = context
         try:
+            with self._delivery_state.lock:
+                self._delivery_state.context = context
             produced = publish()
         finally:
-            with self._delivery_state.lock:
-                self._delivery_state.context = None
+            # The consumed factory has one publisher. Clearing its metadata
+            # must not wait for a suspended reader or another factory claimant.
+            self._delivery_state.context = None
         parts = deepcopy(produced)
         if parts is None:
             raise TypeError("Deferred render delivery must return a list of parts")
