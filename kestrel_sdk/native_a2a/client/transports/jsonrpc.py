@@ -1,8 +1,8 @@
 # Modified by Kestrel: isolated SDK namespace; see VENDORED.json.
+import json
 import logging
 
 from collections.abc import AsyncGenerator
-from functools import partial
 from typing import Any, NoReturn
 from uuid import uuid4
 
@@ -18,11 +18,6 @@ from kestrel_sdk.native_a2a.client.transports.http_helpers import (
     get_http_args,
     send_http_request,
     send_http_stream_request,
-)
-from kestrel_sdk.native_a2a.client.transports.response_parsing import (
-    load_json_response,
-    parse_jsonrpc_response,
-    parse_protobuf_response,
 )
 from kestrel_sdk.native_a2a.types.a2a_pb2 import (
     AgentCard,
@@ -43,6 +38,7 @@ from kestrel_sdk.native_a2a.types.a2a_pb2 import (
     TaskPushNotificationConfig,
 )
 from kestrel_sdk.native_a2a.utils.errors import JSON_RPC_ERROR_CODE_MAP
+from kestrel_sdk.native_a2a.utils.proto_utils import parse_lenient
 from kestrel_sdk.native_a2a.utils.telemetry import SpanKind, trace_class
 
 
@@ -86,13 +82,8 @@ class JsonRpcTransport(ClientTransport):
         response_data = await self._send_request(
             dict(rpc_request.data), context
         )
-        json_rpc_response = parse_jsonrpc_response(
-            response_data, request_id=rpc_request.data['id']
-        )
-        if json_rpc_response.error:
-            raise self._create_jsonrpc_error(json_rpc_response.error)
-        response: SendMessageResponse = parse_protobuf_response(
-            json_rpc_response.result, SendMessageResponse()
+        response: SendMessageResponse = parse_lenient(
+            response_data['result'], SendMessageResponse()
         )
         return response
 
@@ -129,14 +120,7 @@ class JsonRpcTransport(ClientTransport):
         response_data = await self._send_request(
             dict(rpc_request.data), context
         )
-        json_rpc_response = parse_jsonrpc_response(
-            response_data, request_id=rpc_request.data['id']
-        )
-        if json_rpc_response.error:
-            raise self._create_jsonrpc_error(json_rpc_response.error)
-        response: Task = parse_protobuf_response(
-            json_rpc_response.result, Task()
-        )
+        response: Task = parse_lenient(response_data['result'], Task())
         return response
 
     async def list_tasks(
@@ -154,13 +138,8 @@ class JsonRpcTransport(ClientTransport):
         response_data = await self._send_request(
             dict(rpc_request.data), context
         )
-        json_rpc_response = parse_jsonrpc_response(
-            response_data, request_id=rpc_request.data['id']
-        )
-        if json_rpc_response.error:
-            raise self._create_jsonrpc_error(json_rpc_response.error)
-        response: ListTasksResponse = parse_protobuf_response(
-            json_rpc_response.result, ListTasksResponse()
+        response: ListTasksResponse = parse_lenient(
+            response_data['result'], ListTasksResponse()
         )
         return response
 
@@ -179,14 +158,7 @@ class JsonRpcTransport(ClientTransport):
         response_data = await self._send_request(
             dict(rpc_request.data), context
         )
-        json_rpc_response = parse_jsonrpc_response(
-            response_data, request_id=rpc_request.data['id']
-        )
-        if json_rpc_response.error:
-            raise self._create_jsonrpc_error(json_rpc_response.error)
-        response: Task = parse_protobuf_response(
-            json_rpc_response.result, Task()
-        )
+        response: Task = parse_lenient(response_data['result'], Task())
         return response
 
     async def create_task_push_notification_config(
@@ -204,13 +176,8 @@ class JsonRpcTransport(ClientTransport):
         response_data = await self._send_request(
             dict(rpc_request.data), context
         )
-        json_rpc_response = parse_jsonrpc_response(
-            response_data, request_id=rpc_request.data['id']
-        )
-        if json_rpc_response.error:
-            raise self._create_jsonrpc_error(json_rpc_response.error)
-        response: TaskPushNotificationConfig = parse_protobuf_response(
-            json_rpc_response.result, TaskPushNotificationConfig()
+        response: TaskPushNotificationConfig = parse_lenient(
+            response_data['result'], TaskPushNotificationConfig()
         )
         return response
 
@@ -229,13 +196,8 @@ class JsonRpcTransport(ClientTransport):
         response_data = await self._send_request(
             dict(rpc_request.data), context
         )
-        json_rpc_response = parse_jsonrpc_response(
-            response_data, request_id=rpc_request.data['id']
-        )
-        if json_rpc_response.error:
-            raise self._create_jsonrpc_error(json_rpc_response.error)
-        response: TaskPushNotificationConfig = parse_protobuf_response(
-            json_rpc_response.result, TaskPushNotificationConfig()
+        response: TaskPushNotificationConfig = parse_lenient(
+            response_data['result'], TaskPushNotificationConfig()
         )
         return response
 
@@ -254,16 +216,8 @@ class JsonRpcTransport(ClientTransport):
         response_data = await self._send_request(
             dict(rpc_request.data), context
         )
-        json_rpc_response = parse_jsonrpc_response(
-            response_data, request_id=rpc_request.data['id']
-        )
-        if json_rpc_response.error:
-            raise self._create_jsonrpc_error(json_rpc_response.error)
-        response: ListTaskPushNotificationConfigsResponse = (
-            parse_protobuf_response(
-                json_rpc_response.result,
-                ListTaskPushNotificationConfigsResponse(),
-            )
+        response: ListTaskPushNotificationConfigsResponse = parse_lenient(
+            response_data['result'], ListTaskPushNotificationConfigsResponse()
         )
         return response
 
@@ -279,17 +233,7 @@ class JsonRpcTransport(ClientTransport):
             params=json_format.MessageToDict(request),
             _id=str(uuid4()),
         )
-        response_data = await self._send_request(
-            dict(rpc_request.data), context
-        )
-        json_rpc_response = parse_jsonrpc_response(
-            response_data, request_id=rpc_request.data['id']
-        )
-        if json_rpc_response.error:
-            raise self._create_jsonrpc_error(json_rpc_response.error)
-        # The JSON-RPC operation's confirmation is implementation-specific
-        # (A2A 3.1.10). Its envelope and error were validated above; the gRPC
-        # Empty response type does not constrain this binding's result value.
+        await self._send_request(dict(rpc_request.data), context)
 
     async def subscribe(
         self,
@@ -329,19 +273,11 @@ class JsonRpcTransport(ClientTransport):
             dict(rpc_request.data),
             context,
         )
-        json_rpc_response = parse_jsonrpc_response(
-            response_data, request_id=rpc_request.data['id']
-        )
-        if json_rpc_response.error:
-            raise self._create_jsonrpc_error(json_rpc_response.error)
+        result = response_data['result']
         # Validate type of the response
-        if not isinstance(json_rpc_response.result, dict):
-            raise A2AClientError(
-                f'Invalid response type: {type(json_rpc_response.result)}'
-            )
-        response: AgentCard = parse_protobuf_response(
-            json_rpc_response.result, AgentCard()
-        )
+        if not isinstance(result, dict):
+            raise A2AClientError(f'Invalid response type: {type(result)}')
+        response: AgentCard = parse_lenient(result, AgentCard())
 
         return response
 
@@ -391,7 +327,37 @@ class JsonRpcTransport(ClientTransport):
         request = self.httpx_client.build_request(
             'POST', self.url, json=payload, **(http_kwargs or {})
         )
-        return await send_http_request(self.httpx_client, request)
+        response_data = await send_http_request(self.httpx_client, request)
+        return self._check_jsonrpc_response(response_data)
+
+    def _check_jsonrpc_response(self, response_data: Any) -> dict[str, Any]:
+        """Returns a JSON-RPC success response, raising for anything else.
+
+        An error response raises the A2A error mapped from its code, even when
+        the error object lacks a ``message`` or carries extra members. A body
+        that is not a JSON-RPC 2.0 response object (a list, a string, an object
+        with neither ``result`` nor ``error``, or an ``error`` that is not an
+        object) raises ``A2AClientError`` instead of leaking a ``TypeError`` or
+        ``ValueError`` from the ``json-rpc`` package.
+        """
+        if not isinstance(response_data, dict):
+            raise A2AClientError(
+                'Invalid JSON-RPC response: expected an object, got '
+                f'{type(response_data).__name__}'
+            )
+        error = response_data.get('error')
+        if error:
+            if not isinstance(error, dict):
+                raise A2AClientError(
+                    f'Invalid JSON-RPC response: error is not an object: '
+                    f'{error!r}'
+                )
+            raise self._create_jsonrpc_error(error)
+        if 'result' not in response_data:
+            raise A2AClientError(
+                "Invalid JSON-RPC response: it has neither 'result' nor 'error'"
+            )
+        return response_data
 
     async def _send_stream_request(
         self,
@@ -405,30 +371,30 @@ class JsonRpcTransport(ClientTransport):
             'POST',
             self.url,
             None,
-            partial(
-                self._handle_sse_error, request_id=rpc_request_payload['id']
-            ),
+            self._handle_sse_error,
             json=rpc_request_payload,
             **http_kwargs,
         ):
-            json_rpc_response = parse_jsonrpc_response(
-                load_json_response(sse_data),
-                request_id=rpc_request_payload['id'],
-            )
-            if json_rpc_response.error:
-                raise self._create_jsonrpc_error(json_rpc_response.error)
-            response: StreamResponse = parse_protobuf_response(
-                json_rpc_response.result, StreamResponse()
+            try:
+                response_data = json.loads(sse_data)
+            except json.JSONDecodeError as e:
+                raise A2AClientError(
+                    f'Invalid JSON-RPC response in SSE stream: {e}'
+                ) from e
+            response_data = self._check_jsonrpc_response(response_data)
+            response: StreamResponse = parse_lenient(
+                response_data['result'], StreamResponse()
             )
             yield response
 
-    def _handle_sse_error(
-        self, sse_data: str, *, request_id: str | int | None
-    ) -> NoReturn:
+    def _handle_sse_error(self, sse_data: str) -> NoReturn:
         """Handles SSE error events by parsing JSON-RPC error payload and raising the appropriate domain error."""
-        json_rpc_response = parse_jsonrpc_response(
-            load_json_response(sse_data), request_id=request_id
-        )
-        if json_rpc_response.error:
-            raise self._create_jsonrpc_error(json_rpc_response.error)
+        try:
+            response_data = json.loads(sse_data)
+        except json.JSONDecodeError:
+            response_data = None
+        if isinstance(response_data, dict) and isinstance(
+            response_data.get('error'), dict
+        ):
+            raise self._create_jsonrpc_error(response_data['error'])
         raise A2AClientError(f'SSE stream error: {sse_data}')

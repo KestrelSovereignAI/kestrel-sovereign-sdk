@@ -19,7 +19,6 @@ else:
 
 from google.protobuf.json_format import MessageToDict, ParseError
 
-from kestrel_sdk.native_a2a.utils.constants import A2A_JSON_MEDIA_TYPE
 from kestrel_sdk.native_a2a.utils.errors import (
     A2A_ERROR_MAPPING,
     A2A_ERROR_REASONS,
@@ -133,7 +132,9 @@ def build_rest_error_payload(error: Exception) -> dict[str, Any]:
     )
 
 
-def _create_error_response(error: Exception) -> Response:
+def _create_error_response(
+    error: Exception, media_type: str = 'application/json'
+) -> Response:
     """Helper function to create a JSONResponse for an error."""
     # Starlette belongs to the optional HTTP-server extra.
     from starlette.exceptions import HTTPException  # noqa: PLC0415
@@ -167,12 +168,13 @@ def _create_error_response(error: Exception) -> Response:
     return JSONResponse(
         content=payload,
         status_code=http_code,
-        media_type=A2A_JSON_MEDIA_TYPE,
+        media_type=media_type,
     )
 
 
 def rest_error_handler(
     func: Callable[..., Awaitable[Response]],
+    media_type: str = 'application/json',
 ) -> Callable[..., Awaitable[Response]]:
     """Decorator to catch A2AError and map it to an appropriate JSONResponse."""
 
@@ -181,13 +183,14 @@ def rest_error_handler(
         try:
             return await func(*args, **kwargs)
         except Exception as error:  # noqa: BLE001
-            return _create_error_response(error)
+            return _create_error_response(error, media_type)
 
     return wrapper
 
 
 def rest_stream_error_handler(
     func: Callable[..., Coroutine[Any, Any, Any]],
+    media_type: str = 'application/json',
 ) -> Callable[..., Coroutine[Any, Any, Any]]:
     """Decorator to catch A2AError for a streaming method. Maps synchronous errors to JSONResponse and logs streaming errors."""
 
@@ -233,7 +236,7 @@ def rest_stream_error_handler(
                 response.body_iterator = error_catching_iterator()
 
         except Exception as e:  # noqa: BLE001
-            return _create_error_response(e)
+            return _create_error_response(e, media_type)
         else:
             return response
 

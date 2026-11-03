@@ -1,4 +1,5 @@
 # Modified by Kestrel: isolated SDK namespace; see VENDORED.json.
+import json
 import logging
 
 from collections.abc import AsyncGenerator
@@ -6,7 +7,6 @@ from typing import Any, NoReturn
 
 import httpx
 
-from google.protobuf.empty_pb2 import Empty
 from google.protobuf.json_format import MessageToDict
 
 from kestrel_sdk.native_a2a.client.client import ClientCallContext
@@ -16,11 +16,6 @@ from kestrel_sdk.native_a2a.client.transports.http_helpers import (
     get_http_args,
     send_http_request,
     send_http_stream_request,
-)
-from kestrel_sdk.native_a2a.client.transports.response_parsing import (
-    load_json_response,
-    load_json_value,
-    parse_protobuf_response,
 )
 from kestrel_sdk.native_a2a.types.a2a_pb2 import (
     AgentCard,
@@ -41,6 +36,7 @@ from kestrel_sdk.native_a2a.types.a2a_pb2 import (
     TaskPushNotificationConfig,
 )
 from kestrel_sdk.native_a2a.utils.errors import A2A_REASON_TO_ERROR, MethodNotFoundError
+from kestrel_sdk.native_a2a.utils.proto_utils import parse_lenient
 from kestrel_sdk.native_a2a.utils.telemetry import SpanKind, trace_class
 
 
@@ -125,7 +121,7 @@ class RestTransport(ClientTransport):
             context=context,
             json=MessageToDict(request),
         )
-        response: SendMessageResponse = parse_protobuf_response(
+        response: SendMessageResponse = parse_lenient(
             response_data, SendMessageResponse()
         )
         return response
@@ -168,7 +164,7 @@ class RestTransport(ClientTransport):
             context=context,
             params=params,
         )
-        response: Task = parse_protobuf_response(response_data, Task())
+        response: Task = parse_lenient(response_data, Task())
         return response
 
     async def list_tasks(
@@ -189,7 +185,7 @@ class RestTransport(ClientTransport):
             context=context,
             params=params,
         )
-        response: ListTasksResponse = parse_protobuf_response(
+        response: ListTasksResponse = parse_lenient(
             response_data, ListTasksResponse()
         )
         return response
@@ -208,7 +204,7 @@ class RestTransport(ClientTransport):
             context=context,
             json=MessageToDict(request),
         )
-        response: Task = parse_protobuf_response(response_data, Task())
+        response: Task = parse_lenient(response_data, Task())
         return response
 
     async def create_task_push_notification_config(
@@ -225,7 +221,7 @@ class RestTransport(ClientTransport):
             context=context,
             json=MessageToDict(request),
         )
-        response: TaskPushNotificationConfig = parse_protobuf_response(
+        response: TaskPushNotificationConfig = parse_lenient(
             response_data, TaskPushNotificationConfig()
         )
         return response
@@ -252,7 +248,7 @@ class RestTransport(ClientTransport):
             context=context,
             params=params,
         )
-        response: TaskPushNotificationConfig = parse_protobuf_response(
+        response: TaskPushNotificationConfig = parse_lenient(
             response_data, TaskPushNotificationConfig()
         )
         return response
@@ -277,10 +273,8 @@ class RestTransport(ClientTransport):
             context=context,
             params=params,
         )
-        response: ListTaskPushNotificationConfigsResponse = (
-            parse_protobuf_response(
-                response_data, ListTaskPushNotificationConfigsResponse()
-            )
+        response: ListTaskPushNotificationConfigsResponse = parse_lenient(
+            response_data, ListTaskPushNotificationConfigsResponse()
         )
         return response
 
@@ -299,14 +293,13 @@ class RestTransport(ClientTransport):
         if 'tenant' in params:
             del params['tenant']
 
-        response_data = await self._execute_request(
+        await self._execute_request(
             'DELETE',
             f'/tasks/{request.task_id}/pushNotificationConfigs/{request.id}',
             request.tenant,
             context=context,
             params=params,
         )
-        parse_protobuf_response(response_data, Empty())
 
     async def subscribe(
         self,
@@ -338,7 +331,7 @@ class RestTransport(ClientTransport):
             'GET', '/extendedAgentCard', request.tenant, context=context
         )
 
-        return parse_protobuf_response(response_data, AgentCard())
+        return parse_lenient(response_data, AgentCard())
 
     async def close(self) -> None:
         """Closes the httpx client unless it is shared."""
@@ -362,12 +355,12 @@ class RestTransport(ClientTransport):
     def _handle_http_error(self, e: httpx.HTTPStatusError) -> NoReturn:
         """Handles HTTP status errors and raises the appropriate A2AError."""
         try:
-            error_payload = load_json_value(e.response.content)
-        except A2AClientError:
-            error_payload = None
-        mapped = _parse_rest_error(error_payload, str(e))
-        if mapped:
-            raise mapped from e
+            error_payload = e.response.json()
+            mapped = _parse_rest_error(error_payload, str(e))
+            if mapped:
+                raise mapped from e
+        except (json.JSONDecodeError, ValueError):
+            pass
 
         status_code = e.response.status_code
         if status_code == httpx.codes.NOT_FOUND:
@@ -379,7 +372,7 @@ class RestTransport(ClientTransport):
 
     def _handle_sse_error(self, sse_data: str) -> NoReturn:
         """Handles SSE error events by parsing the REST error payload and raising the appropriate A2AError."""
-        error_payload = load_json_value(sse_data)
+        error_payload = json.loads(sse_data)
         mapped = _parse_rest_error(error_payload, sse_data)
         if mapped:
             raise mapped
@@ -406,9 +399,7 @@ class RestTransport(ClientTransport):
             json=json,
             **http_kwargs,
         ):
-            event: StreamResponse = parse_protobuf_response(
-                load_json_response(sse_data), StreamResponse()
-            )
+            event: StreamResponse = parse_lenient(sse_data, StreamResponse())
             yield event
 
     async def _send_request(self, request: httpx.Request) -> dict[str, Any]:

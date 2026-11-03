@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from packaging.version import InvalidVersion
+from packaging.version import InvalidVersion, Version
 
 from kestrel_sdk.native_a2a.client.base_client import BaseClient
 from kestrel_sdk.native_a2a.client.card_resolver import A2ACardResolver
@@ -17,18 +17,19 @@ from kestrel_sdk.native_a2a.client.transports.base import ClientTransport
 from kestrel_sdk.native_a2a.client.transports.jsonrpc import JsonRpcTransport
 from kestrel_sdk.native_a2a.client.transports.rest import RestTransport
 from kestrel_sdk.native_a2a.client.transports.tenant_decorator import TenantTransportDecorator
+from kestrel_sdk.native_a2a.compat.v0_3.versions import is_legacy_version
 from kestrel_sdk.native_a2a.types.a2a_pb2 import (
     AgentCapabilities,
     AgentCard,
     AgentInterface,
 )
 from kestrel_sdk.native_a2a.utils.constants import (
+    PROTOCOL_VERSION_0_3,
     PROTOCOL_VERSION_1_0,
     PROTOCOL_VERSION_CURRENT,
     VERSION_HEADER,
     TransportProtocol,
 )
-from kestrel_sdk.native_a2a.utils.versioning import major_minor
 
 
 if TYPE_CHECKING:
@@ -41,6 +42,11 @@ except ImportError:
     GrpcTransport = None  # type: ignore # pyright: ignore
 
 
+try:
+    from kestrel_sdk.native_a2a.compat.v0_3.grpc_transport import CompatGrpcTransport
+except ImportError:
+    CompatGrpcTransport = None  # type: ignore # pyright: ignore
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +54,12 @@ TransportProducer = Callable[
     [AgentCard, str, ClientConfig],
     ClientTransport,
 ]
+
+
+def major_minor(version: str) -> tuple[int, int]:
+    """Returns the `Major.Minor` release of a protocol version."""
+    v = Version(version)
+    return (v.major, v.minor)
 
 
 class ClientFactory:
@@ -105,7 +117,30 @@ class ClientFactory:
                 url: str,
                 config: ClientConfig,
             ) -> ClientTransport:
+                interface = ClientFactory._find_best_interface(
+                    list(card.supported_interfaces),
+                    protocol_bindings=[TransportProtocol.JSONRPC],
+                    url=url,
+                )
+                version = (
+                    interface.protocol_version
+                    if interface
+                    else PROTOCOL_VERSION_CURRENT
+                )
+
                 httpx_client, is_shared_httpx = self._resolve_http_client()
+
+                if is_legacy_version(version):
+                    from kestrel_sdk.native_a2a.compat.v0_3.jsonrpc_transport import (  # noqa: PLC0415
+                        CompatJsonRpcTransport,
+                    )
+
+                    return CompatJsonRpcTransport(
+                        httpx_client,
+                        card,
+                        url,
+                        is_shared_httpx=is_shared_httpx,
+                    )
 
                 return JsonRpcTransport(
                     httpx_client,
@@ -125,7 +160,30 @@ class ClientFactory:
                 url: str,
                 config: ClientConfig,
             ) -> ClientTransport:
+                interface = ClientFactory._find_best_interface(
+                    list(card.supported_interfaces),
+                    protocol_bindings=[TransportProtocol.HTTP_JSON],
+                    url=url,
+                )
+                version = (
+                    interface.protocol_version
+                    if interface
+                    else PROTOCOL_VERSION_CURRENT
+                )
+
                 httpx_client, is_shared_httpx = self._resolve_http_client()
+
+                if is_legacy_version(version):
+                    from kestrel_sdk.native_a2a.compat.v0_3.rest_transport import (  # noqa: PLC0415
+                        CompatRestTransport,
+                    )
+
+                    return CompatRestTransport(
+                        httpx_client,
+                        card,
+                        url,
+                        is_shared_httpx=is_shared_httpx,
+                    )
 
                 return RestTransport(
                     httpx_client,
@@ -152,6 +210,25 @@ class ClientFactory:
                 url: str,
                 config: ClientConfig,
             ) -> ClientTransport:
+                # The interface has already been selected and passed as `url`.
+                # We determine its version to use the appropriate transport implementation.
+                interface = ClientFactory._find_best_interface(
+                    list(card.supported_interfaces),
+                    protocol_bindings=[TransportProtocol.GRPC],
+                    url=url,
+                )
+                version = (
+                    interface.protocol_version
+                    if interface
+                    else PROTOCOL_VERSION_CURRENT
+                )
+
+                if (
+                    is_legacy_version(version)
+                    and CompatGrpcTransport is not None
+                ):
+                    return CompatGrpcTransport.create(card, url, config)
+
                 return _grpc_transport.create(card, url, config)
 
             self.register(
@@ -179,22 +256,33 @@ class ClientFactory:
         if not candidates:
             return None
 
-        # This maintained native client supports A2A 1.0, including patch
-        # revisions. Missing versions are only useful for minimal bootstrap
-        # cards; an advertised unsupported version must never select 0.3 code.
-        native_version = major_minor(PROTOCOL_VERSION_1_0)
-        unversioned = None
-        for interface in candidates:
-            if not interface.protocol_version:
-                if unversioned is None:
-                    unversioned = interface
+        # Prefer interface with version 1.0. Patch versions must not affect
+        # negotiation, so '1.0.0' counts as '1.0'.
+        v1_0 = major_minor(PROTOCOL_VERSION_1_0)
+        v0_3 = major_minor(PROTOCOL_VERSION_0_3)
+
+        best_gt_1_0 = None
+        best_ge_0_3 = None
+        best_no_version = None
+
+        for i in candidates:
+            if not i.protocol_version:
+                if best_no_version is None:
+                    best_no_version = i
                 continue
+
             try:
-                if major_minor(interface.protocol_version) == native_version:
-                    return interface
+                v = major_minor(i.protocol_version)
+                if v == v1_0:
+                    return i
+                if best_gt_1_0 is None and v > v1_0:
+                    best_gt_1_0 = i
+                if best_ge_0_3 is None and v >= v0_3:
+                    best_ge_0_3 = i
             except InvalidVersion:
-                continue
-        return unversioned
+                pass
+
+        return best_gt_1_0 or best_ge_0_3 or best_no_version
 
     async def create_from_url(
         self,
@@ -288,8 +376,7 @@ class ClientFactory:
                         list(card.supported_interfaces),
                         protocol_bindings=[transport_protocol],
                     )
-                    if selected_interface:
-                        break
+                    break
         if not transport_protocol or not selected_interface:
             raise ValueError('no compatible transports found.')
         if transport_protocol not in self._registry:

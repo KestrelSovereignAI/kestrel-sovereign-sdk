@@ -1,4 +1,5 @@
 # Modified by Kestrel: isolated SDK namespace; see VENDORED.json.
+import functools
 import logging
 
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -20,18 +21,24 @@ from kestrel_sdk.native_a2a.types.a2a_pb2 import (
     GetTaskPushNotificationConfigRequest,
     SubscribeToTaskRequest,
 )
-from kestrel_sdk.native_a2a.utils import constants, json_utils, proto_utils
-from kestrel_sdk.native_a2a.utils.error_handlers import (
-    build_rest_error_payload,
-    rest_error_handler,
-    rest_stream_error_handler,
-)
+from kestrel_sdk.native_a2a.utils import constants, error_handlers, json_utils, proto_utils
+from kestrel_sdk.native_a2a.utils.error_handlers import build_rest_error_payload
 from kestrel_sdk.native_a2a.utils.errors import (
     InvalidRequestError,
     TaskNotFoundError,
 )
 from kestrel_sdk.native_a2a.utils.telemetry import SpanKind, trace_class
 from kestrel_sdk.native_a2a.utils.version_validator import validate_version
+
+
+# Native HTTP+JSON errors use the A2A media type, like its other responses.
+rest_error_handler = functools.partial(
+    error_handlers.rest_error_handler, media_type=constants.A2A_JSON_MEDIA_TYPE
+)
+rest_stream_error_handler = functools.partial(
+    error_handlers.rest_stream_error_handler,
+    media_type=constants.A2A_JSON_MEDIA_TYPE,
+)
 
 
 if TYPE_CHECKING:

@@ -3,7 +3,7 @@
   "protocol": "1.0.1",
   "base_release": "1.3.0-12-g11f1116",
   "base_commit": "11f1116872f982bb13ef86b849ce6e306d6d1f63",
-  "reviewed_source_tree": "9894e3671f76968a2ab7ae0822f05bc4779a1878",
+  "reviewed_source_tree": "c1b59555e806d42a515d7151a3cb10a7ba9d853c",
   "namespace": "kestrel_sdk.native_a2a",
   "modifications": "Reviewed signing, HTTP authorization and version negotiation, client ownership, discovery/response decoding, native-only client selection and HTTP error media-type fixes in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
   "files": {
@@ -63,8 +63,8 @@
       "namespace_modified": true
     },
     "client/card_resolver.py": {
-      "upstream_sha256": "d304fe5a782316e1b410eabc5dca71da5fd4b5526d11fc0ff50b5ee1fc9d1952",
-      "vendored_sha256": "e11323ed1f93eec5a73dcb41de8ab2eed49a60bb6a771c3c79eadcb49ea91754",
+      "upstream_sha256": "380557f1e9ac21fd9c86ee86ebcce0477b2c5c8e1cd85b1b80039ae6af0e1270",
+      "vendored_sha256": "748abee04bf0ec9382b6fe66ad6c030757822bda32302b83545c00c2dccbf174",
       "namespace_modified": true
     },
     "client/client.py": {
@@ -73,8 +73,8 @@
       "namespace_modified": true
     },
     "client/client_factory.py": {
-      "upstream_sha256": "14bcabe244b16dcf7517369d024d64de34b2b3671bea6d192bedf09d5583947f",
-      "vendored_sha256": "65f5cb2c037055dc0580f629adf0c7ff20323b000545722c6e49298e5696bb3a",
+      "upstream_sha256": "7348a584a3300a9a3e001c6ed00798ba237ba5c99d6616c156be9533b14db781",
+      "vendored_sha256": "2fbb480f45ec6637afc1da629c18411bad2ccc465e18946dcd298ec1a0f36952",
       "namespace_modified": true
     },
     "client/errors.py": {
@@ -113,23 +113,18 @@
       "namespace_modified": true
     },
     "client/transports/http_helpers.py": {
-      "upstream_sha256": "a2367d9e2e7326619a0a69caf5e97d68ef65024216ad78659fd3625bf094298d",
-      "vendored_sha256": "bd94b11eb61dede42f2927adf81b8d48bdee6f5b3ceca989a4fa0fbada66e5ee",
+      "upstream_sha256": "0aa1c2231aa07ee68559c414595ea23e9c81606b3acba65995be197cc9109685",
+      "vendored_sha256": "e57b6910648b037c6402d8a5c135d402c186d5e6a3ce8a4545eee6fa601b02c7",
       "namespace_modified": true
     },
     "client/transports/jsonrpc.py": {
-      "upstream_sha256": "8a7ff2897ffc736be896707c15fc528241051a8dcf4cf4c3bbb0644d4e83662a",
-      "vendored_sha256": "ae073001aaba1df23a9a22e4fea8e8183d68a8cbf3061f80b9319072120aba7e",
-      "namespace_modified": true
-    },
-    "client/transports/response_parsing.py": {
-      "upstream_sha256": "8b65e9e5f27bf6a2a6cefd565cf37df6377a9a028376a0b30d2c7e6b86724c19",
-      "vendored_sha256": "ba2577fd1d5b41471f5d2fa7d698bc4bee2d910cd34c16d3b78d36f6a12c255c",
+      "upstream_sha256": "12348a534d34ae7a7ac81c5346d80624b534552dd91783cec3c457c2267a0152",
+      "vendored_sha256": "a32c307e3afa1babc2c6f5b0fcded99f87c6bbd14f8a32d700db164de40827f7",
       "namespace_modified": true
     },
     "client/transports/rest.py": {
-      "upstream_sha256": "5dcba9bee82adb014311698503fa497ea9b3dcadc99af42ee3efc0a54419201e",
-      "vendored_sha256": "b58d775d3f1c2d323660df3aa225dbb4a3feafc4147a22a48b30742bbffadd14",
+      "upstream_sha256": "0fc9229f75029349a57750ea0a5924f288550cb808a2313bdf0cbbd44fbb39b3",
+      "vendored_sha256": "d12b98110e9600afd2deabff74e553b46b6033ea63d656eda2dd40438ae7ee98",
       "namespace_modified": true
     },
     "client/transports/tenant_decorator.py": {
@@ -533,13 +528,13 @@
       "namespace_modified": true
     },
     "server/routes/agent_card_routes.py": {
-      "upstream_sha256": "ccd284474afff8abfb00d2b35124478d0417ef2aa1238a63dc558f81748bf413",
-      "vendored_sha256": "e95c8121ea58be594bc0235abcbe064805f282c6ddeefa737b5b64e19d8951b8",
+      "upstream_sha256": "7404a69174d8d3f55cf40363dcda5d90e3596715edb896c9cd8babd328888b88",
+      "vendored_sha256": "83090c3f538cd3fd7e4ace877218341916252977f32cc2a5582f3a2b3a2eb035",
       "namespace_modified": true
     },
     "server/routes/common.py": {
-      "upstream_sha256": "c66a712fa07a8247ba5f031cacf991043ab51b9a254d4e48d7af88034849ab3f",
-      "vendored_sha256": "c8153fc2f1b5d77cfed3d5046611135d13b7f34515d281b8abac8063b0c0375c",
+      "upstream_sha256": "1cf8e4b51221c6c678edb70912196bba0fb1248a5baff60f22802b3bc98b9e55",
+      "vendored_sha256": "e4d151abd6a0e77e973eec22d159bb10c058584c586bd928551c20013587e87e",
       "namespace_modified": true
     },
     "server/routes/fastapi_routes.py": {
@@ -558,8 +553,8 @@
       "namespace_modified": true
     },
     "server/routes/rest_dispatcher.py": {
-      "upstream_sha256": "16bad826dd8ddd629edcba60bfe69a8448e8345c2dea4763d5b531d4c9338282",
-      "vendored_sha256": "0600495827f88f57b0aae1221e59602e8525cab8e143cdc7c9ebe7d888ecaf7d",
+      "upstream_sha256": "f603574c6c1e08aa1b49811601514726b0bf31819ba38dbda85e446e6d3e2894",
+      "vendored_sha256": "bb610c5e346e913b6050dd261c03ded85da6b69dd03c2edd8c06aa8464926c74",
       "namespace_modified": true
     },
     "server/routes/rest_routes.py": {
@@ -673,8 +668,8 @@
       "namespace_modified": true
     },
     "utils/error_handlers.py": {
-      "upstream_sha256": "1d9d3d943d0d01965bf43779030576bf617d5a7d64d346517529594614c357d8",
-      "vendored_sha256": "f75dc805ab65e099fabe2f11fd3b21f482e32ff8b6da8ce99b9b4d5f2c6f3f5f",
+      "upstream_sha256": "adf12a859b1872d947bda309aa25f925d12c15e10dce6e29137ee13bdf7ee2c2",
+      "vendored_sha256": "377c466ee66a02a4372e354a25d97fa050655c8d1d1ea5285e928e690fba97fb",
       "namespace_modified": true
     },
     "utils/errors.py": {
@@ -698,8 +693,8 @@
       "namespace_modified": false
     },
     "utils/proto_utils.py": {
-      "upstream_sha256": "8ac0e4fc5a900cd8545d2c152fe61862e2cb4dff8a8d94d0bdb17701d00963ea",
-      "vendored_sha256": "92aa91ab99698ad4b43b2962ffe6f92cf9477c98ce0963f1668e57c75e9be8b9",
+      "upstream_sha256": "558738cb3a166c5d0c21038d0563c8838dd32bdb563f26e66aabdbebc4183d1d",
+      "vendored_sha256": "2733a44f3f501e5da9c38ddb7852a663972767b790a4fddd063380465e44580e",
       "namespace_modified": true
     },
     "utils/push_url_validator.py": {
@@ -708,8 +703,8 @@
       "namespace_modified": false
     },
     "utils/signing.py": {
-      "upstream_sha256": "6bcfbd171a7f66ff59298404248526ee87539ac9de034bb4549a5d3bdaccb891",
-      "vendored_sha256": "f33f9bc34af0c79e5813756db6c0b33504e3185fb95c19c86afb6b968487b946",
+      "upstream_sha256": "dc3bed3e8f0d33fb2dfaf844cb665641f6816ab2e76a372faa8ca86e01cabf7f",
+      "vendored_sha256": "c130e48fad7fe3b22e65d8beb334c53f1d8dd65f90bb7425cc65a89a8d3cf8fd",
       "namespace_modified": true
     },
     "utils/task.py": {
@@ -723,8 +718,8 @@
       "namespace_modified": true
     },
     "utils/version_validator.py": {
-      "upstream_sha256": "a03af6da4800c5cfa6c2bf5dc875d7cca224b8badf3ce37e12c3e613dd0585d1",
-      "vendored_sha256": "261203935e112a5455f6833d86e96df6968e9ad4d0d3368f59bf1aa187e09cd3",
+      "upstream_sha256": "c26d886c9e422cca94b7ae1648445e911a2a8f58abdc290320934f769e52f72b",
+      "vendored_sha256": "5cf74c214745b88ae124c6327ec1a84c6b215b745622ba4220f6b305316804a7",
       "namespace_modified": true
     },
     "utils/versioning.py": {
@@ -736,7 +731,7 @@
   "provenance_sha256": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
     "UPSTREAM-PYPROJECT.toml": "5cdf8fdd9f297018cba28c9f91308f122264cab237acc41ee7c54bbb1f6ee776",
-    "UPSTREAM.patch": "2b5952dc3bd75f8f3c4950b291d56920a1c7054024b5902a7460c0d4294f551f",
+    "UPSTREAM.patch": "9261647b34f37885531649831a7d6ad698853244a7ce3530c80a636bfeb18300",
     "NOTICE": "4924afe3dab57b45b0ae6ed34529d8231904adf8d7eeb35be6b12546be7cd8c0"
   }
 }
