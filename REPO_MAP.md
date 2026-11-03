@@ -429,7 +429,7 @@ Repo entry points and standard project files.
 - **kestrel_sdk/tools/base.py** — Base classes and interfaces for Kestrel agent tools.
   - `def coerce_json_value(value, param_type, nullable)`; `class ToolCategory`; `class ToolParameter`; `class ToolSchema`; `class GovernedToolBinding`; `class CommandParseError`; `class AgentTool`; `class ToolExecutionError`
 - **kestrel_sdk/tools/deferred.py** — In-process render delivery after the host completes post-tool policy.
-  - `class FinalizedToolResult`; `class DeferredToolResultHost`; `class DeferredToolResult`
+  - `class FinalizedToolResult`; `class ToolPublicationContext`; `class DeferredToolResultHost`; `class ToolPublicationHost`; `class DeferredToolResult`
 - **kestrel_sdk/tools/parts.py** — Pending typed-parts buffer for the tool call currently executing.
   - `def tool_result_parts_buffer()`; `def current_tool_result_parts()`
 - **kestrel_sdk/tools/result.py** — Tool result envelope contract.
@@ -522,7 +522,7 @@ Repo entry points and standard project files.
 - **tests/test_decisions_contract.py** — Decision contract: validation, immutable snapshot, adapter defaults.
   - `def test_snapshot_is_immune_to_caller_mutation_after_validation()`; `def test_wire_form_is_the_systemone_shape()`; `def test_question_count_bounds()`; `def test_question_and_option_ids_are_restricted(bad_id)`; `def test_option_and_level_cardinality()`; `def test_text_rules()`; `def test_unknown_question_type_is_rejected()`; `def test_state_must_be_a_strict_json_tree(state, rule)`; `…`
 - **tests/test_deferred_tool_result.py** — Private delivery cannot escape via serialization, copying or redaction.
-  - `def test_finalization_returns_plain_envelope_and_only_new_parts_once()`; `def test_post_tool_redaction_withholds_and_consumes_private_delivery()`; `def test_copies_and_json_carry_no_private_delivery_capability()`; `def test_invalid_delivery_uses_normal_parts_validation_and_cannot_retry(parts)`; `def test_failed_factory_is_consumed_without_an_implicit_retry()`; `def test_constructor_rejects_invalid_contracts_without_running_the_factory()`; `async def test_actual_sdk_decorator_preserves_deferred_delivery_and_part_order()`; `def test_delivered_parts_cannot_mutate_the_envelope_copy()`; `…`
+  - `def test_publication_context_exists_only_during_the_original_transferred_factory()`; `def test_failed_or_withheld_publication_never_retains_a_host_destination(failure)`; `def test_nested_publications_have_independent_destinations_and_headless_is_explicit()`; `def test_concurrent_results_cannot_borrow_each_others_publication_destination()`; `def test_invalid_publication_context_is_rejected_and_consumes_the_factory()`; `def test_publication_context_is_cleared_on_base_exception(error)`; `def test_a_physical_interrupt_after_context_assignment_cannot_retain_the_destination()`; `def test_publication_cleanup_does_not_wait_for_a_suspended_metadata_reader()`; `…`
 - **tests/test_docstring_parser.py** — Regression tests for parse_docstring_params wrapped-description truncation.
   - `def test_wrapped_description_not_truncated_at_word_continuation()`; `def test_single_line_params_unchanged()`; `def test_param_with_type_annotation()`
 - **tests/test_dynamic_tool_result.py** — Tests for ``DynamicTool.execute``'s ToolResult-aware pass-through.
