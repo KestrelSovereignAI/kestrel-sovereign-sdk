@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.47.0
+
+### Changed
+
+- The modified A2A SDK in `kestrel_sdk.native_a2a` moves from upstream
+  a2a-python 1.2.3 to upstream `main` after 1.3.0 (`11f1116`), bringing in
+  upstream's server, client and v0.3 compatibility fixes and its new `plugins`
+  package. Kestrel's signing, HTTP authorization, version negotiation, native
+  client selection, discovery and response-decoding changes are re-applied.
+  Where upstream landed its own fix for the same defect (malformed signature
+  headers, unknown response fields, per-client HTTP ownership, JSON-RPC
+  envelopes), the reviewed implementation is kept and upstream's regression
+  tests run against it. The wire protocol remains A2A 1.0.1. `VENDORED.json`
+  records the base as `1.3.0-12-g11f1116`.
+- Signing regressions pin that an empty `securityRequirements` element stays in
+  the signed bytes, and that adding or removing a requirement on the card or a
+  skill invalidates the signature.
+
+### Fixed
+
+- A JSON-RPC error object with members beyond `code`, `message` and `data`, or
+  without a string `message`, raises the A2A error mapped from its code instead
+  of a generic `A2AClientError`, as upstream does. Malformed envelopes and
+  success results with another request's ID are still rejected.
+
 ## 0.46.0
 
 ### Added

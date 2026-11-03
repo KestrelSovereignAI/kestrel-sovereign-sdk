@@ -131,10 +131,18 @@ def parse_jsonrpc_response(
             error = body['error']
             if not isinstance(error, dict):
                 raise TypeError('JSON-RPC error must be an object')
-            if not isinstance(error.get('message'), str):
-                raise TypeError('JSON-RPC error message must be a string')
             code = _jsonrpc_error_code(error.get('code'))
-            body['error'] = {**error, 'code': code}
+            # A nonstandard error object still raises the error mapped from
+            # its code: members beyond code/message/data are ignored, and a
+            # missing or non-string message falls back to the object's text.
+            message = error.get('message')
+            normalized: dict[str, Any] = {
+                'code': code,
+                'message': message if isinstance(message, str) else str(error),
+            }
+            if 'data' in error:
+                normalized['data'] = error['data']
+            body['error'] = normalized
         response_id = body.get('id')
         # An unidentified error remains a failure on this HTTP response.
         # Native servers can emit it before their streaming handler attaches

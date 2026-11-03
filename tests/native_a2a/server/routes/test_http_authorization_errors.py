@@ -7,12 +7,12 @@ from typing import NoReturn
 import httpx
 import pytest
 
-from kestrel_sdk.native_a2a.utils.errors import TaskNotFoundError
 from kestrel_sdk.native_a2a.server.context import ServerCallContext
 from kestrel_sdk.native_a2a.server.events.event_queue import Event
 from kestrel_sdk.native_a2a.server.request_handlers import RequestHandler
 from kestrel_sdk.native_a2a.server.routes.jsonrpc_routes import create_jsonrpc_routes
 from kestrel_sdk.native_a2a.server.routes.rest_routes import create_rest_routes
+from kestrel_sdk.native_a2a.utils.errors import TaskNotFoundError
 from google.protobuf.message import Message as ProtoMessage
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
@@ -168,28 +168,50 @@ class ProtocolRejectingHandler(RejectingHandler):
 @pytest.mark.parametrize('binding', ['JSONRPC', 'HTTP+JSON'])
 @pytest.mark.parametrize('method,path,operation,params', OPERATIONS)
 async def test_native_protocol_errors_use_their_binding_media_type(
-    tenant: str, binding: str, method: str, path: str,
-    operation: str, params: dict,
+    tenant: str,
+    binding: str,
+    method: str,
+    path: str,
+    operation: str,
+    params: dict,
 ) -> None:
     handler = ProtocolRejectingHandler(404)
-    app = Starlette(routes=[*create_jsonrpc_routes(handler, rpc_url='/rpc'),
-                            *create_rest_routes(handler)])
+    app = Starlette(
+        routes=[
+            *create_jsonrpc_routes(handler, rpc_url='/rpc'),
+            *create_rest_routes(handler),
+        ]
+    )
     body = dict(params)
     if operation in {'SendMessage', 'SendStreamingMessage'}:
-        body['message'] = {'messageId': 'request', 'role': 'ROLE_USER',
-                           'parts': [{'text': 'request'}]}
+        body['message'] = {
+            'messageId': 'request',
+            'role': 'ROLE_USER',
+            'parts': [{'text': 'request'}],
+        }
     if tenant:
         body['tenant'] = tenant
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
-                                 base_url='http://protocol.test',
-                                 headers={'A2A-Version': '1.0'}) as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app),
+        base_url='http://protocol.test',
+        headers={'A2A-Version': '1.0'},
+    ) as client:
         if binding == 'JSONRPC':
-            response = await client.post('/rpc', json={
-                'jsonrpc': '2.0', 'id': 'request', 'method': operation, 'params': body,
-            })
+            response = await client.post(
+                '/rpc',
+                json={
+                    'jsonrpc': '2.0',
+                    'id': 'request',
+                    'method': operation,
+                    'params': body,
+                },
+            )
         else:
-            response = await client.request(method, (f'/{tenant}' if tenant else '') + path,
-                                            json=body if method == 'POST' else None)
+            response = await client.request(
+                method,
+                (f'/{tenant}' if tenant else '') + path,
+                json=body if method == 'POST' else None,
+            )
     if binding == 'JSONRPC':
         assert response.status_code == 200
         assert response.headers['content-type'] == 'application/json'
@@ -200,7 +222,10 @@ async def test_native_protocol_errors_use_their_binding_media_type(
         assert response.headers['content-type'] == 'application/a2a+json'
         error = response.json()['error']
         assert error['code'] == 404 and error['status'] == 'NOT_FOUND'
-        assert error['details'][0]['@type'] == 'type.googleapis.com/google.rpc.ErrorInfo'
+        assert (
+            error['details'][0]['@type']
+            == 'type.googleapis.com/google.rpc.ErrorInfo'
+        )
         assert error['details'][0]['reason'] == 'TASK_NOT_FOUND'
         assert error['details'][0]['domain'] == 'a2a-protocol.org'
     assert 'www-authenticate' not in response.headers

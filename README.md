@@ -94,7 +94,8 @@ source checkout to verify custody offline. Reproduce updates from an explicit
 Git tree with `--source`, `--revision` and `--base`; the importer refuses an existing
 output directory and never consumes dirty working-tree files.
 
-The snapshot contains signing, HTTP authorization, borrowed-client lifetime,
+The snapshot is based on upstream `main` after release 1.3.0; `VENDORED.json`
+records the exact base commit. It contains signing, HTTP authorization, borrowed-client lifetime,
 Agent Card discovery, response-decoding and HTTP version-negotiation fixes. Python imports and package-resource references are
 relocated; protocol names, JSON fields and protobuf descriptors are preserved.
 The repository maintains the upstream signing/JCS, client factory, response

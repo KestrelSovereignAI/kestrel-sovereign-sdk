@@ -85,7 +85,7 @@ index 4479135..31e9a5b 100644
 +        )
          return agent_card
 diff --git a/src/a2a/client/client_factory.py b/src/a2a/client/client_factory.py
-index e43207c..18f5f29 100644
+index db62667..18f5f29 100644
 --- a/src/a2a/client/client_factory.py
 +++ b/src/a2a/client/client_factory.py
 @@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
@@ -143,48 +143,7 @@ index e43207c..18f5f29 100644
  class ClientFactory:
      """Factory for creating clients that communicate with A2A agents.
  
-@@ -77,6 +65,9 @@ class ClientFactory:
- 
-     The client can be used consistently regardless of the transport. This
-     aligns the client configuration with the server's capabilities.
-+
-+    Each created client gets its own `httpx.AsyncClient` and closes it on
-+    `close()`, unless `ClientConfig.httpx_client` is set.
-     """
- 
-     def __init__(
-@@ -84,16 +75,25 @@ class ClientFactory:
-         config: ClientConfig | None = None,
-     ):
-         config = config or ClientConfig()
--        httpx_client = config.httpx_client or httpx.AsyncClient()
--        httpx_client.headers.setdefault(
--            VERSION_HEADER, PROTOCOL_VERSION_CURRENT
--        )
-+        if config.httpx_client:
-+            config.httpx_client.headers.setdefault(
-+                VERSION_HEADER, PROTOCOL_VERSION_CURRENT
-+            )
- 
-         self._config = config
--        self._httpx_client = httpx_client
-         self._registry: dict[str, TransportProducer] = {}
-         self._register_defaults(config.supported_protocol_bindings)
- 
-+    def _resolve_http_client(self) -> tuple[httpx.AsyncClient, bool]:
-+        """Returns an HTTP client and whether it is shared across clients."""
-+        if self._config.httpx_client:
-+            return self._config.httpx_client, True
-+        httpx_client = httpx.AsyncClient()
-+        httpx_client.headers.setdefault(
-+            VERSION_HEADER, PROTOCOL_VERSION_CURRENT
-+        )
-+        return httpx_client, False
-+
-     def _register_defaults(self, supported: list[str]) -> None:
-         # Empty support list implies JSON-RPC only.
- 
-@@ -104,32 +104,13 @@ class ClientFactory:
+@@ -116,31 +104,8 @@ class ClientFactory:
                  url: str,
                  config: ClientConfig,
              ) -> ClientTransport:
@@ -199,28 +158,24 @@ index e43207c..18f5f29 100644
 -                    else PROTOCOL_VERSION_CURRENT
 -                )
 -
+                 httpx_client, is_shared_httpx = self._resolve_http_client()
+ 
 -                if is_legacy_version(version):
 -                    from a2a.compat.v0_3.jsonrpc_transport import (  # noqa: PLC0415
 -                        CompatJsonRpcTransport,
 -                    )
 -
 -                    return CompatJsonRpcTransport(
--                        self._httpx_client,
+-                        httpx_client,
 -                        card,
 -                        url,
+-                        is_shared_httpx=is_shared_httpx,
 -                    )
-+                httpx_client, is_shared_httpx = self._resolve_http_client()
- 
+-
                  return JsonRpcTransport(
--                    self._httpx_client,
-+                    httpx_client,
+                     httpx_client,
                      card,
-                     url,
-+                    is_shared_httpx=is_shared_httpx,
-                 )
- 
-             self.register(
-@@ -143,32 +124,13 @@ class ClientFactory:
+@@ -159,31 +124,8 @@ class ClientFactory:
                  url: str,
                  config: ClientConfig,
              ) -> ClientTransport:
@@ -235,28 +190,24 @@ index e43207c..18f5f29 100644
 -                    else PROTOCOL_VERSION_CURRENT
 -                )
 -
+                 httpx_client, is_shared_httpx = self._resolve_http_client()
+ 
 -                if is_legacy_version(version):
 -                    from a2a.compat.v0_3.rest_transport import (  # noqa: PLC0415
 -                        CompatRestTransport,
 -                    )
 -
 -                    return CompatRestTransport(
--                        self._httpx_client,
+-                        httpx_client,
 -                        card,
 -                        url,
+-                        is_shared_httpx=is_shared_httpx,
 -                    )
-+                httpx_client, is_shared_httpx = self._resolve_http_client()
- 
+-
                  return RestTransport(
--                    self._httpx_client,
-+                    httpx_client,
+                     httpx_client,
                      card,
-                     url,
-+                    is_shared_httpx=is_shared_httpx,
-                 )
- 
-             self.register(
-@@ -189,25 +151,6 @@ class ClientFactory:
+@@ -209,25 +151,6 @@ class ClientFactory:
                  url: str,
                  config: ClientConfig,
              ) -> ClientTransport:
@@ -282,7 +233,7 @@ index e43207c..18f5f29 100644
                  return _grpc_transport.create(card, url, config)
  
              self.register(
-@@ -235,33 +178,22 @@ class ClientFactory:
+@@ -255,33 +178,22 @@ class ClientFactory:
          if not candidates:
              return None
  
@@ -329,43 +280,7 @@ index e43207c..18f5f29 100644
  
      async def create_from_url(
          self,
-@@ -273,8 +205,9 @@ class ClientFactory:
-     ) -> Client:
-         """Create a `Client` by resolving an `AgentCard` from a URL.
- 
--        Resolves the agent card from the given URL using the factory's
--        configured httpx client, then creates a client via `create`.
-+        Resolves the agent card from the given URL, then creates a client
-+        via `create`. The card is fetched with `ClientConfig.httpx_client`
-+        when one is set, otherwise with a temporary client.
- 
-         If the agent card is already available, use `create` directly
-         instead.
-@@ -295,12 +228,17 @@ class ClientFactory:
-         Returns:
-           A `Client` object.
-         """
--        resolver = A2ACardResolver(self._httpx_client, url)
--        card = await resolver.get_agent_card(
--            relative_card_path=relative_card_path,
--            http_kwargs=resolver_http_kwargs,
--            signature_verifier=signature_verifier,
--        )
-+        httpx_client, is_shared_httpx = self._resolve_http_client()
-+        try:
-+            resolver = A2ACardResolver(httpx_client, url)
-+            card = await resolver.get_agent_card(
-+                relative_card_path=relative_card_path,
-+                http_kwargs=resolver_http_kwargs,
-+                signature_verifier=signature_verifier,
-+            )
-+        finally:
-+            if not is_shared_httpx:
-+                await httpx_client.aclose()
-         return self.create(card, interceptors)
- 
-     def register(self, label: str, generator: TransportProducer) -> None:
-@@ -349,7 +287,8 @@ class ClientFactory:
+@@ -375,7 +287,8 @@ class ClientFactory:
                          list(card.supported_interfaces),
                          protocol_bindings=[transport_protocol],
                      )
@@ -375,27 +290,8 @@ index e43207c..18f5f29 100644
          if not transport_protocol or not selected_interface:
              raise ValueError('no compatible transports found.')
          if transport_protocol not in self._registry:
-diff --git a/src/a2a/client/errors.py b/src/a2a/client/errors.py
-index 4d3802d..853ff59 100644
---- a/src/a2a/client/errors.py
-+++ b/src/a2a/client/errors.py
-@@ -14,6 +14,14 @@ class AgentCardResolutionError(A2AClientError):
-         super().__init__(message)
-         self.status_code = status_code
- 
-+    def __repr__(self) -> str:
-+        """Return a developer-friendly representation exposing the status code."""
-+        return (
-+            f'{self.__class__.__name__}('
-+            f'status_code={self.status_code!r}, '
-+            f'message={self.message!r})'
-+        )
-+
- 
- class A2AClientTimeoutError(A2AClientError):
-     """Exception for timeout errors during a request."""
 diff --git a/src/a2a/client/transports/http_helpers.py b/src/a2a/client/transports/http_helpers.py
-index 76c4414..91cbcb9 100644
+index b0d6013..91cbcb9 100644
 --- a/src/a2a/client/transports/http_helpers.py
 +++ b/src/a2a/client/transports/http_helpers.py
 @@ -1,5 +1,3 @@
@@ -424,12 +320,7 @@ index 76c4414..91cbcb9 100644
  
  
  def get_http_args(context: ClientCallContext | None) -> dict[str, Any]:
-@@ -57,10 +57,12 @@ async def send_http_request(
-     | None = None,
- ) -> dict[str, Any]:
-     """Sends an HTTP request and parses the JSON response, handling common exceptions."""
-+    if httpx_client.is_closed:
-+        raise A2AClientError('HTTP client is closed')
+@@ -62,7 +62,7 @@ async def send_http_request(
      with handle_http_exceptions(status_error_handler):
          response = await httpx_client.send(request)
          response.raise_for_status()
@@ -438,16 +329,7 @@ index 76c4414..91cbcb9 100644
  
  
  async def parse_sse_stream(
-@@ -125,6 +127,8 @@ async def send_http_stream_request(
-             Should raise an appropriate domain-specific exception.
-         **kwargs: Additional keyword arguments forwarded to ``aconnect_sse``.
-     """
-+    if httpx_client.is_closed:
-+        raise A2AClientError('HTTP client is closed')
-     with handle_http_exceptions(status_error_handler):
-         async with _SSEEventSource(
-             httpx_client, method, url, **kwargs
-@@ -142,7 +146,7 @@ async def send_http_stream_request(
+@@ -146,7 +146,7 @@ async def send_http_stream_request(
                  'content-type', ''
              ):
                  content = await response.aread()
@@ -457,10 +339,11 @@ index 76c4414..91cbcb9 100644
  
              async for event_name, data in parse_sse_stream(response):
 diff --git a/src/a2a/client/transports/jsonrpc.py b/src/a2a/client/transports/jsonrpc.py
-index b6a6879..b799abd 100644
+index 8519b5c..b799abd 100644
 --- a/src/a2a/client/transports/jsonrpc.py
 +++ b/src/a2a/client/transports/jsonrpc.py
-@@ -1,13 +1,14 @@
+@@ -1,7 +1,7 @@
+-import json
  import logging
  
  from collections.abc import AsyncGenerator
@@ -468,15 +351,7 @@ index b6a6879..b799abd 100644
  from typing import Any, NoReturn
  from uuid import uuid4
  
- import httpx
- 
- from google.protobuf import json_format
--from jsonrpc.jsonrpc2 import JSONRPC20Request, JSONRPC20Response
-+from jsonrpc.jsonrpc2 import JSONRPC20Request
- 
- from a2a.client.client import ClientCallContext
- from a2a.client.errors import A2AClientError
-@@ -17,6 +18,11 @@ from a2a.client.transports.http_helpers import (
+@@ -18,6 +18,11 @@ from a2a.client.transports.http_helpers import (
      send_http_request,
      send_http_stream_request,
  )
@@ -488,188 +363,212 @@ index b6a6879..b799abd 100644
  from a2a.types.a2a_pb2 import (
      AgentCard,
      CancelTaskRequest,
-@@ -56,11 +62,13 @@ class JsonRpcTransport(ClientTransport):
-         httpx_client: httpx.AsyncClient,
-         agent_card: AgentCard,
-         url: str,
-+        is_shared_httpx: bool = False,
-     ):
-         """Initializes the JsonRpcTransport."""
-         self.url = url
-         self.httpx_client = httpx_client
-         self.agent_card = agent_card
-+        self.is_shared_httpx = is_shared_httpx
+@@ -37,7 +42,6 @@ from a2a.types.a2a_pb2 import (
+     TaskPushNotificationConfig,
+ )
+ from a2a.utils.errors import JSON_RPC_ERROR_CODE_MAP
+-from a2a.utils.proto_utils import parse_lenient
+ from a2a.utils.telemetry import SpanKind, trace_class
  
-     async def send_message(
-         self,
-@@ -77,10 +85,12 @@ class JsonRpcTransport(ClientTransport):
+ 
+@@ -81,8 +85,13 @@ class JsonRpcTransport(ClientTransport):
          response_data = await self._send_request(
              dict(rpc_request.data), context
          )
--        json_rpc_response = JSONRPC20Response(**response_data)
+-        response: SendMessageResponse = parse_lenient(
+-            response_data['result'], SendMessageResponse()
 +        json_rpc_response = parse_jsonrpc_response(
 +            response_data, request_id=rpc_request.data['id']
 +        )
-         if json_rpc_response.error:
-             raise self._create_jsonrpc_error(json_rpc_response.error)
--        response: SendMessageResponse = json_format.ParseDict(
++        if json_rpc_response.error:
++            raise self._create_jsonrpc_error(json_rpc_response.error)
 +        response: SendMessageResponse = parse_protobuf_response(
-             json_rpc_response.result, SendMessageResponse()
++            json_rpc_response.result, SendMessageResponse()
          )
          return response
-@@ -118,10 +128,14 @@ class JsonRpcTransport(ClientTransport):
+ 
+@@ -119,7 +128,14 @@ class JsonRpcTransport(ClientTransport):
          response_data = await self._send_request(
              dict(rpc_request.data), context
          )
--        json_rpc_response = JSONRPC20Response(**response_data)
+-        response: Task = parse_lenient(response_data['result'], Task())
 +        json_rpc_response = parse_jsonrpc_response(
 +            response_data, request_id=rpc_request.data['id']
 +        )
-         if json_rpc_response.error:
-             raise self._create_jsonrpc_error(json_rpc_response.error)
--        response: Task = json_format.ParseDict(json_rpc_response.result, Task())
++        if json_rpc_response.error:
++            raise self._create_jsonrpc_error(json_rpc_response.error)
 +        response: Task = parse_protobuf_response(
 +            json_rpc_response.result, Task()
 +        )
          return response
  
      async def list_tasks(
-@@ -139,10 +153,12 @@ class JsonRpcTransport(ClientTransport):
+@@ -137,8 +153,13 @@ class JsonRpcTransport(ClientTransport):
          response_data = await self._send_request(
              dict(rpc_request.data), context
          )
--        json_rpc_response = JSONRPC20Response(**response_data)
+-        response: ListTasksResponse = parse_lenient(
+-            response_data['result'], ListTasksResponse()
 +        json_rpc_response = parse_jsonrpc_response(
 +            response_data, request_id=rpc_request.data['id']
 +        )
-         if json_rpc_response.error:
-             raise self._create_jsonrpc_error(json_rpc_response.error)
--        response: ListTasksResponse = json_format.ParseDict(
++        if json_rpc_response.error:
++            raise self._create_jsonrpc_error(json_rpc_response.error)
 +        response: ListTasksResponse = parse_protobuf_response(
-             json_rpc_response.result, ListTasksResponse()
++            json_rpc_response.result, ListTasksResponse()
          )
          return response
-@@ -162,10 +178,14 @@ class JsonRpcTransport(ClientTransport):
+ 
+@@ -157,7 +178,14 @@ class JsonRpcTransport(ClientTransport):
          response_data = await self._send_request(
              dict(rpc_request.data), context
          )
--        json_rpc_response = JSONRPC20Response(**response_data)
+-        response: Task = parse_lenient(response_data['result'], Task())
 +        json_rpc_response = parse_jsonrpc_response(
 +            response_data, request_id=rpc_request.data['id']
 +        )
-         if json_rpc_response.error:
-             raise self._create_jsonrpc_error(json_rpc_response.error)
--        response: Task = json_format.ParseDict(json_rpc_response.result, Task())
++        if json_rpc_response.error:
++            raise self._create_jsonrpc_error(json_rpc_response.error)
 +        response: Task = parse_protobuf_response(
 +            json_rpc_response.result, Task()
 +        )
          return response
  
      async def create_task_push_notification_config(
-@@ -183,10 +203,12 @@ class JsonRpcTransport(ClientTransport):
+@@ -175,8 +203,13 @@ class JsonRpcTransport(ClientTransport):
          response_data = await self._send_request(
              dict(rpc_request.data), context
          )
--        json_rpc_response = JSONRPC20Response(**response_data)
+-        response: TaskPushNotificationConfig = parse_lenient(
+-            response_data['result'], TaskPushNotificationConfig()
 +        json_rpc_response = parse_jsonrpc_response(
 +            response_data, request_id=rpc_request.data['id']
 +        )
-         if json_rpc_response.error:
-             raise self._create_jsonrpc_error(json_rpc_response.error)
--        response: TaskPushNotificationConfig = json_format.ParseDict(
++        if json_rpc_response.error:
++            raise self._create_jsonrpc_error(json_rpc_response.error)
 +        response: TaskPushNotificationConfig = parse_protobuf_response(
-             json_rpc_response.result, TaskPushNotificationConfig()
++            json_rpc_response.result, TaskPushNotificationConfig()
          )
          return response
-@@ -206,10 +228,12 @@ class JsonRpcTransport(ClientTransport):
+ 
+@@ -195,8 +228,13 @@ class JsonRpcTransport(ClientTransport):
          response_data = await self._send_request(
              dict(rpc_request.data), context
          )
--        json_rpc_response = JSONRPC20Response(**response_data)
+-        response: TaskPushNotificationConfig = parse_lenient(
+-            response_data['result'], TaskPushNotificationConfig()
 +        json_rpc_response = parse_jsonrpc_response(
 +            response_data, request_id=rpc_request.data['id']
 +        )
-         if json_rpc_response.error:
-             raise self._create_jsonrpc_error(json_rpc_response.error)
--        response: TaskPushNotificationConfig = json_format.ParseDict(
++        if json_rpc_response.error:
++            raise self._create_jsonrpc_error(json_rpc_response.error)
 +        response: TaskPushNotificationConfig = parse_protobuf_response(
-             json_rpc_response.result, TaskPushNotificationConfig()
++            json_rpc_response.result, TaskPushNotificationConfig()
          )
          return response
-@@ -229,11 +253,13 @@ class JsonRpcTransport(ClientTransport):
+ 
+@@ -215,8 +253,16 @@ class JsonRpcTransport(ClientTransport):
          response_data = await self._send_request(
              dict(rpc_request.data), context
          )
--        json_rpc_response = JSONRPC20Response(**response_data)
+-        response: ListTaskPushNotificationConfigsResponse = parse_lenient(
+-            response_data['result'], ListTaskPushNotificationConfigsResponse()
 +        json_rpc_response = parse_jsonrpc_response(
 +            response_data, request_id=rpc_request.data['id']
 +        )
-         if json_rpc_response.error:
-             raise self._create_jsonrpc_error(json_rpc_response.error)
-         response: ListTaskPushNotificationConfigsResponse = (
--            json_format.ParseDict(
++        if json_rpc_response.error:
++            raise self._create_jsonrpc_error(json_rpc_response.error)
++        response: ListTaskPushNotificationConfigsResponse = (
 +            parse_protobuf_response(
-                 json_rpc_response.result,
-                 ListTaskPushNotificationConfigsResponse(),
-             )
-@@ -255,9 +281,14 @@ class JsonRpcTransport(ClientTransport):
-         response_data = await self._send_request(
-             dict(rpc_request.data), context
++                json_rpc_response.result,
++                ListTaskPushNotificationConfigsResponse(),
++            )
          )
--        json_rpc_response = JSONRPC20Response(**response_data)
+         return response
+ 
+@@ -232,7 +278,17 @@ class JsonRpcTransport(ClientTransport):
+             params=json_format.MessageToDict(request),
+             _id=str(uuid4()),
+         )
+-        await self._send_request(dict(rpc_request.data), context)
++        response_data = await self._send_request(
++            dict(rpc_request.data), context
++        )
 +        json_rpc_response = parse_jsonrpc_response(
 +            response_data, request_id=rpc_request.data['id']
 +        )
-         if json_rpc_response.error:
-             raise self._create_jsonrpc_error(json_rpc_response.error)
++        if json_rpc_response.error:
++            raise self._create_jsonrpc_error(json_rpc_response.error)
 +        # The JSON-RPC operation's confirmation is implementation-specific
 +        # (A2A 3.1.10). Its envelope and error were validated above; the gRPC
 +        # Empty response type does not constrain this binding's result value.
  
      async def subscribe(
          self,
-@@ -297,7 +328,9 @@ class JsonRpcTransport(ClientTransport):
+@@ -272,11 +328,19 @@ class JsonRpcTransport(ClientTransport):
              dict(rpc_request.data),
              context,
          )
--        json_rpc_response = JSONRPC20Response(**response_data)
+-        result = response_data['result']
 +        json_rpc_response = parse_jsonrpc_response(
 +            response_data, request_id=rpc_request.data['id']
 +        )
-         if json_rpc_response.error:
-             raise self._create_jsonrpc_error(json_rpc_response.error)
++        if json_rpc_response.error:
++            raise self._create_jsonrpc_error(json_rpc_response.error)
          # Validate type of the response
-@@ -305,15 +338,26 @@ class JsonRpcTransport(ClientTransport):
-             raise A2AClientError(
-                 f'Invalid response type: {type(json_rpc_response.result)}'
-             )
--        response: AgentCard = json_format.ParseDict(
+-        if not isinstance(result, dict):
+-            raise A2AClientError(f'Invalid response type: {type(result)}')
+-        response: AgentCard = parse_lenient(result, AgentCard())
++        if not isinstance(json_rpc_response.result, dict):
++            raise A2AClientError(
++                f'Invalid response type: {type(json_rpc_response.result)}'
++            )
 +        response: AgentCard = parse_protobuf_response(
-             json_rpc_response.result, AgentCard()
-         )
++            json_rpc_response.result, AgentCard()
++        )
  
          return response
  
-     async def close(self) -> None:
--        """Closes the httpx client."""
--        await self.httpx_client.aclose()
-+        """Closes the httpx client unless it is shared."""
-+        if self.is_shared_httpx:
-+            logger.debug(
-+                'Cannot close a shared httpx client; only the provider '
-+                'that supplied it via ClientConfig.httpx_client can close it.'
-+            )
-+            return
-+        if self.httpx_client.is_closed:
-+            raise A2AClientError('HTTP client is already closed')
-+        try:
-+            await self.httpx_client.aclose()
-+        except Exception as e:
-+            raise A2AClientError(f'Failed to close HTTP client: {e}') from e
+@@ -326,37 +390,7 @@ class JsonRpcTransport(ClientTransport):
+         request = self.httpx_client.build_request(
+             'POST', self.url, json=payload, **(http_kwargs or {})
+         )
+-        response_data = await send_http_request(self.httpx_client, request)
+-        return self._check_jsonrpc_response(response_data)
+-
+-    def _check_jsonrpc_response(self, response_data: Any) -> dict[str, Any]:
+-        """Returns a JSON-RPC success response, raising for anything else.
+-
+-        An error response raises the A2A error mapped from its code, even when
+-        the error object lacks a ``message`` or carries extra members. A body
+-        that is not a JSON-RPC 2.0 response object (a list, a string, an object
+-        with neither ``result`` nor ``error``, or an ``error`` that is not an
+-        object) raises ``A2AClientError`` instead of leaking a ``TypeError`` or
+-        ``ValueError`` from the ``json-rpc`` package.
+-        """
+-        if not isinstance(response_data, dict):
+-            raise A2AClientError(
+-                'Invalid JSON-RPC response: expected an object, got '
+-                f'{type(response_data).__name__}'
+-            )
+-        error = response_data.get('error')
+-        if error:
+-            if not isinstance(error, dict):
+-                raise A2AClientError(
+-                    f'Invalid JSON-RPC response: error is not an object: '
+-                    f'{error!r}'
+-                )
+-            raise self._create_jsonrpc_error(error)
+-        if 'result' not in response_data:
+-            raise A2AClientError(
+-                "Invalid JSON-RPC response: it has neither 'result' nor 'error'"
+-            )
+-        return response_data
++        return await send_http_request(self.httpx_client, request)
  
-     def _create_jsonrpc_error(self, error_dict: dict[str, Any]) -> Exception:
-         """Creates the appropriate A2AError from a JSON-RPC error dictionary."""
-@@ -360,21 +404,30 @@ class JsonRpcTransport(ClientTransport):
+     async def _send_stream_request(
+         self,
+@@ -370,30 +404,30 @@ class JsonRpcTransport(ClientTransport):
              'POST',
              self.url,
              None,
@@ -680,16 +579,23 @@ index b6a6879..b799abd 100644
              json=rpc_request_payload,
              **http_kwargs,
          ):
--            json_rpc_response = JSONRPC20Response.from_json(sse_data)
+-            try:
+-                response_data = json.loads(sse_data)
+-            except json.JSONDecodeError as e:
+-                raise A2AClientError(
+-                    f'Invalid JSON-RPC response in SSE stream: {e}'
+-                ) from e
+-            response_data = self._check_jsonrpc_response(response_data)
+-            response: StreamResponse = parse_lenient(
+-                response_data['result'], StreamResponse()
 +            json_rpc_response = parse_jsonrpc_response(
 +                load_json_response(sse_data),
 +                request_id=rpc_request_payload['id'],
 +            )
-             if json_rpc_response.error:
-                 raise self._create_jsonrpc_error(json_rpc_response.error)
--            response: StreamResponse = json_format.ParseDict(
++            if json_rpc_response.error:
++                raise self._create_jsonrpc_error(json_rpc_response.error)
 +            response: StreamResponse = parse_protobuf_response(
-                 json_rpc_response.result, StreamResponse()
++                json_rpc_response.result, StreamResponse()
              )
              yield response
  
@@ -698,19 +604,26 @@ index b6a6879..b799abd 100644
 +        self, sse_data: str, *, request_id: str | int | None
 +    ) -> NoReturn:
          """Handles SSE error events by parsing JSON-RPC error payload and raising the appropriate domain error."""
--        json_rpc_response = JSONRPC20Response.from_json(sse_data)
+-        try:
+-            response_data = json.loads(sse_data)
+-        except json.JSONDecodeError:
+-            response_data = None
+-        if isinstance(response_data, dict) and isinstance(
+-            response_data.get('error'), dict
+-        ):
+-            raise self._create_jsonrpc_error(response_data['error'])
 +        json_rpc_response = parse_jsonrpc_response(
 +            load_json_response(sse_data), request_id=request_id
 +        )
-         if json_rpc_response.error:
-             raise self._create_jsonrpc_error(json_rpc_response.error)
++        if json_rpc_response.error:
++            raise self._create_jsonrpc_error(json_rpc_response.error)
          raise A2AClientError(f'SSE stream error: {sse_data}')
 diff --git a/src/a2a/client/transports/response_parsing.py b/src/a2a/client/transports/response_parsing.py
 new file mode 100644
-index 0000000..f49a8f3
+index 0000000..ccd4511
 --- /dev/null
 +++ b/src/a2a/client/transports/response_parsing.py
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,242 @@
 +"""Decode peer response data separately from transport and admission failures."""
 +
 +import json
@@ -843,10 +756,18 @@ index 0000000..f49a8f3
 +            error = body['error']
 +            if not isinstance(error, dict):
 +                raise TypeError('JSON-RPC error must be an object')
-+            if not isinstance(error.get('message'), str):
-+                raise TypeError('JSON-RPC error message must be a string')
 +            code = _jsonrpc_error_code(error.get('code'))
-+            body['error'] = {**error, 'code': code}
++            # A nonstandard error object still raises the error mapped from
++            # its code: members beyond code/message/data are ignored, and a
++            # missing or non-string message falls back to the object's text.
++            message = error.get('message')
++            normalized: dict[str, Any] = {
++                'code': code,
++                'message': message if isinstance(message, str) else str(error),
++            }
++            if 'data' in error:
++                normalized['data'] = error['data']
++            body['error'] = normalized
 +        response_id = body.get('id')
 +        # An unidentified error remains a failure on this HTTP response.
 +        # Native servers can emit it before their streaming handler attaches
@@ -946,7 +867,7 @@ index 0000000..f49a8f3
 +        json_format.MessageToDict(message)
 +    return message
 diff --git a/src/a2a/client/transports/rest.py b/src/a2a/client/transports/rest.py
-index 01aea2d..f0ea0c2 100644
+index ba1f4c0..f0ea0c2 100644
 --- a/src/a2a/client/transports/rest.py
 +++ b/src/a2a/client/transports/rest.py
 @@ -1,4 +1,3 @@
@@ -954,16 +875,14 @@ index 01aea2d..f0ea0c2 100644
  import logging
  
  from collections.abc import AsyncGenerator
-@@ -6,7 +5,8 @@ from typing import Any, NoReturn
+@@ -6,6 +5,7 @@ from typing import Any, NoReturn
  
  import httpx
  
--from google.protobuf.json_format import MessageToDict, Parse, ParseDict
 +from google.protobuf.empty_pb2 import Empty
-+from google.protobuf.json_format import MessageToDict
+ from google.protobuf.json_format import MessageToDict
  
  from a2a.client.client import ClientCallContext
- from a2a.client.errors import A2AClientError
 @@ -16,6 +16,11 @@ from a2a.client.transports.http_helpers import (
      send_http_request,
      send_http_stream_request,
@@ -976,79 +895,73 @@ index 01aea2d..f0ea0c2 100644
  from a2a.types.a2a_pb2 import (
      AgentCard,
      CancelTaskRequest,
-@@ -97,11 +102,13 @@ class RestTransport(ClientTransport):
-         httpx_client: httpx.AsyncClient,
-         agent_card: AgentCard,
-         url: str,
-+        is_shared_httpx: bool = False,
-     ):
-         """Initializes the RestTransport."""
-         self.url = url.removesuffix('/')
-         self.httpx_client = httpx_client
-         self.agent_card = agent_card
-+        self.is_shared_httpx = is_shared_httpx
+@@ -35,7 +40,6 @@ from a2a.types.a2a_pb2 import (
+     TaskPushNotificationConfig,
+ )
+ from a2a.utils.errors import A2A_REASON_TO_ERROR, MethodNotFoundError
+-from a2a.utils.proto_utils import parse_lenient
+ from a2a.utils.telemetry import SpanKind, trace_class
  
-     async def send_message(
-         self,
-@@ -117,7 +124,7 @@ class RestTransport(ClientTransport):
+ 
+@@ -120,7 +124,7 @@ class RestTransport(ClientTransport):
              context=context,
              json=MessageToDict(request),
          )
--        response: SendMessageResponse = ParseDict(
+-        response: SendMessageResponse = parse_lenient(
 +        response: SendMessageResponse = parse_protobuf_response(
              response_data, SendMessageResponse()
          )
          return response
-@@ -160,7 +167,7 @@ class RestTransport(ClientTransport):
+@@ -163,7 +167,7 @@ class RestTransport(ClientTransport):
              context=context,
              params=params,
          )
--        response: Task = ParseDict(response_data, Task())
+-        response: Task = parse_lenient(response_data, Task())
 +        response: Task = parse_protobuf_response(response_data, Task())
          return response
  
      async def list_tasks(
-@@ -181,7 +188,7 @@ class RestTransport(ClientTransport):
+@@ -184,7 +188,7 @@ class RestTransport(ClientTransport):
              context=context,
              params=params,
          )
--        response: ListTasksResponse = ParseDict(
+-        response: ListTasksResponse = parse_lenient(
 +        response: ListTasksResponse = parse_protobuf_response(
              response_data, ListTasksResponse()
          )
          return response
-@@ -200,7 +207,7 @@ class RestTransport(ClientTransport):
+@@ -203,7 +207,7 @@ class RestTransport(ClientTransport):
              context=context,
              json=MessageToDict(request),
          )
--        response: Task = ParseDict(response_data, Task())
+-        response: Task = parse_lenient(response_data, Task())
 +        response: Task = parse_protobuf_response(response_data, Task())
          return response
  
      async def create_task_push_notification_config(
-@@ -217,7 +224,7 @@ class RestTransport(ClientTransport):
+@@ -220,7 +224,7 @@ class RestTransport(ClientTransport):
              context=context,
              json=MessageToDict(request),
          )
--        response: TaskPushNotificationConfig = ParseDict(
+-        response: TaskPushNotificationConfig = parse_lenient(
 +        response: TaskPushNotificationConfig = parse_protobuf_response(
              response_data, TaskPushNotificationConfig()
          )
          return response
-@@ -244,7 +251,7 @@ class RestTransport(ClientTransport):
+@@ -247,7 +251,7 @@ class RestTransport(ClientTransport):
              context=context,
              params=params,
          )
--        response: TaskPushNotificationConfig = ParseDict(
+-        response: TaskPushNotificationConfig = parse_lenient(
 +        response: TaskPushNotificationConfig = parse_protobuf_response(
              response_data, TaskPushNotificationConfig()
          )
          return response
-@@ -269,8 +276,10 @@ class RestTransport(ClientTransport):
+@@ -272,8 +276,10 @@ class RestTransport(ClientTransport):
              context=context,
              params=params,
          )
--        response: ListTaskPushNotificationConfigsResponse = ParseDict(
+-        response: ListTaskPushNotificationConfigsResponse = parse_lenient(
 -            response_data, ListTaskPushNotificationConfigsResponse()
 +        response: ListTaskPushNotificationConfigsResponse = (
 +            parse_protobuf_response(
@@ -1057,7 +970,7 @@ index 01aea2d..f0ea0c2 100644
          )
          return response
  
-@@ -289,13 +298,14 @@ class RestTransport(ClientTransport):
+@@ -292,13 +298,14 @@ class RestTransport(ClientTransport):
          if 'tenant' in params:
              del params['tenant']
  
@@ -1073,33 +986,16 @@ index 01aea2d..f0ea0c2 100644
  
      async def subscribe(
          self,
-@@ -327,11 +337,22 @@ class RestTransport(ClientTransport):
+@@ -330,7 +337,7 @@ class RestTransport(ClientTransport):
              'GET', '/extendedAgentCard', request.tenant, context=context
          )
  
--        return ParseDict(response_data, AgentCard())
+-        return parse_lenient(response_data, AgentCard())
 +        return parse_protobuf_response(response_data, AgentCard())
  
      async def close(self) -> None:
--        """Closes the httpx client."""
--        await self.httpx_client.aclose()
-+        """Closes the httpx client unless it is shared."""
-+        if self.is_shared_httpx:
-+            logger.debug(
-+                'Cannot close a shared httpx client; only the provider '
-+                'that supplied it via ClientConfig.httpx_client can close it.'
-+            )
-+            return
-+        if self.httpx_client.is_closed:
-+            raise A2AClientError('HTTP client is already closed')
-+        try:
-+            await self.httpx_client.aclose()
-+        except Exception as e:
-+            raise A2AClientError(f'Failed to close HTTP client: {e}') from e
- 
-     def _get_path(self, base_path: str, tenant: str) -> str:
-         """Returns the full path, prepending the tenant if provided."""
-@@ -340,12 +361,12 @@ class RestTransport(ClientTransport):
+         """Closes the httpx client unless it is shared."""
+@@ -354,12 +361,12 @@ class RestTransport(ClientTransport):
      def _handle_http_error(self, e: httpx.HTTPStatusError) -> NoReturn:
          """Handles HTTP status errors and raises the appropriate A2AError."""
          try:
@@ -1118,7 +1014,7 @@ index 01aea2d..f0ea0c2 100644
  
          status_code = e.response.status_code
          if status_code == httpx.codes.NOT_FOUND:
-@@ -357,7 +378,7 @@ class RestTransport(ClientTransport):
+@@ -371,7 +378,7 @@ class RestTransport(ClientTransport):
  
      def _handle_sse_error(self, sse_data: str) -> NoReturn:
          """Handles SSE error events by parsing the REST error payload and raising the appropriate A2AError."""
@@ -1127,125 +1023,17 @@ index 01aea2d..f0ea0c2 100644
          mapped = _parse_rest_error(error_payload, sse_data)
          if mapped:
              raise mapped
-@@ -384,7 +405,9 @@ class RestTransport(ClientTransport):
+@@ -398,7 +405,9 @@ class RestTransport(ClientTransport):
              json=json,
              **http_kwargs,
          ):
--            event: StreamResponse = Parse(sse_data, StreamResponse())
+-            event: StreamResponse = parse_lenient(sse_data, StreamResponse())
 +            event: StreamResponse = parse_protobuf_response(
 +                load_json_response(sse_data), StreamResponse()
 +            )
              yield event
  
      async def _send_request(self, request: httpx.Request) -> dict[str, Any]:
-diff --git a/src/a2a/compat/v0_3/jsonrpc_transport.py b/src/a2a/compat/v0_3/jsonrpc_transport.py
-index f336991..9e83168 100644
---- a/src/a2a/compat/v0_3/jsonrpc_transport.py
-+++ b/src/a2a/compat/v0_3/jsonrpc_transport.py
-@@ -59,11 +59,14 @@ class CompatJsonRpcTransport(ClientTransport):
-         httpx_client: httpx.AsyncClient,
-         agent_card: AgentCard | None,
-         url: str,
-+        *,
-+        is_shared_httpx: bool = False,
-     ):
-         """Initializes the CompatJsonRpcTransport."""
-         self.url = url
-         self.httpx_client = httpx_client
-         self.agent_card = agent_card
-+        self.is_shared_httpx = is_shared_httpx
- 
-     async def send_message(
-         self,
-@@ -395,8 +398,19 @@ class CompatJsonRpcTransport(ClientTransport):
-         return card
- 
-     async def close(self) -> None:
--        """Closes the httpx client."""
--        await self.httpx_client.aclose()
-+        """Closes the httpx client unless it is shared."""
-+        if self.is_shared_httpx:
-+            logger.debug(
-+                'Cannot close a shared httpx client; only the provider '
-+                'that supplied it via ClientConfig.httpx_client can close it.'
-+            )
-+            return
-+        if self.httpx_client.is_closed:
-+            raise A2AClientError('HTTP client is already closed')
-+        try:
-+            await self.httpx_client.aclose()
-+        except Exception as e:
-+            raise A2AClientError(f'Failed to close HTTP client: {e}') from e
- 
-     def _create_jsonrpc_error(self, error_dict: dict[str, Any]) -> Exception:
-         """Raises a specific error based on jsonrpc error code."""
-diff --git a/src/a2a/compat/v0_3/proto_utils.py b/src/a2a/compat/v0_3/proto_utils.py
-index 201d1e1..d7ac190 100644
---- a/src/a2a/compat/v0_3/proto_utils.py
-+++ b/src/a2a/compat/v0_3/proto_utils.py
-@@ -696,7 +696,9 @@ class FromProto:
-     def task_status(cls, status: a2a_pb2.TaskStatus) -> types.TaskStatus:
-         return types.TaskStatus(
-             state=cls.task_state(status.state),
--            message=cls.message(status.update),
-+            message=cls.message(status.update)
-+            if status.HasField('update')
-+            else None,
-             timestamp=status.timestamp.ToJsonString()
-             if status.HasField('timestamp')
-             else None,
-@@ -874,7 +876,9 @@ class FromProto:
-             description=card.description,
-             documentation_url=card.documentation_url,
-             name=card.name,
--            provider=cls.provider(card.provider),
-+            provider=cls.provider(card.provider)
-+            if card.HasField('provider')
-+            else None,
-             security=cls.security(list(card.security)),
-             security_schemes=cls.security_schemes(dict(card.security_schemes)),
-             skills=[cls.skill(x) for x in card.skills] if card.skills else [],
-diff --git a/src/a2a/compat/v0_3/rest_transport.py b/src/a2a/compat/v0_3/rest_transport.py
-index cdeed28..3629467 100644
---- a/src/a2a/compat/v0_3/rest_transport.py
-+++ b/src/a2a/compat/v0_3/rest_transport.py
-@@ -66,11 +66,14 @@ class CompatRestTransport(ClientTransport):
-         agent_card: AgentCard | None,
-         url: str,
-         subscribe_method_override: str | None = None,
-+        *,
-+        is_shared_httpx: bool = False,
-     ):
-         """Initializes the CompatRestTransport."""
-         self.url = url.removesuffix('/')
-         self.httpx_client = httpx_client
-         self.agent_card = agent_card
-+        self.is_shared_httpx = is_shared_httpx
-         self._subscribe_method_override = subscribe_method_override
-         self._subscribe_auto_method_override = subscribe_method_override is None
- 
-@@ -338,8 +341,19 @@ class CompatRestTransport(ClientTransport):
-         return card
- 
-     async def close(self) -> None:
--        """Closes the httpx client."""
--        await self.httpx_client.aclose()
-+        """Closes the httpx client unless it is shared."""
-+        if self.is_shared_httpx:
-+            logger.debug(
-+                'Cannot close a shared httpx client; only the provider '
-+                'that supplied it via ClientConfig.httpx_client can close it.'
-+            )
-+            return
-+        if self.httpx_client.is_closed:
-+            raise A2AClientError('HTTP client is already closed')
-+        try:
-+            await self.httpx_client.aclose()
-+        except Exception as e:
-+            raise A2AClientError(f'Failed to close HTTP client: {e}') from e
- 
-     def _handle_http_error(self, e: httpx.HTTPStatusError) -> NoReturn:
-         """Handles HTTP status errors and raises the appropriate A2AError."""
 diff --git a/src/a2a/server/routes/agent_card_routes.py b/src/a2a/server/routes/agent_card_routes.py
 index 5cf779a..dfbb7b7 100644
 --- a/src/a2a/server/routes/agent_card_routes.py
@@ -1332,70 +1120,11 @@ index ef81829..5d471a3 100644
      )
  
  
-diff --git a/src/a2a/utils/errors.py b/src/a2a/utils/errors.py
-index b55f470..18aa0f5 100644
---- a/src/a2a/utils/errors.py
-+++ b/src/a2a/utils/errors.py
-@@ -27,6 +27,14 @@ class A2AError(Exception):
-         self.data = data
-         super().__init__(self.message)
- 
-+    def __repr__(self) -> str:
-+        """Return a developer-friendly representation exposing message and data."""
-+        return (
-+            f'{self.__class__.__name__}('
-+            f'message={self.message!r}, '
-+            f'data={self.data!r})'
-+        )
-+
- 
- class TaskNotFoundError(A2AError):
-     """Exception raised when a task is not found."""
 diff --git a/src/a2a/utils/proto_utils.py b/src/a2a/utils/proto_utils.py
-index d8e3189..919c660 100644
+index 9eb6d02..e3766a4 100644
 --- a/src/a2a/utils/proto_utils.py
 +++ b/src/a2a/utils/proto_utils.py
-@@ -19,11 +19,11 @@ This module provides helper functions for common proto type operations.
- 
- import logging
- 
--from typing import TYPE_CHECKING, Any, TypedDict, cast
-+from typing import TYPE_CHECKING, Any, TypeVar, TypedDict, cast
- 
- from google.api.field_behavior_pb2 import FieldBehavior, field_behavior
- from google.protobuf.descriptor import FieldDescriptor
--from google.protobuf.json_format import ParseDict
-+from google.protobuf.json_format import Parse, ParseDict
- from google.protobuf.message import Message as ProtobufMessage
- from google.rpc import error_details_pb2
- 
-@@ -53,6 +53,25 @@ logger = logging.getLogger(__name__)
- # Define Event type locally to avoid circular imports
- Event = Message | Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent
- 
-+_MessageT = TypeVar('_MessageT', bound=ProtobufMessage)
-+
-+
-+def parse_lenient(
-+    data: dict[str, Any] | str | bytes, message: _MessageT
-+) -> _MessageT:
-+    """Parses ProtoJSON into message, ignoring unrecognized fields.
-+
-+    Args:
-+        data: A decoded JSON object, or raw ProtoJSON text/bytes.
-+        message: The message to parse into. Mutated in place and returned.
-+
-+    Returns:
-+        The parsed message.
-+    """
-+    if isinstance(data, str | bytes):
-+        return Parse(data, message, ignore_unknown_fields=True)
-+    return ParseDict(data, message, ignore_unknown_fields=True)
-+
- 
- def to_stream_response(event: Event) -> StreamResponse:
-     """Convert internal Event to StreamResponse proto.
-@@ -164,6 +183,12 @@ def _field_is_repeated(field: FieldDescriptor) -> bool:
+@@ -192,6 +192,12 @@ def _field_is_repeated(field: FieldDescriptor) -> bool:
      return getattr(field, 'label', None) == FieldDescriptor.LABEL_REPEATED
  
  
@@ -1408,7 +1137,7 @@ index d8e3189..919c660 100644
  def parse_params(params: QueryParams, message: ProtobufMessage) -> None:
      """Converts REST query parameters back into a Protobuf message.
  
-@@ -295,8 +320,7 @@ def _validate_proto_required_fields_internal(
+@@ -327,8 +333,7 @@ def _validate_proto_required_fields_internal(
          # `desc.fields` is typed as a union of the pure-Python and C-extension
          # FieldDescriptor; narrow to the canonical one for the helpers below.
          field = cast('FieldDescriptor', raw_field)
@@ -1419,10 +1148,11 @@ index d8e3189..919c660 100644
              if violation:
                  errors.append(violation)
 diff --git a/src/a2a/utils/signing.py b/src/a2a/utils/signing.py
-index c6540d1..b5b36c0 100644
+index da9070c..b5b36c0 100644
 --- a/src/a2a/utils/signing.py
 +++ b/src/a2a/utils/signing.py
-@@ -1,9 +1,8 @@
+@@ -1,10 +1,8 @@
+-import binascii
 -import json
 -
  from collections.abc import Callable
@@ -1434,7 +1164,7 @@ index c6540d1..b5b36c0 100644
  
  
  try:
-@@ -11,8 +10,8 @@ try:
+@@ -12,8 +10,8 @@ try:
  
      from jwt import api_jws
      from jwt.api_jwk import PyJWK
@@ -1445,7 +1175,7 @@ index c6540d1..b5b36c0 100644
  except ImportError as e:
      raise ImportError(
          'A2A Signing requires PyJWT to be installed. '
-@@ -21,8 +20,16 @@ except ImportError as e:
+@@ -22,8 +20,16 @@ except ImportError as e:
      ) from e
  
  from a2a.types import AgentCard, AgentCardSignature
@@ -1464,7 +1194,7 @@ index c6540d1..b5b36c0 100644
  
  
  class SignatureVerificationError(Exception):
-@@ -110,6 +117,8 @@ def create_signature_verifier(
+@@ -111,6 +117,8 @@ def create_signature_verifier(
      Args:
          key_provider: A callable that accepts a key ID (kid) and a JWK Set URL (jku) and returns the verification key.
                        This function is responsible for fetching the correct key for a given signature.
@@ -1473,7 +1203,7 @@ index c6540d1..b5b36c0 100644
          algorithms: A list of acceptable algorithms (e.g., ['ES256', 'RS256']) for verification used to prevent algorithm confusion attacks.
  
      Returns:
-@@ -139,16 +148,25 @@ def create_signature_verifier(
+@@ -140,23 +148,25 @@ def create_signature_verifier(
  
          for agent_card_signature in agent_card.signatures:
              try:
@@ -1482,21 +1212,27 @@ index c6540d1..b5b36c0 100644
 -                    agent_card_signature.protected.encode('utf-8')
 -                ).decode('utf-8')
 -                protected_header = json.loads(protected_header_json)
+-            except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+-                continue
+-
+-            if not isinstance(protected_header, dict):
 +                token = f'{agent_card_signature.protected}.{encoded_payload}.{agent_card_signature.signature}'
 +                protected_header = api_jws.get_unverified_header(token)
-                 kid = protected_header.get('kid')
-                 jku = protected_header.get('jku')
--                verification_key = key_provider(kid, jku)
++                kid = protected_header.get('kid')
++                jku = protected_header.get('jku')
 +                if (kid is not None and not isinstance(kid, str)) or (
 +                    jku is not None and not isinstance(jku, str)
 +                ):
 +                    continue
 +            except (PyJWTError, UnicodeError, RecursionError):
-+                continue
+                 continue
  
+             try:
+-                kid = protected_header.get('kid')
+-                jku = protected_header.get('jku')
+                 verification_key = key_provider(kid, jku)
+-
 -                token = f'{agent_card_signature.protected}.{encoded_payload}.{agent_card_signature.signature}'
-+            try:
-+                verification_key = key_provider(kid, jku)
 +            except PyJWKError:
 +                continue
 +            # Only peer-controlled verification failures belong to this
@@ -1506,7 +1242,7 @@ index c6540d1..b5b36c0 100644
                  jwt.decode(
                      jwt=token,
                      key=verification_key,
-@@ -156,7 +174,7 @@ def create_signature_verifier(
+@@ -164,7 +174,7 @@ def create_signature_verifier(
                  )
                  # Found a valid signature, exit the loop and function
                  break
@@ -1515,7 +1251,7 @@ index c6540d1..b5b36c0 100644
                  continue
          else:
              # This block runs only if the loop completes without a break
-@@ -165,36 +183,56 @@ def create_signature_verifier(
+@@ -173,36 +183,56 @@ def create_signature_verifier(
      return signature_verifier
  
  
@@ -1600,7 +1336,7 @@ index c6540d1..b5b36c0 100644
  
  
  def _canonicalize_agent_card(agent_card: AgentCard) -> str:
-@@ -204,10 +242,10 @@ def _canonicalize_agent_card(agent_card: AgentCard) -> str:
+@@ -212,10 +242,10 @@ def _canonicalize_agent_card(agent_card: AgentCard) -> str:
      )
      card_dict = MessageToDict(
          agent_card,
@@ -1910,27 +1646,13 @@ index a964025..b3672fe 100644
  
          agent_card = await resolver.get_agent_card(
 diff --git a/tests/client/test_client_factory.py b/tests/client/test_client_factory.py
-index 8698810..4e91327 100644
+index 10380d6..4e91327 100644
 --- a/tests/client/test_client_factory.py
 +++ b/tests/client/test_client_factory.py
-@@ -9,6 +9,7 @@ import pytest
- 
- from a2a.client import ClientConfig, ClientFactory, create_client
- from a2a.client.client_factory import TransportProducer
-+from a2a.client.errors import A2AClientError
- from a2a.client.transports import (
-     JsonRpcTransport,
-     RestTransport,
-@@ -19,7 +20,71 @@ from a2a.types.a2a_pb2 import (
-     AgentCard,
-     AgentInterface,
+@@ -25,6 +25,68 @@ from a2a.utils.constants import (
  )
--from a2a.utils.constants import TransportProtocol
-+from a2a.utils.constants import (
-+    TransportProtocol,
-+)
-+
-+
+ 
+ 
 +@pytest.mark.parametrize(
 +    'binding', [TransportProtocol.JSONRPC, TransportProtocol.HTTP_JSON]
 +)
@@ -1991,10 +1713,12 @@ index 8698810..4e91327 100644
 +        assert isinstance(client._transport, RestTransport)  # type: ignore[attr-defined]
 +        assert client._transport.url == 'https://native.example'  # type: ignore[attr-defined]
 +        await client.close()
- 
- 
++
++
  @pytest.fixture
-@@ -115,7 +180,7 @@ def test_client_factory_server_preference(base_agent_card: AgentCard):
+ def base_agent_card() -> AgentCard:
+     """Provides a base AgentCard for tests."""
+@@ -118,7 +180,7 @@ def test_client_factory_server_preference(base_agent_card: AgentCard):
      assert client._transport.url == 'http://primary-url.com'  # type: ignore[attr-defined]
  
  
@@ -2003,58 +1727,6 @@ index 8698810..4e91327 100644
  def test_client_factory_prefers_1_0_ignoring_patch_version(
      base_agent_card: AgentCard, v1_version: str
  ):
-@@ -407,3 +472,51 @@ async def test_create_client_with_url_and_config(base_agent_card: AgentCard):
-         mock_resolver.assert_called_once_with(
-             mock_httpx_client, 'http://example.com'
-         )
-+
-+
-+@pytest.mark.asyncio
-+async def test_client_factory_creates_a_client_per_created_client(
-+    base_agent_card: AgentCard,
-+):
-+    """Verify each created client gets its own httpx client by default."""
-+    factory = ClientFactory()
-+
-+    client_a = factory.create(base_agent_card)
-+    client_b = factory.create(base_agent_card)
-+
-+    assert (
-+        client_a._transport.httpx_client  # type: ignore[attr-defined]
-+        is not client_b._transport.httpx_client  # type: ignore[attr-defined]
-+    )
-+
-+
-+@pytest.mark.asyncio
-+async def test_client_close_does_not_close_shared_httpx_client(
-+    base_agent_card: AgentCard,
-+):
-+    """Verify closing a client does not close a shared httpx_client from config."""
-+    shared_httpx_client = httpx.AsyncClient()
-+    try:
-+        factory = ClientFactory(ClientConfig(httpx_client=shared_httpx_client))
-+        client = factory.create(base_agent_card)
-+
-+        await client.close()
-+
-+        assert not shared_httpx_client.is_closed
-+    finally:
-+        await shared_httpx_client.aclose()
-+
-+
-+@pytest.mark.asyncio
-+async def test_client_second_close_raises_a2a_client_error(
-+    base_agent_card: AgentCard,
-+):
-+    """Verify closing an already closed client raises A2AClientError."""
-+    factory = ClientFactory()
-+    client = factory.create(base_agent_card)
-+
-+    await client.close()
-+    assert client._transport.httpx_client.is_closed  # type: ignore[attr-defined]
-+
-+    with pytest.raises(A2AClientError, match='HTTP client is already closed'):
-+        await client.close()
 diff --git a/tests/client/test_client_factory_grpc.py b/tests/client/test_client_factory_grpc.py
 index 7c3b68b..acae8c1 100644
 --- a/tests/client/test_client_factory_grpc.py
@@ -2214,62 +1886,11 @@ index 0000000..284cbfe
 +                http_client, 'https://peer.example'
 +            ).get_agent_card(signature_verifier=verifier)
 +    assert caught.value is error
-diff --git a/tests/client/test_errors.py b/tests/client/test_errors.py
-index 1ee7ab1..280f1c2 100644
---- a/tests/client/test_errors.py
-+++ b/tests/client/test_errors.py
-@@ -1,6 +1,10 @@
- import pytest
- 
--from a2a.client import A2AClientError
-+from a2a.client import (
-+    A2AClientError,
-+    A2AClientTimeoutError,
-+    AgentCardResolutionError,
-+)
- 
- 
- class TestA2AClientError:
-@@ -23,3 +27,34 @@ class TestA2AClientError:
-             raise A2AClientError('Generic client error')
- 
-         assert str(excinfo.value) == 'Generic client error'
-+
-+
-+class TestClientErrorRepr:
-+    """Test cases for the __repr__ of client exception classes."""
-+
-+    @pytest.mark.parametrize(
-+        ('error', 'expected'),
-+        [
-+            (
-+                A2AClientError('Network communication error'),
-+                "A2AClientError(message='Network communication error', data=None)",
-+            ),
-+            (
-+                A2AClientTimeoutError('Client Request timed out'),
-+                "A2AClientTimeoutError(message='Client Request timed out', data=None)",
-+            ),
-+            (
-+                AgentCardResolutionError('Failed to fetch agent card', 404),
-+                'AgentCardResolutionError(status_code=404, '
-+                "message='Failed to fetch agent card')",
-+            ),
-+            (
-+                AgentCardResolutionError('Invalid agent card JSON'),
-+                'AgentCardResolutionError(status_code=None, '
-+                "message='Invalid agent card JSON')",
-+            ),
-+        ],
-+    )
-+    def test_repr(self, error: A2AClientError, expected: str) -> None:
-+        """Test that repr exposes structured attributes as keyword arguments."""
-+        assert repr(error) == expected
 diff --git a/tests/client/transports/test_jsonrpc_client.py b/tests/client/transports/test_jsonrpc_client.py
-index 7e6680e..56b5528 100644
+index aaeb1e8..482bc51 100644
 --- a/tests/client/transports/test_jsonrpc_client.py
 +++ b/tests/client/transports/test_jsonrpc_client.py
-@@ -43,9 +43,11 @@ async def async_iterable_from_list(
+@@ -43,8 +43,9 @@ async def async_iterable_from_list(
  
  
  @pytest.fixture
@@ -2278,11 +1899,9 @@ index 7e6680e..56b5528 100644
      """Creates a mock httpx.AsyncClient."""
 +    monkeypatch.setattr('a2a.client.transports.jsonrpc.uuid4', lambda: '1')
      client = AsyncMock(spec=httpx.AsyncClient)
-+    client.is_closed = False
+     client.is_closed = False
      client.headers = httpx.Headers()
-     client.timeout = httpx.Timeout(30.0)
-     return client
-@@ -132,19 +134,23 @@ class TestSendMessage:
+@@ -133,19 +134,23 @@ class TestSendMessage:
      async def test_send_message_success(self, transport, mock_httpx_client):
          """Test successful message sending."""
          task_id = str(uuid4())
@@ -2318,7 +1937,7 @@ index 7e6680e..56b5528 100644
          mock_httpx_client.send.return_value = mock_response
  
          request = create_send_message_request()
-@@ -165,14 +171,17 @@ class TestSendMessage:
+@@ -166,14 +171,17 @@ class TestSendMessage:
          self, transport, mock_httpx_client, error_cls, error_code
      ):
          """Test handling of JSON-RPC mapped error response."""
@@ -2344,7 +1963,7 @@ index 7e6680e..56b5528 100644
          mock_httpx_client.send.return_value = mock_response
  
          request = create_send_message_request()
-@@ -210,9 +219,11 @@ class TestSendMessage:
+@@ -211,9 +219,11 @@ class TestSendMessage:
          self, transport, mock_httpx_client
      ):
          """Test handling of invalid JSON response."""
@@ -2359,7 +1978,7 @@ index 7e6680e..56b5528 100644
          mock_httpx_client.send.return_value = mock_response
  
          request = create_send_message_request()
-@@ -227,13 +238,16 @@ class TestSendMessage:
+@@ -228,13 +238,16 @@ class TestSendMessage:
          """Test that send_message passes context timeout to build_request."""
          from a2a.client.client import ClientCallContext
  
@@ -2383,7 +2002,7 @@ index 7e6680e..56b5528 100644
          mock_httpx_client.send.return_value = mock_response
  
          request = create_send_message_request()
-@@ -254,17 +268,21 @@ class TestGetTask:
+@@ -255,17 +268,21 @@ class TestGetTask:
      async def test_get_task_success(self, transport, mock_httpx_client):
          """Test successful task retrieval."""
          task_id = str(uuid4())
@@ -2415,7 +2034,7 @@ index 7e6680e..56b5528 100644
          mock_httpx_client.send.return_value = mock_response
  
          # Proto uses 'name' field for task identifier in request
-@@ -282,17 +300,21 @@ class TestGetTask:
+@@ -283,17 +300,21 @@ class TestGetTask:
      async def test_get_task_with_history(self, transport, mock_httpx_client):
          """Test task retrieval with history_length parameter."""
          task_id = str(uuid4())
@@ -2447,7 +2066,7 @@ index 7e6680e..56b5528 100644
          mock_httpx_client.send.return_value = mock_response
  
          request = GetTaskRequest(id=f'{task_id}', history_length=10)
-@@ -311,17 +333,21 @@ class TestCancelTask:
+@@ -312,17 +333,21 @@ class TestCancelTask:
      async def test_cancel_task_success(self, transport, mock_httpx_client):
          """Test successful task cancellation."""
          task_id = str(uuid4())
@@ -2479,7 +2098,7 @@ index 7e6680e..56b5528 100644
          mock_httpx_client.send.return_value = mock_response
  
          request = CancelTaskRequest(id=f'{task_id}')
-@@ -343,15 +369,19 @@ class TestTaskCallback:
+@@ -344,15 +369,19 @@ class TestTaskCallback:
      ):
          """Test successful task callback retrieval."""
          task_id = str(uuid4())
@@ -2507,7 +2126,7 @@ index 7e6680e..56b5528 100644
          mock_httpx_client.send.return_value = mock_response
  
          request = GetTaskPushNotificationConfigRequest(
-@@ -371,21 +401,25 @@ class TestTaskCallback:
+@@ -372,21 +401,25 @@ class TestTaskCallback:
      ):
          """Test successful task multiple callbacks retrieval."""
          task_id = str(uuid4())
@@ -2547,7 +2166,7 @@ index 7e6680e..56b5528 100644
          mock_httpx_client.send.return_value = mock_response
  
          request = ListTaskPushNotificationConfigsRequest(
-@@ -405,15 +439,17 @@ class TestTaskCallback:
+@@ -406,15 +439,17 @@ class TestTaskCallback:
      ):
          """Test successful task callback deletion."""
          task_id = str(uuid4())
@@ -2573,7 +2192,7 @@ index 7e6680e..56b5528 100644
          mock_httpx_client.send.return_value = mock_response
  
          request = DeleteTaskPushNotificationConfigRequest(
-@@ -522,19 +558,22 @@ class TestExtensions:
+@@ -523,19 +558,22 @@ class TestExtensions:
              url='http://test-agent.example.com',
          )
  
@@ -2608,7 +2227,7 @@ index 7e6680e..56b5528 100644
          mock_httpx_client.send.return_value = mock_response
  
          request = create_send_message_request()
-@@ -613,7 +652,7 @@ class TestExtensions:
+@@ -614,7 +652,7 @@ class TestExtensions:
  
          request = GetExtendedAgentCardRequest()
          rpc_response = {
@@ -2617,20 +2236,20 @@ index 7e6680e..56b5528 100644
              'jsonrpc': '2.0',
              'result': json_format.MessageToDict(extended_card),
          }
-@@ -758,3 +797,74 @@ class TestCreateJsonRpcError:
-         )
-         assert isinstance(exc, JSONParseError)
-         assert exc.message == 'Invalid JSON payload'
-+
-+
-+class TestUnrecognizedResponseFields:
-+    """Spec 5.7: unrecognized response fields are ignored (issue #1341)."""
-+
-+    @pytest.mark.asyncio
-+    async def test_get_task_ignores_unrecognized_fields(
-+        self, transport, mock_httpx_client
-+    ):
-+        """Unknown keys are skipped at every depth; known ones still parse."""
+@@ -769,21 +807,23 @@ class TestUnrecognizedResponseFields:
+         self, transport, mock_httpx_client
+     ):
+         """Unknown keys are skipped at every depth; known ones still parse."""
+-        mock_response = MagicMock()
+-        mock_response.json.return_value = {
+-            'jsonrpc': '2.0',
+-            'id': '1',
+-            'result': {
+-                'id': 'task-1',
+-                'contextId': 'ctx-1',
+-                'status': {
+-                    'state': 'TASK_STATE_COMPLETED',
+-                    'someNestedField': 'y',
 +        mock_response = httpx.Response(
 +            200,
 +            json={
@@ -2644,60 +2263,122 @@ index 7e6680e..56b5528 100644
 +                        'someNestedField': 'y',
 +                    },
 +                    'someNewField': 'x',
-+                },
-+            },
+                 },
+-                'someNewField': 'x',
+             },
+-        }
+-        mock_response.raise_for_status = MagicMock()
 +            request=httpx.Request('GET', 'https://peer.test'),
 +        )
-+        mock_httpx_client.send.return_value = mock_response
-+
-+        task = await transport.get_task(GetTaskRequest(id='task-1'))
-+
-+        assert task.id == 'task-1'
-+        assert task.context_id == 'ctx-1'
-+        assert task.status.state == TaskState.TASK_STATE_COMPLETED
-+
-+    @pytest.mark.asyncio
-+    @patch('a2a.client.transports.http_helpers._SSEEventSource')
-+    async def test_send_message_streaming_ignores_unrecognized_fields(
-+        self, mock_sse_source: AsyncMock, transport
-+    ):
-+        """The streamed branch is as lenient as the unary one."""
-+        payload = {
-+            'jsonrpc': '2.0',
-+            'id': '1',
-+            'result': {
-+                'message': {
-+                    'messageId': 'r1',
-+                    'role': 'ROLE_AGENT',
-+                    'parts': [{'text': 'hello'}],
-+                },
-+                'someNewField': 'x',
-+            },
-+        }
+         mock_httpx_client.send.return_value = mock_response
+ 
+         task = await transport.get_task(GetTaskRequest(id='task-1'))
+@@ -810,11 +850,11 @@ class TestUnrecognizedResponseFields:
+                 'someNewField': 'x',
+             },
+         }
+-        mock_response = AsyncMock(spec=httpx.Response)
+-        mock_response.raise_for_status = MagicMock()
+-        mock_response.headers = {'content-type': 'text/event-stream'}
+-        mock_response.aiter_lines.return_value = async_iterable_from_list(
+-            [f'data: {json.dumps(payload)}', '']
 +        mock_response = httpx.Response(
 +            200,
 +            headers={'content-type': 'text/event-stream'},
 +            text='data: ' + json.dumps(payload) + '\n\n',
 +            request=httpx.Request('GET', 'https://peer.test'),
+         )
+         mock_sse_source.return_value.__aenter__.return_value = mock_response
+ 
+@@ -866,12 +906,15 @@ class TestMalformedJsonRpcResponses:
+     async def test_invalid_envelope_raises_client_error(
+         self, transport, mock_httpx_client, body
+     ):
+-        mock_response = MagicMock()
+-        mock_response.json.return_value = body
+-        mock_response.raise_for_status = MagicMock()
+-        mock_httpx_client.send.return_value = mock_response
++        mock_httpx_client.send.return_value = httpx.Response(
++            200,
++            json=body,
++            request=httpx.Request('POST', 'https://peer.test'),
 +        )
-+        mock_sse_source.return_value.__aenter__.return_value = mock_response
-+
-+        events = [
-+            event
-+            async for event in transport.send_message_streaming(
-+                create_send_message_request()
-+            )
-+        ]
-+
-+        assert len(events) == 1
-+        assert events[0].message.message_id == 'r1'
-+        assert events[0].message.parts[0].text == 'hello'
+ 
+-        with pytest.raises(A2AClientError, match='Invalid JSON-RPC response'):
++        with pytest.raises(
++            A2AClientError, match='Invalid A2A response payload'
++        ):
+             await transport.get_task(GetTaskRequest(id='task-1'))
+ 
+     @pytest.mark.parametrize(
+@@ -885,14 +928,11 @@ class TestMalformedJsonRpcResponses:
+     async def test_nonstandard_error_object_maps_to_a2a_error(
+         self, transport, mock_httpx_client, error
+     ):
+-        mock_response = MagicMock()
+-        mock_response.json.return_value = {
+-            'jsonrpc': '2.0',
+-            'id': '1',
+-            'error': error,
+-        }
+-        mock_response.raise_for_status = MagicMock()
+-        mock_httpx_client.send.return_value = mock_response
++        mock_httpx_client.send.return_value = httpx.Response(
++            200,
++            json={'jsonrpc': '2.0', 'id': '1', 'error': error},
++            request=httpx.Request('POST', 'https://peer.test'),
++        )
+ 
+         with pytest.raises(TaskNotFoundError):
+             await transport.get_task(GetTaskRequest(id='task-1'))
+@@ -902,14 +942,15 @@ class TestMalformedJsonRpcResponses:
+         self, transport, mock_httpx_client
+     ):
+         """The delete call ignores the result but must still raise errors."""
+-        mock_response = MagicMock()
+-        mock_response.json.return_value = {
+-            'jsonrpc': '2.0',
+-            'id': '1',
+-            'error': {'code': -32001, 'message': 'Task not found'},
+-        }
+-        mock_response.raise_for_status = MagicMock()
+-        mock_httpx_client.send.return_value = mock_response
++        mock_httpx_client.send.return_value = httpx.Response(
++            200,
++            json={
++                'jsonrpc': '2.0',
++                'id': '1',
++                'error': {'code': -32001, 'message': 'Task not found'},
++            },
++            request=httpx.Request('POST', 'https://peer.test'),
++        )
+ 
+         with pytest.raises(TaskNotFoundError):
+             await transport.delete_task_push_notification_config(
+@@ -948,11 +989,12 @@ class TestMalformedJsonRpcResponses:
+     async def test_streaming_malformed_event_raises_a2a_error(
+         self, mock_sse_source: AsyncMock, transport, lines, expected_error
+     ):
+-        mock_response = AsyncMock(spec=httpx.Response)
+-        mock_response.raise_for_status = MagicMock()
+-        mock_response.headers = {'content-type': 'text/event-stream'}
+-        mock_response.aiter_lines.return_value = async_iterable_from_list(lines)
+-        mock_sse_source.return_value.__aenter__.return_value = mock_response
++        mock_sse_source.return_value.__aenter__.return_value = httpx.Response(
++            200,
++            headers={'content-type': 'text/event-stream'},
++            text='\n'.join(lines) + '\n',
++            request=httpx.Request('POST', 'https://peer.test'),
++        )
+ 
+         with pytest.raises(expected_error):
+             async for _ in transport.send_message_streaming(
 diff --git a/tests/client/transports/test_response_decoding.py b/tests/client/transports/test_response_decoding.py
 new file mode 100644
-index 0000000..340c9b6
+index 0000000..2c64bd5
 --- /dev/null
 +++ b/tests/client/transports/test_response_decoding.py
-@@ -0,0 +1,1223 @@
+@@ -0,0 +1,1258 @@
 +"""Malformed peer data is typed without catching local transport callbacks."""
 +
 +import json
@@ -3189,7 +2870,6 @@ index 0000000..340c9b6
 +        'empty-error',
 +        'both',
 +        'error-code',
-+        'error-message',
 +    ],
 +)
 +async def test_jsonrpc_envelope_matches_its_request(
@@ -3224,8 +2904,6 @@ index 0000000..340c9b6
 +                else {}
 +                if fault == 'empty-error'
 +                else {'code': True, 'message': 'Invalid boolean code'}
-+                if fault == 'error-code'
-+                else {'code': -32603}
 +            )
 +        body = json.dumps(payload)
 +        if method in STREAMING:
@@ -3393,6 +3071,47 @@ index 0000000..340c9b6
 +
 +
 +@pytest.mark.asyncio
++@pytest.mark.parametrize('method,params', OPERATIONS)
++@pytest.mark.parametrize(
++    'error',
++    [
++        pytest.param({'code': -32001}, id='no-message'),
++        pytest.param({'code': -32001, 'message': None}, id='null-message'),
++        pytest.param(
++            {'code': -32001, 'message': 'Task not found', 'reason': 'x'},
++            id='extra-member',
++        ),
++    ],
++)
++async def test_jsonrpc_nonstandard_error_object_maps_by_its_code(
++    method: str, params: Message, error: dict[str, Any]
++) -> None:
++    from a2a.utils.errors import TaskNotFoundError
++
++    def respond(request: httpx.Request) -> httpx.Response:
++        body = json.dumps(
++            {
++                'jsonrpc': '2.0',
++                'id': json.loads(request.content)['id'],
++                'error': error,
++            }
++        )
++        if method in STREAMING:
++            return httpx.Response(
++                200,
++                headers={'content-type': 'text/event-stream'},
++                text='data: ' + body + '\n\n',
++            )
++        return httpx.Response(200, text=body)
++
++    async with httpx.AsyncClient(
++        transport=httpx.MockTransport(respond)
++    ) as http:
++        with pytest.raises(TaskNotFoundError):
++            await invoke(transport_for(http, 'JSONRPC'), method, params)
++
++
++@pytest.mark.asyncio
 +@pytest.mark.parametrize('binding', ['JSONRPC', 'HTTP+JSON'])
 +@pytest.mark.parametrize('method,params', OPERATIONS)
 +async def test_unknown_protobuf_response_fields_are_ignored(
@@ -3518,7 +3237,6 @@ index 0000000..340c9b6
 +        'boolean-id',
 +        'nonobject-error',
 +        'bad-code',
-+        'bad-message',
 +        'mixed-result',
 +    ],
 +)
@@ -3542,8 +3260,6 @@ index 0000000..340c9b6
 +            payload['error'] = None
 +        elif fault == 'bad-code':
 +            payload['error']['code'] = True
-+        elif fault == 'bad-message':
-+            payload['error']['message'] = None
 +        else:
 +            payload['result'] = native_result(method)
 +        body = json.dumps(payload)
@@ -3922,22 +3638,13 @@ index 0000000..340c9b6
 +    assert seen, 'Native decoder bypassed the canonical descriptor helper'
 +    assert Task.DESCRIPTOR.fields_by_name['id'].full_name in seen
 diff --git a/tests/client/transports/test_rest_client.py b/tests/client/transports/test_rest_client.py
-index b31b1c9..facc141 100644
+index 3c0a7da..facc141 100644
 --- a/tests/client/transports/test_rest_client.py
 +++ b/tests/client/transports/test_rest_client.py
-@@ -1,3 +1,5 @@
-+import json
-+
- from collections.abc import AsyncGenerator
- from unittest.mock import AsyncMock, MagicMock, patch
- 
-@@ -33,7 +35,16 @@ from google.protobuf.timestamp_pb2 import Timestamp
- 
- @pytest.fixture
+@@ -37,6 +37,13 @@ from google.protobuf.timestamp_pb2 import Timestamp
  def mock_httpx_client() -> AsyncMock:
--    return AsyncMock(spec=httpx.AsyncClient)
-+    client = AsyncMock(spec=httpx.AsyncClient)
-+    client.is_closed = False
+     client = AsyncMock(spec=httpx.AsyncClient)
+     client.is_closed = False
 +    client.send.return_value = httpx.Response(
 +        200,
 +        json={'message': {}},
@@ -3945,11 +3652,10 @@ index b31b1c9..facc141 100644
 +            'POST', 'http://agent.example.com/api/message:send'
 +        ),
 +    )
-+    return client
+     return client
  
  
- @pytest.fixture
-@@ -120,26 +131,27 @@ class TestRestTransport:
+@@ -124,26 +131,27 @@ class TestRestTransport:
          )
          mock_httpx_client.build_request = mock_build_request
  
@@ -3995,7 +3701,7 @@ index b31b1c9..facc141 100644
  
          error = httpx.HTTPStatusError(
              'Server Error',
-@@ -176,9 +188,12 @@ class TestRestTransport:
+@@ -180,9 +188,12 @@ class TestRestTransport:
              agent_card=mock_agent_card,
              url='http://agent.example.com/api',
          )
@@ -4011,7 +3717,7 @@ index b31b1c9..facc141 100644
          error = httpx.HTTPStatusError(
              'Error',
              request=httpx.Request('GET', 'http://test.url'),
-@@ -207,10 +222,6 @@ class TestRestTransport:
+@@ -211,10 +222,6 @@ class TestRestTransport:
          )
          mock_httpx_client.build_request = mock_build_request
  
@@ -4022,7 +3728,7 @@ index b31b1c9..facc141 100644
          await client.send_message(request=params, context=context)
  
          mock_build_request.assert_called_once()
-@@ -243,8 +254,10 @@ class TestRestTransport:
+@@ -247,8 +254,10 @@ class TestRestTransport:
          mock_httpx_client.build_request.side_effect = (
              httpx.AsyncClient().build_request
          )
@@ -4035,7 +3741,7 @@ index b31b1c9..facc141 100644
          )
  
          await client.list_tasks(request=request)
-@@ -280,9 +293,6 @@ class TestRestTransportExtensions:
+@@ -284,9 +293,6 @@ class TestRestTransportExtensions:
          mock_httpx_client.build_request = mock_build_request
  
          # Mock the send method
@@ -4045,7 +3751,7 @@ index b31b1c9..facc141 100644
  
          context = ClientCallContext(
              service_parameters={
-@@ -409,10 +419,10 @@ class TestRestTransportExtensions:
+@@ -413,10 +419,10 @@ class TestRestTransportExtensions:
              url='http://agent.example.com/api',
          )
  
@@ -4060,7 +3766,7 @@ index b31b1c9..facc141 100644
          )  # Extended card same for mock
          mock_httpx_client.send.return_value = mock_response
  
-@@ -456,17 +466,20 @@ class TestTaskCallback:
+@@ -460,17 +466,20 @@ class TestTaskCallback:
              url='http://agent.example.com/api',
          )
          task_id = 'task-1'
@@ -4092,7 +3798,7 @@ index b31b1c9..facc141 100644
          mock_httpx_client.send.return_value = mock_response
  
          # Mock the build_request method to capture its inputs
-@@ -499,9 +512,10 @@ class TestTaskCallback:
+@@ -503,9 +512,10 @@ class TestTaskCallback:
              url='http://agent.example.com/api',
          )
          task_id = 'task-1'
@@ -4106,7 +3812,7 @@ index b31b1c9..facc141 100644
          mock_httpx_client.send.return_value = mock_response
  
          # Mock the build_request method to capture its inputs
-@@ -606,10 +620,12 @@ class TestRestTransportTenant:
+@@ -610,10 +620,12 @@ class TestRestTransportTenant:
          mock_httpx_client.build_request.return_value = MagicMock(
              spec=httpx.Request
          )
@@ -4123,7 +3829,7 @@ index b31b1c9..facc141 100644
          )
  
          # 3. Call the method
-@@ -638,10 +654,8 @@ class TestRestTransportTenant:
+@@ -642,10 +654,8 @@ class TestRestTransportTenant:
          mock_httpx_client.build_request.return_value = MagicMock(
              spec=httpx.Request
          )
@@ -4136,7 +3842,7 @@ index b31b1c9..facc141 100644
          )
  
          # 2. Call the method
-@@ -672,10 +686,8 @@ class TestRestTransportTenant:
+@@ -676,10 +686,8 @@ class TestRestTransportTenant:
          mock_httpx_client.build_request.return_value = MagicMock(
              spec=httpx.Request
          )
@@ -4149,129 +3855,63 @@ index b31b1c9..facc141 100644
          )
  
          # 2. Call the method
-@@ -746,3 +758,82 @@ class TestRestTransportTenant:
- 
-         # url is 3rd positional argument in aconnect_sse(client, method, url, ...)
-         assert args[2] == f'http://agent.example.com/api{expected_path}'
-+
-+
-+class TestRestUnrecognizedResponseFields:
-+    """Spec 5.7: unrecognized response fields are ignored (issue #1341)."""
-+
-+    @pytest.mark.asyncio
-+    async def test_get_task_ignores_unrecognized_fields(
-+        self, mock_httpx_client: AsyncMock, mock_agent_card: MagicMock
-+    ):
-+        """Unknown keys are skipped at every depth; known ones still parse."""
-+        client = RestTransport(
-+            httpx_client=mock_httpx_client,
-+            agent_card=mock_agent_card,
-+            url='http://agent.example.com/api',
-+        )
-+        mock_httpx_client.build_request = MagicMock(
-+            return_value=AsyncMock(spec=httpx.Request)
-+        )
+@@ -768,10 +776,9 @@ class TestRestUnrecognizedResponseFields:
+         mock_httpx_client.build_request = MagicMock(
+             return_value=AsyncMock(spec=httpx.Request)
+         )
+-        mock_response = AsyncMock(spec=httpx.Response)
+-        mock_response.raise_for_status = MagicMock()
+-        mock_response.json = MagicMock(
+-            return_value={
 +        mock_response = httpx.Response(
 +            200,
 +            json={
-+                'id': 'task-1',
-+                'contextId': 'ctx-1',
-+                'status': {
-+                    'state': 'TASK_STATE_COMPLETED',
-+                    'someNestedField': 'y',
-+                },
-+                'someNewField': 'x',
+                 'id': 'task-1',
+                 'contextId': 'ctx-1',
+                 'status': {
+@@ -779,7 +786,8 @@ class TestRestUnrecognizedResponseFields:
+                     'someNestedField': 'y',
+                 },
+                 'someNewField': 'x',
+-            }
 +            },
 +            request=httpx.Request('GET', 'https://peer.test'),
-+        )
-+        mock_httpx_client.send.return_value = mock_response
-+
-+        task = await client.get_task(GetTaskRequest(id='task-1'))
-+
-+        assert task.id == 'task-1'
-+        assert task.context_id == 'ctx-1'
-+        assert task.status.state == TaskState.TASK_STATE_COMPLETED
-+
-+    @pytest.mark.asyncio
-+    @patch('a2a.client.transports.http_helpers._SSEEventSource')
-+    async def test_send_message_streaming_ignores_unrecognized_fields(
-+        self,
-+        mock_sse_source: AsyncMock,
-+        mock_httpx_client: AsyncMock,
-+        mock_agent_card: MagicMock,
-+    ):
-+        """This branch parses with Parse, not ParseDict, so it needs its own case."""
-+        client = RestTransport(
-+            httpx_client=mock_httpx_client,
-+            agent_card=mock_agent_card,
-+            url='http://agent.example.com/api',
-+        )
-+        payload = {
-+            'message': {
-+                'messageId': 'r1',
-+                'role': 'ROLE_AGENT',
-+                'parts': [{'text': 'hello'}],
-+            },
-+            'someNewField': 'x',
-+        }
+         )
+         mock_httpx_client.send.return_value = mock_response
+ 
+@@ -811,11 +819,11 @@ class TestRestUnrecognizedResponseFields:
+             },
+             'someNewField': 'x',
+         }
+-        mock_response = AsyncMock(spec=httpx.Response)
+-        mock_response.raise_for_status = MagicMock()
+-        mock_response.headers = {'content-type': 'text/event-stream'}
+-        mock_response.aiter_lines.return_value = async_iterable_from_list(
+-            [f'data: {json.dumps(payload)}', '']
 +        mock_response = httpx.Response(
 +            200,
 +            headers={'content-type': 'text/event-stream'},
 +            text='data: ' + json.dumps(payload) + '\n\n',
 +            request=httpx.Request('GET', 'https://peer.test'),
-+        )
-+        mock_sse_source.return_value.__aenter__.return_value = mock_response
-+
-+        events = [
-+            event
-+            async for event in client.send_message_streaming(
-+                SendMessageRequest(message=new_text_message(text='Hello'))
-+            )
-+        ]
-+
-+        assert len(events) == 1
-+        assert events[0].message.message_id == 'r1'
-+        assert events[0].message.parts[0].text == 'hello'
-diff --git a/tests/compat/v0_3/test_jsonrpc_transport.py b/tests/compat/v0_3/test_jsonrpc_transport.py
-index 70291f0..13d9116 100644
---- a/tests/compat/v0_3/test_jsonrpc_transport.py
-+++ b/tests/compat/v0_3/test_jsonrpc_transport.py
-@@ -31,7 +31,9 @@ from a2a.utils.errors import InvalidParamsError
- 
- @pytest.fixture
- def mock_httpx_client():
--    return AsyncMock(spec=httpx.AsyncClient)
-+    client = AsyncMock(spec=httpx.AsyncClient)
-+    client.is_closed = False
-+    return client
- 
- 
- @pytest.fixture
-diff --git a/tests/compat/v0_3/test_proto_utils.py b/tests/compat/v0_3/test_proto_utils.py
-index 78ce2d6..9a037f7 100644
---- a/tests/compat/v0_3/test_proto_utils.py
-+++ b/tests/compat/v0_3/test_proto_utils.py
-@@ -282,6 +282,18 @@ class TestProtoUtils:
          )
-         assert params.configuration is None
+         mock_sse_source.return_value.__aenter__.return_value = mock_response
  
-+    def test_task_status_without_message(self):
-+        """An unset status message stays None instead of an empty message."""
-+        status = proto_utils.FromProto.task_status(
-+            a2a_pb2.TaskStatus(state=a2a_pb2.TASK_STATE_WORKING)
-+        )
-+        assert status.message is None
-+
-+    def test_agent_card_without_provider(self):
-+        """An unset provider stays None instead of an empty provider."""
-+        card = proto_utils.FromProto.agent_card(a2a_pb2.AgentCard(name='a'))
-+        assert card.provider is None
-+
-     def test_none_handling(self):
-         """Test that None inputs are handled gracefully."""
-         assert proto_utils.ToProto.message(None) is None
+diff --git a/tests/compat/v0_3/test_rest_routes_compat.py b/tests/compat/v0_3/test_rest_routes_compat.py
+index d7edda4..656ad05 100644
+--- a/tests/compat/v0_3/test_rest_routes_compat.py
++++ b/tests/compat/v0_3/test_rest_routes_compat.py
+@@ -313,7 +313,8 @@ async def test_v03_message_stream_malformed_json_returns_400(
+     )
+ 
+     assert response.status_code == 400
+-    assert response.headers['content-type'].startswith('application/json')
++    # The retained v0.3 routes share the native protocol-error renderer.
++    assert response.headers['content-type'].startswith('application/a2a+json')
+     assert response.json()['error']['status'] == 'INVALID_ARGUMENT'
+     request_handler.on_message_send_stream.assert_not_called()
+ 
 diff --git a/tests/compat/v0_3/test_rest_transport.py b/tests/compat/v0_3/test_rest_transport.py
-index 0952aaa..3ef0fee 100644
+index e627b44..3ef0fee 100644
 --- a/tests/compat/v0_3/test_rest_transport.py
 +++ b/tests/compat/v0_3/test_rest_transport.py
 @@ -1,5 +1,3 @@
@@ -4280,25 +3920,7 @@ index 0952aaa..3ef0fee 100644
  from unittest.mock import AsyncMock, MagicMock, patch
  
  import httpx
-@@ -25,13 +23,16 @@ from a2a.types.a2a_pb2 import (
-     SubscribeToTaskRequest,
-     Task,
-     TaskPushNotificationConfig,
-+    TaskStatus,
- )
- from a2a.utils.errors import InvalidParamsError, MethodNotFoundError
- 
- 
- @pytest.fixture
- def mock_httpx_client():
--    return AsyncMock(spec=httpx.AsyncClient)
-+    client = AsyncMock(spec=httpx.AsyncClient)
-+    client.is_closed = False
-+    return client
- 
- 
- @pytest.fixture
-@@ -52,10 +53,12 @@ def transport(mock_httpx_client, agent_card):
+@@ -55,10 +53,12 @@ def transport(mock_httpx_client, agent_card):
  async def test_compat_rest_transport_send_message_response_msg_parsing(
      transport,
  ):
@@ -4315,7 +3937,7 @@ index 0952aaa..3ef0fee 100644
  
      async def mock_send_request(*args, **kwargs):
          return mock_response.json()
-@@ -76,8 +79,12 @@ async def test_compat_rest_transport_send_message_response_msg_parsing(
+@@ -79,8 +79,12 @@ async def test_compat_rest_transport_send_message_response_msg_parsing(
  
  @pytest.mark.asyncio
  async def test_compat_rest_transport_send_message_task(transport):
@@ -4330,36 +3952,7 @@ index 0952aaa..3ef0fee 100644
  
      async def mock_send_request(*args, **kwargs):
          return mock_response.json()
-@@ -93,8 +100,6 @@ async def test_compat_rest_transport_send_message_task(transport):
-     expected_response = SendMessageResponse(
-         task=Task(id='task-123', status=Task(id='task-123').status)
-     )
--    # The default conversion from 0.3 task generates a TaskStatus with a default empty message with role=ROLE_AGENT
--    expected_response.task.status.message.role = Role.ROLE_AGENT
-     assert response == expected_response
- 
- 
-@@ -108,8 +113,7 @@ async def test_compat_rest_transport_get_task(transport):
-     req = GetTaskRequest(id='task-123')
-     response = await transport.get_task(req)
- 
--    expected_response = Task(id='task-123')
--    expected_response.status.message.role = Role.ROLE_AGENT
-+    expected_response = Task(id='task-123', status=TaskStatus())
-     assert response == expected_response
- 
- 
-@@ -123,8 +127,7 @@ async def test_compat_rest_transport_cancel_task(transport):
-     req = CancelTaskRequest(id='task-123')
-     response = await transport.cancel_task(req)
- 
--    expected_response = Task(id='task-123')
--    expected_response.status.message.role = Role.ROLE_AGENT
-+    expected_response = Task(id='task-123', status=TaskStatus())
-     assert response == expected_response
- 
- 
-@@ -234,12 +237,15 @@ async def test_compat_rest_transport_send_message_streaming(transport):
+@@ -233,12 +237,15 @@ async def test_compat_rest_transport_send_message_streaming(transport):
  
  
  def create_405_error():
@@ -4381,7 +3974,7 @@ index 0952aaa..3ef0fee 100644
      mock_request = MagicMock(spec=httpx.Request)
      mock_request.url = 'http://example.com/v1/tasks/task-123:subscribe'
  
-@@ -250,12 +256,15 @@ def create_405_error():
+@@ -249,12 +256,15 @@ def create_405_error():
  
  
  def create_500_error():
@@ -4403,7 +3996,7 @@ index 0952aaa..3ef0fee 100644
      mock_request = MagicMock(spec=httpx.Request)
  
      status_error = httpx.HTTPStatusError(
-@@ -449,12 +458,15 @@ async def test_compat_rest_transport_subscribe_method_override_avoids_retry_post
+@@ -448,12 +458,15 @@ async def test_compat_rest_transport_subscribe_method_override_avoids_retry_post
  
  
  def test_compat_rest_transport_handle_http_error(transport):
@@ -4425,7 +4018,7 @@ index 0952aaa..3ef0fee 100644
  
      mock_request = MagicMock(spec=httpx.Request)
      mock_request.url = 'http://example.com'
-@@ -470,9 +482,12 @@ def test_compat_rest_transport_handle_http_error(transport):
+@@ -469,9 +482,12 @@ def test_compat_rest_transport_handle_http_error(transport):
  
  
  def test_compat_rest_transport_handle_http_error_not_found(transport):
@@ -4441,7 +4034,7 @@ index 0952aaa..3ef0fee 100644
  
      mock_request = MagicMock(spec=httpx.Request)
      mock_request.url = 'http://example.com'
-@@ -486,9 +501,12 @@ def test_compat_rest_transport_handle_http_error_not_found(transport):
+@@ -485,9 +501,12 @@ def test_compat_rest_transport_handle_http_error_not_found(transport):
  
  
  def test_compat_rest_transport_handle_http_error_generic(transport):
@@ -4457,24 +4050,7 @@ index 0952aaa..3ef0fee 100644
  
      mock_request = MagicMock(spec=httpx.Request)
      mock_request.url = 'http://example.com'
-@@ -552,8 +570,7 @@ async def test_compat_rest_transport_get_task_no_history(transport):
- 
-     req = GetTaskRequest(id='task-123')
-     response = await transport.get_task(req)
--    expected_response = Task(id='task-123')
--    expected_response.status.message.role = Role.ROLE_AGENT
-+    expected_response = Task(id='task-123', status=TaskStatus())
-     assert response == expected_response
- 
- 
-@@ -567,18 +584,20 @@ async def test_compat_rest_transport_get_task_with_history(transport):
- 
-     req = GetTaskRequest(id='task-123', history_length=10)
-     response = await transport.get_task(req)
--    expected_response = Task(id='task-123')
--    expected_response.status.message.role = Role.ROLE_AGENT
-+    expected_response = Task(id='task-123', status=TaskStatus())
-     assert response == expected_response
+@@ -570,12 +589,15 @@ async def test_compat_rest_transport_get_task_with_history(transport):
  
  
  def test_compat_rest_transport_handle_http_error_invalid_error_type(transport):
@@ -4496,7 +4072,7 @@ index 0952aaa..3ef0fee 100644
  
      mock_request = MagicMock(spec=httpx.Request)
      mock_request.url = 'http://example.com'
-@@ -602,9 +621,12 @@ def test_compat_rest_transport_handle_http_error_invalid_error_type(transport):
+@@ -599,9 +621,12 @@ def test_compat_rest_transport_handle_http_error_invalid_error_type(transport):
  def test_compat_rest_transport_handle_http_error_non_object_body(
      transport, status_code, body, expected_error
  ):
@@ -4512,7 +4088,7 @@ index 0952aaa..3ef0fee 100644
  
      mock_request = MagicMock(spec=httpx.Request)
      mock_request.url = 'http://example.com'
-@@ -618,12 +640,15 @@ def test_compat_rest_transport_handle_http_error_non_object_body(
+@@ -615,12 +640,15 @@ def test_compat_rest_transport_handle_http_error_non_object_body(
  
  
  def test_compat_rest_transport_handle_http_error_unknown_error_type(transport):
@@ -4534,33 +4110,11 @@ index 0952aaa..3ef0fee 100644
  
      mock_request = MagicMock(spec=httpx.Request)
      mock_request.url = 'http://example.com'
-@@ -651,8 +676,7 @@ async def test_compat_rest_transport_send_stream_request(
-     ]
- 
-     assert len(events) == 1
--    expected_task = Task(id='task-123')
--    expected_task.status.message.role = Role.ROLE_AGENT
-+    expected_task = Task(id='task-123', status=TaskStatus())
-     assert events[0] == StreamResponse(task=expected_task)
- 
-     mock_send_http_stream_request.assert_called_once_with(
 diff --git a/tests/integration/cross_version/client_server/test_client_server.py b/tests/integration/cross_version/client_server/test_client_server.py
-index 2b03576..5ae45c1 100644
+index d46582e..5ae45c1 100644
 --- a/tests/integration/cross_version/client_server/test_client_server.py
 +++ b/tests/integration/cross_version/client_server/test_client_server.py
-@@ -8,6 +8,11 @@ import time
- import pytest
- 
- 
-+# Use --isolated to not to pull project .venv.
-+LEGACY_ENV_FLAGS = ['--no-project', '--isolated']
-+CLIENT_03_DEPS = ['--with', 'a2a-sdk[grpc]==0.3.24', *LEGACY_ENV_FLAGS]
-+
-+
- def get_free_port():
-     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-         s.bind(('127.0.0.1', 0))
-@@ -85,6 +90,7 @@ def finalize_process(
+@@ -90,6 +90,7 @@ def finalize_process(
      print('-' * 80)
      if failure:
          pytest.fail(f'Process {name} failed.')
@@ -4568,33 +4122,7 @@ index 2b03576..5ae45c1 100644
  
  
  @pytest.fixture(scope='session')
-@@ -128,7 +134,7 @@ def running_servers():
-         'uvicorn',
-         '--with',
-         'fastapi',
--        '--no-project',
-+        *LEGACY_ENV_FLAGS,
-     ]
-     s03_cmd = (
-         [uv_path, 'run']
-@@ -192,14 +198,14 @@ def running_servers():
-         (
-             'server_0_3.py',
-             'client_0_3.py',
--            ['--with', 'a2a-sdk[grpc]==0.3.24', '--no-project'],
-+            CLIENT_03_DEPS,
-             ['grpc', 'jsonrpc', 'rest'],
-         ),
-         # Run 1.0 Server <-> 0.3 Client
-         (
-             'server_1_0.py',
-             'client_0_3.py',
--            ['--with', 'a2a-sdk[grpc]==0.3.24', '--no-project'],
-+            CLIENT_03_DEPS,
-             ['grpc', 'jsonrpc', 'rest'],
-         ),
-         # Run 1.0 Server <-> 1.0 Client
-@@ -246,4 +252,14 @@ def test_cross_version(
+@@ -251,4 +252,14 @@ def test_cross_version(
          text=True,
          start_new_session=True,
      )
@@ -4610,18 +4138,6 @@ index 2b03576..5ae45c1 100644
 +            protocols
 +        )
 +        assert 'no compatible transports found' in stderr_text
-diff --git a/tests/integration/cross_version/test_cross_version_card_validation.py b/tests/integration/cross_version/test_cross_version_card_validation.py
-index 5b9f65b..a727076 100644
---- a/tests/integration/cross_version/test_cross_version_card_validation.py
-+++ b/tests/integration/cross_version/test_cross_version_card_validation.py
-@@ -158,6 +158,7 @@ def test_cross_version_agent_card_deserialization() -> None:
-             '--with',
-             'a2a-sdk==0.3.24',
-             '--no-project',
-+            '--isolated',
-             'python',
-             'tests/integration/cross_version/validate_agent_cards_030.py',
-         ],
 diff --git a/tests/integration/test_client_server_integration.py b/tests/integration/test_client_server_integration.py
 index ea093aa..aa3740a 100644
 --- a/tests/integration/test_client_server_integration.py
@@ -4649,7 +4165,7 @@ index ea093aa..aa3740a 100644
          service_params = ServiceParametersFactory.create(
              [with_a2a_extensions(extensions)]
 diff --git a/tests/integration/test_tenant.py b/tests/integration/test_tenant.py
-index a617d26..1c6fc12 100644
+index 64038f1..1c6fc12 100644
 --- a/tests/integration/test_tenant.py
 +++ b/tests/integration/test_tenant.py
 @@ -1,3 +1,5 @@
@@ -4658,11 +4174,9 @@ index a617d26..1c6fc12 100644
  from unittest.mock import AsyncMock, MagicMock, patch
  
  import httpx
-@@ -50,9 +52,14 @@ class TestTenantDecorator:
-     @pytest.mark.asyncio
-     async def test_tenant_decorator_rest(self, agent_card):
+@@ -52,8 +54,12 @@ class TestTenantDecorator:
          mock_httpx = AsyncMock(spec=httpx.AsyncClient)
-+        mock_httpx.is_closed = False
+         mock_httpx.is_closed = False
          mock_httpx.build_request.return_value = MagicMock()
 -        mock_httpx.send.return_value = MagicMock(
 -            status_code=200, json=lambda: {'message': {}}
@@ -4675,11 +4189,12 @@ index a617d26..1c6fc12 100644
          )
  
          config = ClientConfig(
-@@ -85,33 +92,36 @@ class TestTenantDecorator:
+@@ -86,34 +92,36 @@ class TestTenantDecorator:
  
      @pytest.mark.asyncio
      async def test_tenant_decorator_jsonrpc(self, agent_card):
 -        mock_httpx = AsyncMock(spec=httpx.AsyncClient)
+-        mock_httpx.is_closed = False
 -        mock_httpx.build_request.return_value = MagicMock()
 -        mock_httpx.send.return_value = MagicMock(
 -            status_code=200,
@@ -4737,11 +4252,9 @@ index a617d26..1c6fc12 100644
  
      @pytest.mark.asyncio
      async def test_tenant_decorator_grpc(self, agent_card):
-@@ -141,9 +151,14 @@ class TestTenantDecorator:
-     @pytest.mark.asyncio
-     async def test_tenant_decorator_explicit_override(self, agent_card):
+@@ -145,8 +153,12 @@ class TestTenantDecorator:
          mock_httpx = AsyncMock(spec=httpx.AsyncClient)
-+        mock_httpx.is_closed = False
+         mock_httpx.is_closed = False
          mock_httpx.build_request.return_value = MagicMock()
 -        mock_httpx.send.return_value = MagicMock(
 -            status_code=200, json=lambda: {'message': {}}
@@ -4842,10 +4355,10 @@ index f3cb03e..59c255b 100644
 +    )
 diff --git a/tests/server/routes/test_http_authorization_errors.py b/tests/server/routes/test_http_authorization_errors.py
 new file mode 100644
-index 0000000..f15b737
+index 0000000..d4e2453
 --- /dev/null
 +++ b/tests/server/routes/test_http_authorization_errors.py
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,230 @@
 +"""HTTP authorization errors remain HTTP errors on both native bindings."""
 +
 +from collections.abc import AsyncGenerator
@@ -4854,12 +4367,12 @@ index 0000000..f15b737
 +import httpx
 +import pytest
 +
-+from a2a.utils.errors import TaskNotFoundError
 +from a2a.server.context import ServerCallContext
 +from a2a.server.events.event_queue import Event
 +from a2a.server.request_handlers import RequestHandler
 +from a2a.server.routes.jsonrpc_routes import create_jsonrpc_routes
 +from a2a.server.routes.rest_routes import create_rest_routes
++from a2a.utils.errors import TaskNotFoundError
 +from google.protobuf.message import Message as ProtoMessage
 +from starlette.applications import Starlette
 +from starlette.exceptions import HTTPException
@@ -5015,28 +4528,50 @@ index 0000000..f15b737
 +@pytest.mark.parametrize('binding', ['JSONRPC', 'HTTP+JSON'])
 +@pytest.mark.parametrize('method,path,operation,params', OPERATIONS)
 +async def test_native_protocol_errors_use_their_binding_media_type(
-+    tenant: str, binding: str, method: str, path: str,
-+    operation: str, params: dict,
++    tenant: str,
++    binding: str,
++    method: str,
++    path: str,
++    operation: str,
++    params: dict,
 +) -> None:
 +    handler = ProtocolRejectingHandler(404)
-+    app = Starlette(routes=[*create_jsonrpc_routes(handler, rpc_url='/rpc'),
-+                            *create_rest_routes(handler)])
++    app = Starlette(
++        routes=[
++            *create_jsonrpc_routes(handler, rpc_url='/rpc'),
++            *create_rest_routes(handler),
++        ]
++    )
 +    body = dict(params)
 +    if operation in {'SendMessage', 'SendStreamingMessage'}:
-+        body['message'] = {'messageId': 'request', 'role': 'ROLE_USER',
-+                           'parts': [{'text': 'request'}]}
++        body['message'] = {
++            'messageId': 'request',
++            'role': 'ROLE_USER',
++            'parts': [{'text': 'request'}],
++        }
 +    if tenant:
 +        body['tenant'] = tenant
-+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
-+                                 base_url='http://protocol.test',
-+                                 headers={'A2A-Version': '1.0'}) as client:
++    async with httpx.AsyncClient(
++        transport=httpx.ASGITransport(app),
++        base_url='http://protocol.test',
++        headers={'A2A-Version': '1.0'},
++    ) as client:
 +        if binding == 'JSONRPC':
-+            response = await client.post('/rpc', json={
-+                'jsonrpc': '2.0', 'id': 'request', 'method': operation, 'params': body,
-+            })
++            response = await client.post(
++                '/rpc',
++                json={
++                    'jsonrpc': '2.0',
++                    'id': 'request',
++                    'method': operation,
++                    'params': body,
++                },
++            )
 +        else:
-+            response = await client.request(method, (f'/{tenant}' if tenant else '') + path,
-+                                            json=body if method == 'POST' else None)
++            response = await client.request(
++                method,
++                (f'/{tenant}' if tenant else '') + path,
++                json=body if method == 'POST' else None,
++            )
 +    if binding == 'JSONRPC':
 +        assert response.status_code == 200
 +        assert response.headers['content-type'] == 'application/json'
@@ -5047,7 +4582,10 @@ index 0000000..f15b737
 +        assert response.headers['content-type'] == 'application/a2a+json'
 +        error = response.json()['error']
 +        assert error['code'] == 404 and error['status'] == 'NOT_FOUND'
-+        assert error['details'][0]['@type'] == 'type.googleapis.com/google.rpc.ErrorInfo'
++        assert (
++            error['details'][0]['@type']
++            == 'type.googleapis.com/google.rpc.ErrorInfo'
++        )
 +        assert error['details'][0]['reason'] == 'TASK_NOT_FOUND'
 +        assert error['details'][0]['domain'] == 'a2a-protocol.org'
 +    assert 'www-authenticate' not in response.headers
@@ -5345,10 +4883,10 @@ index 0000000..c9b984b
 +    )
 +    assert executor.executions == store.reads == 0
 diff --git a/tests/server/routes/test_rest_dispatcher.py b/tests/server/routes/test_rest_dispatcher.py
-index e0d72c4..0fb1829 100644
+index 4865b0c..17e980b 100644
 --- a/tests/server/routes/test_rest_dispatcher.py
 +++ b/tests/server/routes/test_rest_dispatcher.py
-@@ -86,7 +86,7 @@ def make_mock_request(
+@@ -90,7 +90,7 @@ def make_mock_request(
      mock_req = MagicMock(spec=Request)
      mock_req.method = method
      mock_req.path_params = path_params or {}
@@ -5357,56 +4895,6 @@ index e0d72c4..0fb1829 100644
  
      # Default valid headers for A2A
      default_headers = {'a2a-version': '1.0'}
-diff --git a/tests/utils/test_a2a_errors.py b/tests/utils/test_a2a_errors.py
-new file mode 100644
-index 0000000..ea7133a
---- /dev/null
-+++ b/tests/utils/test_a2a_errors.py
-@@ -0,0 +1,44 @@
-+import pytest
-+
-+from a2a.utils.errors import (
-+    A2AError,
-+    InvalidParamsError,
-+    TaskNotFoundError,
-+    VersionNotSupportedError,
-+)
-+
-+
-+class TestA2AErrorRepr:
-+    """Test cases for the __repr__ of A2AError and its subclasses."""
-+
-+    @pytest.mark.parametrize(
-+        ('error', 'expected'),
-+        [
-+            (A2AError(), "A2AError(message='A2A Error', data=None)"),
-+            (
-+                TaskNotFoundError(),
-+                "TaskNotFoundError(message='Task not found', data=None)",
-+            ),
-+            (
-+                TaskNotFoundError('Task abc not found'),
-+                "TaskNotFoundError(message='Task abc not found', data=None)",
-+            ),
-+            (
-+                InvalidParamsError('Invalid field', data={'field': 'id'}),
-+                "InvalidParamsError(message='Invalid field', data={'field': 'id'})",
-+            ),
-+            (
-+                VersionNotSupportedError(data={'supported': ['1.0']}),
-+                "VersionNotSupportedError(message='Version not supported', "
-+                "data={'supported': ['1.0']})",
-+            ),
-+        ],
-+    )
-+    def test_repr(self, error: A2AError, expected: str) -> None:
-+        """Test that repr exposes message and data as keyword arguments."""
-+        assert repr(error) == expected
-+
-+    def test_str_unchanged(self) -> None:
-+        """Test that __str__ still returns only the message."""
-+        error = InvalidParamsError('Invalid field', data={'field': 'id'})
-+        assert str(error) == 'Invalid field'
 diff --git a/tests/utils/test_error_handlers.py b/tests/utils/test_error_handlers.py
 index 3c30b09..614207a 100644
 --- a/tests/utils/test_error_handlers.py
@@ -5518,80 +5006,36 @@ index 78992c3..1ccba64 100644
  def test_protected_header_is_unchanged_by_the_detached_payload_encoding():
      """Signing the canonical bytes must not disturb the protected header.
  
-diff --git a/tests/utils/test_proto_utils.py b/tests/utils/test_proto_utils.py
-index 594ed97..031aa2e 100644
---- a/tests/utils/test_proto_utils.py
-+++ b/tests/utils/test_proto_utils.py
-@@ -26,7 +26,7 @@ from a2a.types.a2a_pb2 import (
- from a2a.utils import proto_utils
- from a2a.utils.errors import InvalidParamsError
- from google.protobuf.descriptor import FieldDescriptor
--from google.protobuf.json_format import MessageToDict, Parse
-+from google.protobuf.json_format import MessageToDict, Parse, ParseError
- from google.protobuf.message import Message as ProtobufMessage
- from google.protobuf.timestamp_pb2 import Timestamp
- from starlette.datastructures import QueryParams
-@@ -398,3 +398,38 @@ class TestWarnOnMissingRequiredFields:
-         with caplog.at_level(logging.WARNING, logger=proto_utils.__name__):
-             assert not proto_utils.warn_on_missing_required_fields(msg, 'test:')
-         assert 'REQUIRED fields missing or empty: parts.' in caplog.text
-+
-+
-+class TestParseLenient:
-+    """Spec 5.7: unrecognized fields are ignored (issue #1341)."""
-+
-+    def test_parses_dict_and_ignores_unrecognized_fields(self) -> None:
-+        """Unknown keys are skipped at every depth; known ones still parse."""
-+        task = proto_utils.parse_lenient(
-+            {
-+                'id': 'task-1',
-+                'status': {
-+                    'state': 'TASK_STATE_COMPLETED',
-+                    'someNestedField': 'y',
-+                },
-+                'someNewField': 'x',
-+            },
-+            Task(),
-+        )
-+
-+        assert task.id == 'task-1'
-+        assert task.status.state == TaskState.TASK_STATE_COMPLETED
-+
-+    def test_parses_text_and_ignores_unrecognized_fields(self) -> None:
-+        """Raw ProtoJSON takes the Parse path rather than ParseDict."""
-+        event = proto_utils.parse_lenient(
-+            '{"message": {"messageId": "r1"}, "someNewField": "x"}',
-+            StreamResponse(),
-+        )
-+
-+        assert event.message.message_id == 'r1'
-+
-+    def test_malformed_known_field_still_raises(self) -> None:
-+        """Leniency covers unknown names, not a known field of the wrong type."""
-+        with pytest.raises(ParseError):
-+            proto_utils.parse_lenient({'messageId': 5}, Message())
 diff --git a/tests/utils/test_rest_error_response.py b/tests/utils/test_rest_error_response.py
 new file mode 100644
-index 0000000..5891696
+index 0000000..b656255
 --- /dev/null
 +++ b/tests/utils/test_rest_error_response.py
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,49 @@
 +"""Actual native REST error responses preserve their media, status and body."""
 +
 +import json
 +
 +import pytest
-+from starlette.responses import JSONResponse
 +
 +from a2a.utils.error_handlers import rest_error_handler
 +from a2a.utils.errors import InvalidRequestError
++from starlette.responses import JSONResponse
 +
 +
 +@pytest.mark.asyncio
-+@pytest.mark.parametrize('error,code,status,reason', [
-+    (InvalidRequestError(message='Bad request'), 400, 'INVALID_ARGUMENT', 'INVALID_REQUEST'),
-+    (ValueError('Unexpected error'), 500, 'INTERNAL', None),
-+])
++@pytest.mark.parametrize(
++    'error,code,status,reason',
++    [
++        (
++            InvalidRequestError(message='Bad request'),
++            400,
++            'INVALID_ARGUMENT',
++            'INVALID_REQUEST',
++        ),
++        (ValueError('Unexpected error'), 500, 'INTERNAL', None),
++    ],
++)
 +async def test_real_rest_error_response(error, code, status, reason):
 +    @rest_error_handler
 +    async def reject():
@@ -5607,15 +5051,21 @@ index 0000000..5891696
 +        assert payload['message'] == 'Bad request'
 +        assert payload['details'][0] == {
 +            '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
-+            'reason': reason, 'domain': 'a2a-protocol.org', 'metadata': {},
++            'reason': reason,
++            'domain': 'a2a-protocol.org',
++            'metadata': {},
 +        }
 +    else:
-+        assert payload == {'code': 500, 'status': 'INTERNAL', 'message': 'unknown exception'}
++        assert payload == {
++            'code': 500,
++            'status': 'INTERNAL',
++            'message': 'unknown exception',
++        }
 diff --git a/tests/utils/test_signing.py b/tests/utils/test_signing.py
-index f22c605..418df34 100644
+index 2418208..1ee7cbb 100644
 --- a/tests/utils/test_signing.py
 +++ b/tests/utils/test_signing.py
-@@ -187,15 +187,16 @@ def test_canonicalize_agent_card(sample_agent_card: AgentCard):
+@@ -223,15 +223,16 @@ def test_canonicalize_agent_card(sample_agent_card: AgentCard):
      """Test canonicalize_agent_card with defaults, optionals, and exceptions.
  
      - extensions is omitted as it's not set and optional.
@@ -5635,7 +5085,7 @@ index f22c605..418df34 100644
          '"version":"1.0.0"}'
      )
      result = signing._canonicalize_agent_card(sample_agent_card)
-@@ -211,86 +212,6 @@ def test_canonicalize_agent_card_preserves_false_capability(
+@@ -247,86 +248,6 @@ def test_canonicalize_agent_card_preserves_false_capability(
      assert '"streaming":false' in result
  
  
@@ -5926,10 +5376,10 @@ index 6e6ec97..b71b088 100644
 +    signing.create_signature_verifier(provider, ['ES256'])(card)
 diff --git a/tests/utils/test_signing_presence.py b/tests/utils/test_signing_presence.py
 new file mode 100644
-index 0000000..dd40122
+index 0000000..5ad2943
 --- /dev/null
 +++ b/tests/utils/test_signing_presence.py
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,235 @@
 +"""Agent Card field-presence rules from A2A 1.0 section 8.4.1.
 +
 +Expected objects are explicit protocol vectors, independent of Protobuf's
@@ -6028,6 +5478,10 @@ index 0000000..dd40122
 +            }
 +        }
 +        card['securityRequirements'] = [{'schemes': {'oauth': {}}}]
++    elif case == 'empty-security-requirement':
++        # An element is not a field: {} stays as the no-scheme alternative.
++        card['securityRequirements'] = [{}]
++        card['skills'][0]['securityRequirements'] = [{}]
 +    elif case == 'required-empty-arrays':
 +        card['defaultInputModes'] = []
 +        card['defaultOutputModes'] = []
@@ -6074,6 +5528,7 @@ index 0000000..dd40122
 +        'json-empties',
 +        'explicit-empty-params',
 +        'map-values-and-required-defaults',
++        'empty-security-requirement',
 +        'required-empty-arrays',
 +        'implicit-optional-defaults',
 +        'implicit-extension-defaults',
@@ -6125,6 +5580,39 @@ index 0000000..dd40122
 +    verifier(card)
 +    setattr(card, field, '')
 +    assert card.HasField(field)
++    with pytest.raises(signing.InvalidSignaturesError):
++        verifier(card)
++
++
++@pytest.mark.parametrize('location', ['card', 'skill'])
++@pytest.mark.parametrize('change', ['append-empty', 'remove'])
++def test_security_requirements_are_signed(location: str, change: str) -> None:
++    key = b'presence-vector-test-key-with-at-least-32-bytes'
++    served = _card_object()
++    served['securitySchemes'] = {
++        'bearer': {'httpAuthSecurityScheme': {'scheme': 'bearer'}}
++    }
++    # A scheme without scopes is the usual requirement for bearer tokens.
++    target = served if location == 'card' else served['skills'][0]
++    target['securityRequirements'] = [{'schemes': {'bearer': {}}}]
++    card = ParseDict(served, AgentCard())
++    signing.create_agent_card_signer(key, {'alg': 'HS256', 'kid': 'presence'})(
++        card
++    )
++    verifier = signing.create_signature_verifier(
++        lambda kid, jku: key, ['HS256']
++    )
++    verifier(card)
++    requirements = (
++        card.security_requirements
++        if location == 'card'
++        else card.skills[0].security_requirements
++    )
++    if change == 'append-empty':
++        # {} would make the scheme optional by adding anonymous access.
++        requirements.add()
++    else:
++        del requirements[:]
 +    with pytest.raises(signing.InvalidSignaturesError):
 +        verifier(card)
 diff --git a/tests/utils/test_version_validation.py b/tests/utils/test_version_validation.py

@@ -490,7 +490,6 @@ def native_result(method: str) -> dict[str, Any]:
         'empty-error',
         'both',
         'error-code',
-        'error-message',
     ],
 )
 async def test_jsonrpc_envelope_matches_its_request(
@@ -525,8 +524,6 @@ async def test_jsonrpc_envelope_matches_its_request(
                 else {}
                 if fault == 'empty-error'
                 else {'code': True, 'message': 'Invalid boolean code'}
-                if fault == 'error-code'
-                else {'code': -32603}
             )
         body = json.dumps(payload)
         if method in STREAMING:
@@ -694,6 +691,47 @@ async def test_jsonrpc_integral_number_error_code_maps_to_its_standard_error() -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('method,params', OPERATIONS)
+@pytest.mark.parametrize(
+    'error',
+    [
+        pytest.param({'code': -32001}, id='no-message'),
+        pytest.param({'code': -32001, 'message': None}, id='null-message'),
+        pytest.param(
+            {'code': -32001, 'message': 'Task not found', 'reason': 'x'},
+            id='extra-member',
+        ),
+    ],
+)
+async def test_jsonrpc_nonstandard_error_object_maps_by_its_code(
+    method: str, params: Message, error: dict[str, Any]
+) -> None:
+    from kestrel_sdk.native_a2a.utils.errors import TaskNotFoundError
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = json.dumps(
+            {
+                'jsonrpc': '2.0',
+                'id': json.loads(request.content)['id'],
+                'error': error,
+            }
+        )
+        if method in STREAMING:
+            return httpx.Response(
+                200,
+                headers={'content-type': 'text/event-stream'},
+                text='data: ' + body + '\n\n',
+            )
+        return httpx.Response(200, text=body)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(respond)
+    ) as http:
+        with pytest.raises(TaskNotFoundError):
+            await invoke(transport_for(http, 'JSONRPC'), method, params)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('binding', ['JSONRPC', 'HTTP+JSON'])
 @pytest.mark.parametrize('method,params', OPERATIONS)
 async def test_unknown_protobuf_response_fields_are_ignored(
@@ -819,7 +857,6 @@ async def test_jsonrpc_unidentified_native_error_keeps_its_type(
         'boolean-id',
         'nonobject-error',
         'bad-code',
-        'bad-message',
         'mixed-result',
     ],
 )
@@ -843,8 +880,6 @@ async def test_null_id_error_acceptance_still_rejects_invalid_envelopes(
             payload['error'] = None
         elif fault == 'bad-code':
             payload['error']['code'] = True
-        elif fault == 'bad-message':
-            payload['error']['message'] = None
         else:
             payload['result'] = native_result(method)
         body = json.dumps(payload)

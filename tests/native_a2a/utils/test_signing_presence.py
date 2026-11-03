@@ -97,6 +97,10 @@ def _presence_vector(case: str) -> tuple[dict[str, Any], dict[str, Any]]:
             }
         }
         card['securityRequirements'] = [{'schemes': {'oauth': {}}}]
+    elif case == 'empty-security-requirement':
+        # An element is not a field: {} stays as the no-scheme alternative.
+        card['securityRequirements'] = [{}]
+        card['skills'][0]['securityRequirements'] = [{}]
     elif case == 'required-empty-arrays':
         card['defaultInputModes'] = []
         card['defaultOutputModes'] = []
@@ -143,6 +147,7 @@ def _b64(data: bytes) -> str:
         'json-empties',
         'explicit-empty-params',
         'map-values-and-required-defaults',
+        'empty-security-requirement',
         'required-empty-arrays',
         'implicit-optional-defaults',
         'implicit-extension-defaults',
@@ -194,5 +199,38 @@ def test_explicit_empty_optional_field_is_signed(field: str) -> None:
     verifier(card)
     setattr(card, field, '')
     assert card.HasField(field)
+    with pytest.raises(signing.InvalidSignaturesError):
+        verifier(card)
+
+
+@pytest.mark.parametrize('location', ['card', 'skill'])
+@pytest.mark.parametrize('change', ['append-empty', 'remove'])
+def test_security_requirements_are_signed(location: str, change: str) -> None:
+    key = b'presence-vector-test-key-with-at-least-32-bytes'
+    served = _card_object()
+    served['securitySchemes'] = {
+        'bearer': {'httpAuthSecurityScheme': {'scheme': 'bearer'}}
+    }
+    # A scheme without scopes is the usual requirement for bearer tokens.
+    target = served if location == 'card' else served['skills'][0]
+    target['securityRequirements'] = [{'schemes': {'bearer': {}}}]
+    card = ParseDict(served, AgentCard())
+    signing.create_agent_card_signer(key, {'alg': 'HS256', 'kid': 'presence'})(
+        card
+    )
+    verifier = signing.create_signature_verifier(
+        lambda kid, jku: key, ['HS256']
+    )
+    verifier(card)
+    requirements = (
+        card.security_requirements
+        if location == 'card'
+        else card.skills[0].security_requirements
+    )
+    if change == 'append-empty':
+        # {} would make the scheme optional by adding anonymous access.
+        requirements.add()
+    else:
+        del requirements[:]
     with pytest.raises(signing.InvalidSignaturesError):
         verifier(card)
