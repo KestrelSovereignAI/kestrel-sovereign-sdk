@@ -2,6 +2,45 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.48.0
+
+### Changed
+
+- **Behaviour change for `KESTREL_DATA_KEY_FILE` passphrase deployments without
+  a writable salt location** (for example a read-only secret mount with no
+  `<key file>.salt`, `KESTREL_DATA_KEY_SALT` or `KESTREL_DATA_KEY_SALT_FILE`).
+  New writes no longer fall back to the legacy unsalted SHA-256 key: `encrypt`,
+  `get_agent_key`, `get_master_key_bytes` and `encrypt` on the ciphers from
+  `get_fernet` / `get_agent_fernet` raise `MasterKeyNotConfiguredError` naming
+  the remedy. Decryption still reads existing legacy ciphertext. Set
+  `KESTREL_DATA_KEY_SALT`, point `KESTREL_DATA_KEY_SALT_FILE` at an existing
+  salt file, or make the key file's directory writable. Env-only
+  `KESTREL_DATA_KEY` passphrases keep their documented legacy mode and warning.
+- An explicit `KESTREL_DATA_KEY_FILE` that is missing, unreadable, empty or not
+  UTF-8 raises `MasterKeyNotConfiguredError` naming the path. It no longer
+  falls through to `/run/secrets/kestrel_data_key` or `KESTREL_DATA_KEY`.
+
+### Fixed
+
+- The sibling `<key file>.salt` is published atomically and never replaced: it
+  is fsynced in a private (`0o600`) temp file and hard-linked into place.
+  Concurrent first starts adopt the first published salt, so no process can
+  strand ciphertext under an overwritten salt, and readers never see a partial
+  file. A temp file left by an interrupted creation does not block the next
+  start. Creating the salt now requires hard-link support in that directory;
+  otherwise configure the salt explicitly as above.
+- Each process syncs the salt's directory before first encrypting with an
+  automatic `<key file>.salt`, whether it published that salt or found one
+  another process had linked but not yet synced. A crash can therefore no
+  longer lose a salt that ciphertext was already written under. If the
+  directory cannot be synced, new writes and key export raise
+  `MasterKeyNotConfiguredError`; point `KESTREL_DATA_KEY_SALT_FILE` at that
+  salt file or set `KESTREL_DATA_KEY_SALT` to its contents.
+- Decryption never creates or syncs a key-file salt. `decrypt` and the ciphers
+  from `get_fernet` / `get_agent_fernet` try a readable `<key file>.salt`,
+  even one not yet durable, and then the legacy key, so existing ciphertext
+  stays readable while new writes are refused.
+
 ## 0.47.0
 
 ### Added
