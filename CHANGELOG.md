@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 ## 0.48.0
 
+### Added
+
+- `kestrel_sdk.tools.coerce_tool_arguments(tool_name, parameters, arguments)`
+  is the public form of the `@tool` wrapper's argument coercion (#78), so a
+  host's tool wrapper coerces exactly as the SDK's does. It returns
+  `(arguments, error)`. `kestrel_sdk.features.base._coerce_tool_arguments`
+  remains an alias to the same function object.
+- `kestrel_sdk.features.host_errors` lets a host classify execution-control
+  errors. After `register_control_error_predicate(fn)`, the SDK
+  `DynamicTool.execute` re-raises the original exception, unchanged, whenever
+  `is_host_control_error(exc)` is true, instead of turning it into a failure
+  dict. The host owns the predicate; the SDK never decides what counts as
+  control. With none registered nothing is control, so standalone behaviour is
+  unchanged. Registration is process-global: the same function again is a
+  no-op, a different one raises `RuntimeError`, and a predicate must return a
+  `bool`.
+- `kestrel_sdk.logging_summary.content_log_summary(text)` describes caller
+  text for a log line as `chars=N digest=<12 hex>` (a process-keyed HMAC),
+  mirroring Core's helper of the same name.
+
 ### Changed
 
 - **Behaviour change for `KESTREL_DATA_KEY_FILE` passphrase deployments without
@@ -40,6 +60,12 @@ All notable changes to this project are documented in this file.
   from `get_fernet` / `get_agent_fernet` try a readable `<key file>.salt`,
   even one not yet durable, and then the legacy key, so existing ciphertext
   stays readable while new writes are refused.
+- The SDK tool wrapper no longer writes caller content into logs. A tool's
+  exception is logged as the tool name, exception class and
+  `content_log_summary` of its message; a rejected argument as the tool,
+  parameter and expected type, never the received value. The rejection record
+  now comes from the `kestrel_sdk.tools.base` logger. Model-facing error text
+  is unchanged.
 
 ## 0.47.0
 

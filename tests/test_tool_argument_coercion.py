@@ -11,6 +11,9 @@ coerces there — reusing the command-prefix path's rules so the two cannot
 disagree. Values that cannot be coerced come back as a failed ``ToolResult``
 naming the parameter and the expected type instead of a ``TypeError`` raised
 from inside the feature.
+
+Hosts coerce through the public ``kestrel_sdk.tools.coerce_tool_arguments``
+(#105), so the JSON-argument tests run through both doors.
 """
 
 from __future__ import annotations
@@ -19,7 +22,10 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+from kestrel_sdk.features import base as feature_base
 from kestrel_sdk.features.base import Feature, tool
+from kestrel_sdk.tools import base as tools_base
+from kestrel_sdk.tools import coerce_tool_arguments
 from kestrel_sdk.tools.base import (
     COERCION_FAILED,
     AgentTool,
@@ -196,39 +202,89 @@ def _dyn_tool(feature: Feature, name: str) -> AgentTool:
     )
 
 
+async def _via_dynamic_tool(feature: Feature, name: str, **arguments: Any):
+    return await _dyn_tool(feature, name).execute(**arguments)
+
+
+async def _via_public_name(feature: Feature, name: str, **arguments: Any):
+    """A host wrapper built only on the public ``coerce_tool_arguments``."""
+    dyn = _dyn_tool(feature, name)
+    coerced, error = coerce_tool_arguments(dyn.name, dyn.schema.parameters, arguments)
+    if error is not None:
+        return {**ToolResult.failed(error).to_dict(), "tool": dyn.name}
+    result = await dyn.func(**coerced)
+    return {**result.to_dict(), "tool": dyn.name}
+
+
+@pytest.fixture(
+    params=[_via_dynamic_tool, _via_public_name],
+    ids=["DynamicTool.execute", "coerce_tool_arguments"],
+)
+def invoke(request, feature):
+    """Call a tool through the SDK wrapper or through the public coercion."""
+
+    async def call(name: str, **arguments: Any) -> Dict[str, Any]:
+        return await request.param(feature, name, **arguments)
+
+    return call
+
+
+class TestPublicName:
+    """Hosts coerce through the same function object the SDK wrapper uses."""
+
+    def test_public_name_is_the_private_alias(self):
+        assert coerce_tool_arguments is feature_base._coerce_tool_arguments
+        assert coerce_tool_arguments is tools_base.coerce_tool_arguments
+
+    def test_coerced_arguments_are_a_new_mapping(self, feature):
+        params = _dyn_tool(feature, "get_comments").schema.parameters
+        arguments = {"issue": "#78", "max_results": "30", "extra": "kept"}
+        coerced, error = coerce_tool_arguments("get_comments", params, arguments)
+        assert error is None
+        assert coerced == {"issue": "#78", "max_results": 30, "extra": "kept"}
+        assert arguments["max_results"] == "30"
+
+    def test_failure_returns_the_original_mapping(self, feature):
+        params = _dyn_tool(feature, "get_comments").schema.parameters
+        arguments = {"issue": "#78", "max_results": "thirty"}
+        coerced, error = coerce_tool_arguments("get_comments", params, arguments)
+        assert coerced is arguments
+        assert error.startswith("get_comments: parameter 'max_results'")
+
+
 class TestJsonArgumentPath:
     """The model's decoded JSON arguments reach the method correctly typed."""
 
     @pytest.mark.asyncio
-    async def test_model_sent_string_integer_arrives_as_int(self, feature):
-        out = await _dyn_tool(feature, "get_comments").execute(
-            issue="#78", max_results="30"
+    async def test_model_sent_string_integer_arrives_as_int(self, feature, invoke):
+        out = await invoke(
+            "get_comments", issue="#78", max_results="30"
         )
         assert out["status"] == "ok"
         assert out["data"]["max_results_type"] == "int"
         assert feature.calls == [{"issue": "#78", "max_results": 30}]
 
     @pytest.mark.asyncio
-    async def test_the_exact_min_door_from_the_bug_report(self, feature):
+    async def test_the_exact_min_door_from_the_bug_report(self, feature, invoke):
         """``min("30", 100)`` raised before; now the comparison succeeds."""
-        out = await _dyn_tool(feature, "get_comments").execute(
-            issue="#78", max_results="30"
+        out = await invoke(
+            "get_comments", issue="#78", max_results="30"
         )
         assert out["status"] == "ok"
         assert out["data"]["per_page"] == 30
         assert "not supported between instances" not in str(out)
 
     @pytest.mark.asyncio
-    async def test_correctly_typed_integer_passes_through(self, feature):
-        out = await _dyn_tool(feature, "get_comments").execute(
-            issue="#78", max_results=250
+    async def test_correctly_typed_integer_passes_through(self, feature, invoke):
+        out = await invoke(
+            "get_comments", issue="#78", max_results=250
         )
         assert out["data"]["per_page"] == 100
         assert out["data"]["max_results_type"] == "int"
 
     @pytest.mark.asyncio
-    async def test_omitted_parameter_keeps_its_default(self, feature):
-        out = await _dyn_tool(feature, "get_comments").execute(issue="#78")
+    async def test_omitted_parameter_keeps_its_default(self, feature, invoke):
+        out = await invoke("get_comments", issue="#78")
         assert out["data"]["per_page"] == 30
         assert feature.calls == [{"issue": "#78", "max_results": 30}]
 
@@ -237,8 +293,8 @@ class TestJsonArgumentPath:
         "sent,expected",
         [("1.5", 1.5), (1.5, 1.5), ("2", 2.0), (2, 2.0), (2.0, 2.0)],
     )
-    async def test_number_parameters_arrive_as_float(self, feature, sent, expected):
-        out = await _dyn_tool(feature, "scale").execute(factor=sent)
+    async def test_number_parameters_arrive_as_float(self, feature, invoke, sent, expected):
+        out = await invoke("scale", factor=sent)
         assert out["data"]["factor"] == expected
         assert out["data"]["type"] == "float"
 
@@ -260,16 +316,16 @@ class TestJsonArgumentPath:
             (False, False),
         ],
     )
-    async def test_boolean_parameters_arrive_as_bool(self, feature, sent, expected):
-        out = await _dyn_tool(feature, "toggle").execute(enabled=sent)
+    async def test_boolean_parameters_arrive_as_bool(self, feature, invoke, sent, expected):
+        out = await invoke("toggle", enabled=sent)
         assert out["data"]["enabled"] is expected
         assert out["data"]["type"] == "bool"
 
     @pytest.mark.asyncio
-    async def test_strings_objects_and_arrays_pass_through_unchanged(self, feature):
+    async def test_strings_objects_and_arrays_pass_through_unchanged(self, feature, invoke):
         """A numeric-looking string stays a string; structures are untouched."""
-        out = await _dyn_tool(feature, "structured").execute(
-            label="30",
+        out = await invoke(
+            "structured", label="30",
             tags=["a", "1"],
             options={"depth": "2"},
         )
@@ -278,8 +334,8 @@ class TestJsonArgumentPath:
         assert out["data"]["options"] == {"depth": "2"}
 
     @pytest.mark.asyncio
-    async def test_optional_integer_still_coerces_when_supplied(self, feature):
-        out = await _dyn_tool(feature, "optional_limit").execute(limit="5")
+    async def test_optional_integer_still_coerces_when_supplied(self, feature, invoke):
+        out = await invoke("optional_limit", limit="5")
         assert out["data"]["limit"] == 5
         assert out["data"]["type"] == "int"
 
@@ -294,44 +350,44 @@ class TestJsonNull:
     """
 
     @pytest.mark.asyncio
-    async def test_json_null_for_an_optional_integer_passes_through(self, feature):
-        out = await _dyn_tool(feature, "optional_limit").execute(limit=None)
+    async def test_json_null_for_an_optional_integer_passes_through(self, feature, invoke):
+        out = await invoke("optional_limit", limit=None)
         assert out["status"] == "ok"
         assert out["data"]["limit"] is None
         assert out["data"]["type"] == "NoneType"
 
     @pytest.mark.asyncio
-    async def test_implicit_optional_none_default_also_accepts_null(self, feature):
+    async def test_implicit_optional_none_default_also_accepts_null(self, feature, invoke):
         """``limit: int = None`` admits None as plainly as ``Optional[int]``."""
-        out = await _dyn_tool(feature, "implicit_optional_limit").execute(limit=None)
+        out = await invoke("implicit_optional_limit", limit=None)
         assert out["status"] == "ok"
         assert out["data"]["limit"] is None
 
     @pytest.mark.asyncio
-    async def test_required_integer_rejects_null(self, feature):
-        out = await _dyn_tool(feature, "required_count").execute(count=None)
+    async def test_required_integer_rejects_null(self, feature, invoke):
+        out = await invoke("required_count", count=None)
         assert out["status"] == "error"
         assert "count" in out["error"]
         assert "integer" in out["error"]
         assert out["tool"] == "required_count"
 
     @pytest.mark.asyncio
-    async def test_the_min_none_door_never_reaches_the_method(self, feature):
+    async def test_the_min_none_door_never_reaches_the_method(self, feature, invoke):
         """The promised failed ToolResult, not the legacy exception envelope."""
-        out = await _dyn_tool(feature, "required_count").execute(count=None)
+        out = await invoke("required_count", count=None)
         assert feature.calls == []
         assert ToolResult.failed(out["error"]).status.value == out["status"]
         assert "not supported between instances" not in str(out)
 
     @pytest.mark.asyncio
-    async def test_integer_too_large_for_a_float_is_a_coercion_failure(self, feature):
+    async def test_integer_too_large_for_a_float_is_a_coercion_failure(self, feature, invoke):
         """``float(10**309)`` raises OverflowError; the wrapper must not leak it.
 
         Coercion runs before the method call and outside the method's own
         exception handling, so an uncaught error here escapes ``execute``
         entirely instead of producing the promised failed ToolResult.
         """
-        out = await _dyn_tool(feature, "scale").execute(factor=10**309)
+        out = await invoke("scale", factor=10**309)
         assert out["status"] == "error"
         assert "factor" in out["error"]
         assert "number" in out["error"]
@@ -341,38 +397,38 @@ class TestJsonNull:
     @pytest.mark.parametrize(
         "sent", ["NaN", "nan", "Infinity", "-inf", "1e309", float("inf"), float("nan")]
     )
-    async def test_non_finite_numbers_are_a_coercion_failure(self, feature, sent):
+    async def test_non_finite_numbers_are_a_coercion_failure(self, feature, invoke, sent):
         """JSON has no NaN or Infinity; ``float`` accepts them, the tool must not."""
-        out = await _dyn_tool(feature, "scale").execute(factor=sent)
+        out = await invoke("scale", factor=sent)
         assert out["status"] == "error"
         assert "factor" in out["error"]
         assert feature.calls == []
 
     @pytest.mark.asyncio
-    async def test_non_none_default_does_not_make_a_parameter_nullable(self, feature):
+    async def test_non_none_default_does_not_make_a_parameter_nullable(self, feature, invoke):
         """``max_results: int = 30`` never contemplated None."""
-        out = await _dyn_tool(feature, "get_comments").execute(
-            issue="#78", max_results=None
+        out = await invoke(
+            "get_comments", issue="#78", max_results=None
         )
         assert out["status"] == "error"
         assert "max_results" in out["error"]
         assert feature.calls == []
 
     @pytest.mark.asyncio
-    async def test_required_number_and_boolean_reject_null(self, feature):
-        scaled = await _dyn_tool(feature, "scale").execute(factor=None)
+    async def test_required_number_and_boolean_reject_null(self, feature, invoke):
+        scaled = await invoke("scale", factor=None)
         assert scaled["status"] == "error"
         assert "factor" in scaled["error"]
 
-        toggled = await _dyn_tool(feature, "toggle").execute(enabled=None)
+        toggled = await invoke("toggle", enabled=None)
         assert toggled["status"] == "error"
         assert "enabled" in toggled["error"]
 
     @pytest.mark.asyncio
-    async def test_null_passes_through_for_string_array_and_object(self, feature):
+    async def test_null_passes_through_for_string_array_and_object(self, feature, invoke):
         """Only the coerced types judge None; structured values are untouched."""
-        out = await _dyn_tool(feature, "structured").execute(
-            label=None, tags=None, options=None
+        out = await invoke(
+            "structured", label=None, tags=None, options=None
         )
         assert out["status"] == "ok"
         assert out["data"] == {"label": None, "tags": None, "options": None}
@@ -401,9 +457,9 @@ class TestUncoercibleArguments:
     """A value that cannot be coerced fails before the feature runs."""
 
     @pytest.mark.asyncio
-    async def test_failure_names_the_parameter_and_the_expected_type(self, feature):
-        out = await _dyn_tool(feature, "get_comments").execute(
-            issue="#78", max_results="thirty"
+    async def test_failure_names_the_parameter_and_the_expected_type(self, feature, invoke):
+        out = await invoke(
+            "get_comments", issue="#78", max_results="thirty"
         )
         assert out["status"] == "error"
         assert "max_results" in out["error"]
@@ -413,40 +469,40 @@ class TestUncoercibleArguments:
         assert "confirmation" not in out
 
     @pytest.mark.asyncio
-    async def test_the_feature_method_is_never_called(self, feature):
-        await _dyn_tool(feature, "get_comments").execute(
-            issue="#78", max_results="thirty"
+    async def test_the_feature_method_is_never_called(self, feature, invoke):
+        await invoke(
+            "get_comments", issue="#78", max_results="thirty"
         )
         assert feature.calls == []
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("sent", ["thirty", "1.5", "", True, [30], {"n": 30}])
-    async def test_integer_parameters_reject_uncoercible_values(self, feature, sent):
-        out = await _dyn_tool(feature, "get_comments").execute(
-            issue="#78", max_results=sent
+    async def test_integer_parameters_reject_uncoercible_values(self, feature, invoke, sent):
+        out = await invoke(
+            "get_comments", issue="#78", max_results=sent
         )
         assert out["status"] == "error"
 
     @pytest.mark.asyncio
-    async def test_boolean_parameters_reject_an_arbitrary_word(self, feature):
-        out = await _dyn_tool(feature, "toggle").execute(enabled="maybe")
+    async def test_boolean_parameters_reject_an_arbitrary_word(self, feature, invoke):
+        out = await invoke("toggle", enabled="maybe")
         assert out["status"] == "error"
         assert "enabled" in out["error"]
         assert "boolean" in out["error"]
 
     @pytest.mark.asyncio
-    async def test_number_parameters_reject_an_arbitrary_word(self, feature):
-        out = await _dyn_tool(feature, "scale").execute(factor="half")
+    async def test_number_parameters_reject_an_arbitrary_word(self, feature, invoke):
+        out = await invoke("scale", factor="half")
         assert out["status"] == "error"
         assert "factor" in out["error"]
         assert "number" in out["error"]
 
     @pytest.mark.asyncio
-    async def test_rejected_value_is_bounded_in_the_error(self, feature):
+    async def test_rejected_value_is_bounded_in_the_error(self, feature, invoke):
         """The error re-enters the model's context, so a huge rejected value
         is summarized rather than echoed back whole."""
-        out = await _dyn_tool(feature, "get_comments").execute(
-            issue="#78", max_results="x" * 5000
+        out = await invoke(
+            "get_comments", issue="#78", max_results="x" * 5000
         )
         assert out["status"] == "error"
         assert len(out["error"]) < 400
@@ -455,12 +511,12 @@ class TestUncoercibleArguments:
 
     @pytest.mark.asyncio
     async def test_failure_envelope_is_a_toolresult_not_a_raised_typeerror(
-        self, feature
+        self, feature, invoke
     ):
         """The honesty layer reads ``status`` at the top level, so the
         rejection has to arrive as the canonical envelope."""
-        out = await _dyn_tool(feature, "get_comments").execute(
-            issue="#78", max_results="thirty"
+        out = await invoke(
+            "get_comments", issue="#78", max_results="thirty"
         )
         rebuilt = ToolResult.failed(out["error"])
         assert rebuilt.status.value == out["status"]

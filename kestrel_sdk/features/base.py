@@ -31,18 +31,19 @@ from typing import (
     TYPE_CHECKING,
 )
 
+from kestrel_sdk.logging_summary import content_log_summary
 from kestrel_sdk.tools.base import (
-    COERCION_FAILED,
     ToolSchema,
     ToolParameter,
     ToolCategory,
     AgentTool,
-    coerce_json_value,
+    coerce_tool_arguments,
 )
 from kestrel_sdk.features._contribution_support import (
     contribution_annotation as _contribution_annotation,
     implementation_contribution_owner,
 )
+from kestrel_sdk.features.host_errors import is_host_control_error
 from kestrel_sdk.features.ui import UIContributions
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -197,56 +198,9 @@ def _resolve_json_type(
     return _JSON_TYPE_MAP.get(annotation, "string"), None, False, resolved
 
 
-_REJECTED_VALUE_REPR_LIMIT = 120
-
-
-def _coerce_tool_arguments(
-    tool_name: str,
-    parameters: List[ToolParameter],
-    arguments: Dict[str, Any],
-) -> tuple[Dict[str, Any], Optional[str]]:
-    """Coerce model-supplied arguments to the types the tool schema declares.
-
-    ``@tool`` advertises each parameter's JSON type to the model, but a model
-    is free to send an integer as the string ``"30"``. Before this ran, that
-    string reached the feature method untouched and any arithmetic, slicing or
-    comparison on it raised from inside the feature — ``min("30", 100)``
-    surfacing as "'<' not supported between instances of 'int' and 'str'"
-    (issue #78). Coercion uses :func:`coerce_json_value`, the same rules as the
-    command-prefix path, so the two cannot disagree.
-
-    A JSON ``null`` is judged by the same rule: it is a value for a parameter
-    whose signature admits ``None`` and a type error for one that doesn't,
-    because ``min(None, 100)`` fails exactly as ``min("30", 100)`` did.
-
-    Arguments with no matching parameter are left alone, and a failure leaves
-    the original mapping untouched.
-
-    Returns:
-        ``(coerced_arguments, error)``. ``error`` is ``None`` when every
-        argument already matched or coerced; otherwise it names the offending
-        parameter and the type it expects.
-    """
-    coerced = dict(arguments)
-    for param in parameters:
-        if param.name not in coerced:
-            continue
-        value = coerced[param.name]
-        result = coerce_json_value(value, param.type, nullable=param.nullable)
-        if result is COERCION_FAILED:
-            # The error travels back into the model's context, so an
-            # oversized rejected value is bounded rather than echoed whole.
-            rendered = repr(value)
-            if len(rendered) > _REJECTED_VALUE_REPR_LIMIT:
-                rendered = f"{rendered[:_REJECTED_VALUE_REPR_LIMIT]}..."
-            return arguments, (
-                f"{tool_name}: parameter '{param.name}' expects type "
-                f"'{param.type}', but received {rendered} "
-                f"({type(value).__name__}), which is not a valid "
-                f"{param.type}"
-            )
-        coerced[param.name] = result
-    return coerced, None
+# The historic private name for the public helper: the same function object,
+# not a second implementation (#105).
+_coerce_tool_arguments = coerce_tool_arguments
 
 
 class Feature(ABC):
@@ -570,13 +524,12 @@ class Feature(ABC):
                         # the declared type, so arguments are coerced to the
                         # advertised schema type here (#78). A value that
                         # can't be coerced fails as a named ToolResult rather
-                        # than a TypeError from inside the feature.
-                        kwargs, coercion_error = _coerce_tool_arguments(
+                        # than a TypeError from inside the feature. The helper
+                        # logs the rejection without the received value.
+                        kwargs, coercion_error = coerce_tool_arguments(
                             self.name, self._schema_data["parameters"], kwargs
                         )
                         if coercion_error is not None:
-                            # The message already names the tool.
-                            logger.error("Rejected tool call — %s", coercion_error)
                             payload = ToolResult.failed(coercion_error).to_dict()
                             payload["tool"] = self.name
                             return payload
@@ -594,7 +547,19 @@ class Feature(ABC):
                             try:
                                 result = await self.func(**kwargs)
                             except Exception as e:
-                                logger.error(f"Error executing tool {self.name}: {e}")
+                                # A host execution-control error is a fact
+                                # for the host's custody, not a tool failure:
+                                # the host's registered predicate decides,
+                                # and the original propagates unchanged.
+                                if is_host_control_error(e):
+                                    raise
+                                # The message can quote what the tool failed
+                                # on, so the log gets its class and a digest.
+                                logger.error(
+                                    "Error executing tool %s: %s %s",
+                                    self.name, type(e).__name__,
+                                    content_log_summary(str(e)),
+                                )
                                 response = {
                                     "success": False,
                                     "error": str(e),
