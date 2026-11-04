@@ -568,6 +568,13 @@ The SDK declares the `DatabaseBackend` ABC; sovereign provides the concrete
 should never instantiate their own backend — that creates a parallel
 connection pool and bypasses the agent's privacy enforcement.
 
+`DatabaseBackend.owns_open_transaction` reports the current task's native
+transaction scope. `True` includes joined scopes and savepoints whose writes
+still depend on an outer commit; `None` means ownership is unknown. A caller
+that must commit before publishing a credential or making an external request
+must require exactly `False` before starting its transaction. The native Core
+SQLite and PostgreSQL backends already provide this ownership check.
+
 ## Isolated-feature configuration transitions
 
 An isolated service can opt into a host-only configuration lifecycle request

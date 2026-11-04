@@ -239,3 +239,9 @@ def test_minimal_backend_instantiates():
     backend = _MinimalBackend()
     assert backend.backend_type == "sqlite"
     assert backend.is_connected is False
+
+
+def test_unknown_transaction_custody_never_certifies_a_commit_boundary():
+    backend = _MinimalBackend()
+    assert backend.owns_open_transaction is None
+    assert backend.owns_open_transaction is not False
