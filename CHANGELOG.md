@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.47.0
+
+### Added
+
+- `DatabaseBackend.owns_open_transaction` exposes current-task transaction
+  custody. The default is `None` (unknown); credential and external-effect
+  publishers must require exactly `False` before starting a transaction that
+  must commit independently. Core's native backends already provide this
+  ownership check.
+
 ## 0.46.0
 
 ### Added

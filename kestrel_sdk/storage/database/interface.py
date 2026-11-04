@@ -79,6 +79,24 @@ class DatabaseBackend(ABC):
         """Transaction context manager — commits on success, rolls back on exception."""
         ...
 
+    @property
+    def owns_open_transaction(self) -> Optional[bool]:
+        """Whether this task owns a surrounding native transaction scope.
+
+        ``True`` includes a joined scope or savepoint whose writes are not
+        durably committed yet. ``False`` certifies that entering a transaction
+        now creates a top-level commit boundary for this task. ``None`` means
+        the backend cannot establish that boundary; it must never be treated
+        as ``False``. Custody-sensitive callers must require exactly ``False``
+        before writing or publishing credentials or external side effects.
+
+        Concrete backends report task ownership, not process-wide activity:
+        an independent task may wait for another task's writer and then own
+        its own top-level transaction. Native scope ownership remains true
+        through rollback/poisoning until the enclosing scope has exited.
+        """
+        return None
+
     async def table_exists(self, table_name: str) -> bool:
         """Default table-existence check; backends may override for efficiency."""
         if self.backend_type == "sqlite":
