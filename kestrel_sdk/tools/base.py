@@ -6,12 +6,15 @@ to autonomously select and execute capabilities based on context and user needs.
 """
 
 import json
+import logging
 import math
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 
 class _CoercionFailed:
@@ -159,6 +162,67 @@ class ToolParameter:
     # deliberately last so existing positional constructions keep working, and
     # it does not change the schema advertised to the model.
     nullable: bool = False
+
+
+_REJECTED_VALUE_REPR_LIMIT = 120
+
+
+def coerce_tool_arguments(
+    tool_name: str,
+    parameters: List[ToolParameter],
+    arguments: Dict[str, Any],
+) -> tuple[Dict[str, Any], Optional[str]]:
+    """Coerce model-supplied arguments to the types the tool schema declares.
+
+    ``@tool`` advertises each parameter's JSON type to the model, but a model
+    is free to send an integer as the string ``"30"``. Before this ran, that
+    string reached the feature method untouched and any arithmetic, slicing or
+    comparison on it raised from inside the feature — ``min("30", 100)``
+    surfacing as "'<' not supported between instances of 'int' and 'str'"
+    (issue #78). Coercion uses :func:`coerce_json_value`, the same rules as the
+    command-prefix path, so the two cannot disagree.
+
+    A JSON ``null`` is judged by the same rule: it is a value for a parameter
+    whose signature admits ``None`` and a type error for one that doesn't,
+    because ``min(None, 100)`` fails exactly as ``min("30", 100)`` did.
+
+    Arguments with no matching parameter are left alone, and a failure leaves
+    the original mapping untouched.
+
+    This is the one implementation behind every tool wrapper, the SDK's and a
+    host's alike, so they cannot give one call different arguments. A
+    rejection is logged with non-content facts only: the tool, the parameter
+    and the type it expects, never the received value.
+
+    Returns:
+        ``(coerced_arguments, error)``. ``error`` is ``None`` when every
+        argument already matched or coerced; otherwise it is the model-facing
+        message naming the offending parameter and the type it expects.
+    """
+    coerced = dict(arguments)
+    for param in parameters:
+        if param.name not in coerced:
+            continue
+        value = coerced[param.name]
+        result = coerce_json_value(value, param.type, nullable=param.nullable)
+        if result is COERCION_FAILED:
+            logger.error(
+                "Rejected tool call — %s: parameter %r expects type %r",
+                tool_name, param.name, param.type,
+            )
+            # The error travels back into the model's context, so an
+            # oversized rejected value is bounded rather than echoed whole.
+            rendered = repr(value)
+            if len(rendered) > _REJECTED_VALUE_REPR_LIMIT:
+                rendered = f"{rendered[:_REJECTED_VALUE_REPR_LIMIT]}..."
+            return arguments, (
+                f"{tool_name}: parameter '{param.name}' expects type "
+                f"'{param.type}', but received {rendered} "
+                f"({type(value).__name__}), which is not a valid "
+                f"{param.type}"
+            )
+        coerced[param.name] = result
+    return coerced, None
 
 
 @dataclass

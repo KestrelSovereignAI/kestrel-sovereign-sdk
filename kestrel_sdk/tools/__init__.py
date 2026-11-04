@@ -10,6 +10,7 @@ from .base import (
     ToolSchema,
     ToolExecutionError,
     coerce_json_value,
+    coerce_tool_arguments,
 )
 from .parts import current_tool_result_parts, tool_result_parts_buffer
 from .result import ToolResult, ToolResultStatus
@@ -25,6 +26,7 @@ __all__ = [
     "CommandParseError",
     "GovernedToolBinding",
     "coerce_json_value",
+    "coerce_tool_arguments",
     "ToolCategory",
     "ToolParameter",
     "ToolSchema",
