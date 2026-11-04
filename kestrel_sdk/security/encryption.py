@@ -40,7 +40,7 @@ import logging
 import os
 import secrets
 from pathlib import Path
-from typing import Optional, Dict, Set, Tuple, Any
+from typing import Callable, NamedTuple, Optional, Dict, Set, Tuple, Any
 
 from cryptography.fernet import Fernet  # validation-only: Fernet still used to detect raw-Fernet-key shape
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -85,7 +85,7 @@ _DURABLE_KEY_FILE_SALTS: Set[Tuple[Path, bytes]] = set()
 
 
 class _KeyFileSaltUnavailableError(MasterKeyNotConfiguredError):
-    """A key-file passphrase has no durable salt: refuse writes, read legacy data."""
+    """A key-file passphrase has no durable salt: refuse writes; reads never depend on it."""
 
 
 # =============================================================================
@@ -217,17 +217,36 @@ def _load_passphrase_salt_file(salt_path: Path) -> bytes:
     )
 
 
+def _key_file_salt_path(key_file: Path) -> Path:
+    """Return the automatic salt file stored next to KESTREL_DATA_KEY_FILE."""
+    return key_file.with_name(key_file.name + ".salt")
+
+
+def _load_existing_key_file_salt(key_file: Path) -> Optional[bytes]:
+    """
+    Load the key-file salt for reading existing ciphertext, if one exists.
+
+    This never creates or syncs a salt. A readable salt is returned even
+    before its directory entry is durable, because another process may
+    already have written ciphertext under it.
+    """
+    salt_path = _key_file_salt_path(key_file)
+    if not salt_path.exists():
+        return None
+    return _load_passphrase_salt_file(salt_path)
+
+
 def _load_or_create_key_file_salt(key_file: Path) -> bytes:
     """
-    Load or publish the passphrase salt next to KESTREL_DATA_KEY_FILE.
+    Load or publish the passphrase salt for new writes next to KESTREL_DATA_KEY_FILE.
 
     Concurrent first starts converge on the first published salt. Whether a
     caller published the salt or found it, the salt is returned only after
     its directory entry is durable. When no salt exists and none can be
-    published, this raises ``_KeyFileSaltUnavailableError`` rather than
-    writing with the legacy key.
+    published, or its directory cannot be synced, this raises
+    ``_KeyFileSaltUnavailableError`` rather than writing with the legacy key.
     """
-    salt_path = key_file.with_name(key_file.name + ".salt")
+    salt_path = _key_file_salt_path(key_file)
     if not salt_path.exists():
         try:
             _publish_salt_file(salt_path, os.urandom(PASSPHRASE_SALT_SIZE))
@@ -255,7 +274,8 @@ def _make_key_file_salt_durable(salt_path: Path, salt: bytes) -> None:
     A salt found on disk may have been linked by another process that has
     not yet synced its directory. If the host crashed then, a restart could
     find no salt and publish another, stranding ciphertext written under
-    this one. Each process syncs once per observed salt.
+    this one. Each process syncs once per observed salt. A failed sync
+    refuses new writes only; reads never depend on durability.
     """
     observed = (salt_path, salt)
     if observed in _DURABLE_KEY_FILE_SALTS:
@@ -263,11 +283,13 @@ def _make_key_file_salt_durable(salt_path: Path, salt: bytes) -> None:
     try:
         _fsync_directory(salt_path.parent)
     except OSError as e:
-        raise MasterKeyNotConfiguredError(
+        raise _KeyFileSaltUnavailableError(
             f"Could not sync directory {salt_path.parent} to make passphrase salt file "
-            f"{salt_path} durable ({e.strerror or type(e).__name__}). Refusing to use a "
-            f"salt that a crash could lose. Fix the directory, or configure the salt "
-            f"explicitly with {SALT_VALUE_ENV_VAR_NAME} or {SALT_ENV_VAR_NAME}."
+            f"{salt_path} durable ({e.strerror or type(e).__name__}). Refusing to encrypt "
+            "new data under a salt that a crash could lose; existing ciphertext remains "
+            f"readable. Make {salt_path.parent} syncable, or configure this salt explicitly: "
+            f"point {SALT_ENV_VAR_NAME} at {salt_path} or set {SALT_VALUE_ENV_VAR_NAME} "
+            "to its contents."
         ) from e
     _DURABLE_KEY_FILE_SALTS.add(observed)
 
@@ -322,18 +344,20 @@ def _chmod_salt_file(salt_path: Path) -> None:
         logger.debug("Could not chmod passphrase salt file %s", salt_path)
 
 
-def _load_passphrase_salt() -> Optional[bytes]:
+def _load_passphrase_salt(*, for_write: bool) -> Optional[bytes]:
     """
     Resolve the salt for passphrase-derived master keys.
 
     Explicit ``KESTREL_DATA_KEY_SALT`` must be a base64-encoded 32-byte value.
     Explicit ``KESTREL_DATA_KEY_SALT_FILE`` must point to an existing file
     containing that value. When ``KESTREL_DATA_KEY_FILE`` supplies the
-    passphrase, the SDK creates or reuses a sibling ``.salt`` file so the key
-    and salt live on the same persistent secret volume; if that salt cannot
-    be created, ``_KeyFileSaltUnavailableError`` refuses new writes. A bare
-    ``KESTREL_DATA_KEY`` passphrase has no stable salt source, so it returns
-    ``None`` and callers stay in legacy SHA-256 mode for compatibility.
+    passphrase, the key and salt live on the same persistent secret volume
+    as a sibling ``.salt`` file. Writes create or reuse that file and require
+    it to be durable, otherwise ``_KeyFileSaltUnavailableError`` refuses
+    them. Reads only load a salt that already exists, returning ``None``
+    when there is none. A bare ``KESTREL_DATA_KEY`` passphrase has no stable
+    salt source, so it returns ``None`` and callers stay in legacy SHA-256
+    mode for compatibility.
     """
     explicit_salt = os.environ.get(SALT_VALUE_ENV_VAR_NAME)
     if explicit_salt:
@@ -349,8 +373,11 @@ def _load_passphrase_salt() -> Optional[bytes]:
     # _get_data_key() has already read the passphrase from this exact file.
     key_file = _get_configured_key_file()
     if key_file is not None:
-        return _load_or_create_key_file_salt(key_file)
+        if for_write:
+            return _load_or_create_key_file_salt(key_file)
+        return _load_existing_key_file_salt(key_file)
 
+    _warn_passphrase_without_salt_once()
     return None
 
 
@@ -364,12 +391,34 @@ def _is_fernet_key(key: str) -> bool:
 
 
 def _derive_passphrase_master_key(key: str) -> bytes:
-    """Derive the current salted PBKDF2 master key from a passphrase."""
-    salt = _load_passphrase_salt()
-    if salt is None:
-        _warn_passphrase_without_salt_once()
-        return _derive_legacy_passphrase_master_key(key)
+    """
+    Derive the master key for new data from a passphrase.
 
+    Raises ``_KeyFileSaltUnavailableError`` when a key-file passphrase has
+    no durable salt, instead of writing with the legacy unsalted key.
+    """
+    salt = _load_passphrase_salt(for_write=True)
+    if salt is None:
+        return _derive_legacy_passphrase_master_key(key)
+    return _derive_salted_passphrase_master_key(key, salt)
+
+
+def _passphrase_read_master_keys(key: str) -> Tuple[bytes, ...]:
+    """
+    Every master key existing passphrase ciphertext may use, newest first.
+
+    This never creates or syncs a salt, so reading never depends on whether
+    new writes are currently allowed.
+    """
+    legacy = _derive_legacy_passphrase_master_key(key)
+    salt = _load_passphrase_salt(for_write=False)
+    if salt is None:
+        return (legacy,)
+    return (_derive_salted_passphrase_master_key(key, salt), legacy)
+
+
+def _derive_salted_passphrase_master_key(key: str, salt: bytes) -> bytes:
+    """Derive the cached PBKDF2-HMAC-SHA256 master key for a passphrase and salt."""
     cache_key = (hashlib.sha256(key.encode("utf-8")).digest(), salt)
     cached = _PASSPHRASE_MASTER_KEY_CACHE.get(cache_key)
     if cached is not None:
@@ -405,39 +454,85 @@ def _warn_passphrase_without_salt_once() -> None:
     _PASSPHRASE_NO_SALT_WARNING_EMITTED = True
 
 
+class _MasterKeys(NamedTuple):
+    """
+    Keys resolved from one read of the data key.
+
+    ``write`` encrypts new data; it is ``None`` when new writes are refused
+    for ``write_refusal``. ``read`` lists, newest first, every key existing
+    ciphertext may use, and never depends on salt durability.
+    """
+
+    write: Optional[bytes]
+    write_refusal: Optional[str]
+    read: Tuple[bytes, ...]
+
+    def map(self, derive: Callable[[bytes], bytes]) -> "_MasterKeys":
+        """Apply one key derivation to every key."""
+        return _MasterKeys(
+            None if self.write is None else derive(self.write),
+            self.write_refusal,
+            tuple(derive(key) for key in self.read),
+        )
+
+
+def _resolve_passphrase_master_keys(key: str) -> _MasterKeys:
+    """Resolve the write key, or why writes are refused, and every read key."""
+    try:
+        write = _derive_passphrase_master_key(key)
+    except _KeyFileSaltUnavailableError as refusal:
+        # Resolved after the write attempt so a salt it published is read too.
+        return _MasterKeys(None, str(refusal), _passphrase_read_master_keys(key))
+    return _MasterKeys(write, None, _passphrase_read_master_keys(key))
+
+
+def _decrypt_with_any(
+    ciphers: Tuple[AEADCipher, ...],
+    token: bytes | str,
+    aad: Optional[bytes] = None,
+) -> bytes:
+    """Decrypt with the first cipher that authenticates; report the newest key's failure."""
+    newest, *older = ciphers
+    try:
+        return newest.decrypt(token, aad=aad)
+    except DecryptionError:
+        for cipher in older:
+            try:
+                return cipher.decrypt(token, aad=aad)
+            except DecryptionError:
+                continue
+        raise
+
+
 class _ReadFallbackCipher:
-    """Cipher wrapper that writes with the current key and reads legacy data."""
+    """
+    Cipher that writes with the current key and reads with every older key.
 
-    __slots__ = ("_primary", "_legacy")
+    Without a current key (a key-file passphrase with no durable salt) it
+    refuses to encrypt, yet still decrypts existing ciphertext.
+    """
 
-    def __init__(self, primary: AEADCipher, legacy: AEADCipher):
-        self._primary = primary
-        self._legacy = legacy
+    __slots__ = ("_writer", "_write_refusal", "_readers")
 
-    def encrypt(self, plaintext: bytes | str, aad: Optional[bytes] = None) -> bytes:
-        return self._primary.encrypt(plaintext, aad=aad)
-
-    def decrypt(self, token: bytes | str, aad: Optional[bytes] = None) -> bytes:
-        try:
-            return self._primary.decrypt(token, aad=aad)
-        except DecryptionError:
-            return self._legacy.decrypt(token, aad=aad)
-
-
-class _LegacyReadOnlyCipher:
-    """Cipher for a key-file passphrase without a salt: reads legacy data, refuses writes."""
-
-    __slots__ = ("_legacy", "_write_refusal")
-
-    def __init__(self, legacy: AEADCipher, write_refusal: str):
-        self._legacy = legacy
-        self._write_refusal = write_refusal
+    def __init__(self, keys: _MasterKeys):
+        self._writer = None if keys.write is None else AEADCipher(keys.write)
+        self._write_refusal = keys.write_refusal
+        self._readers = tuple(AEADCipher(key) for key in keys.read)
 
     def encrypt(self, plaintext: bytes | str, aad: Optional[bytes] = None) -> bytes:
-        raise _KeyFileSaltUnavailableError(self._write_refusal)
+        if self._writer is None:
+            raise _KeyFileSaltUnavailableError(self._write_refusal)
+        return self._writer.encrypt(plaintext, aad=aad)
 
     def decrypt(self, token: bytes | str, aad: Optional[bytes] = None) -> bytes:
-        return self._legacy.decrypt(token, aad=aad)
+        return _decrypt_with_any(self._readers, token, aad=aad)
+
+
+def _cipher_for(keys: _MasterKeys) -> AEADCipher:
+    """Return a plain cipher for a single usable key, otherwise a fallback cipher."""
+    if keys.write is not None and keys.read == (keys.write,):
+        return AEADCipher(keys.write)
+    return _ReadFallbackCipher(keys)  # type: ignore[return-value]
 
 
 def _require_data_key() -> str:
@@ -451,12 +546,17 @@ def _require_data_key() -> str:
     return key
 
 
+def _decode_fernet_master_key(key: str) -> bytes:
+    """Decode a raw Fernet/AEAD key value to its 32-byte master key."""
+    # Fernet keys are base64-encoded 32-byte values; decode to get
+    # the raw key material for HKDF derivation (same as AEADCipher does).
+    return base64.urlsafe_b64decode(key.encode("ascii"))
+
+
 def _master_key_from(key: str) -> bytes:
-    """Derive the current 32-byte master key from one read of the data key."""
+    """Derive the 32-byte master key for new data from one read of the data key."""
     if _is_fernet_key(key):
-        # Fernet keys are base64-encoded 32-byte values; decode to get
-        # the raw key material for HKDF derivation (same as AEADCipher does).
-        return base64.urlsafe_b64decode(key.encode("ascii"))
+        return _decode_fernet_master_key(key)
 
     return _derive_passphrase_master_key(key)
 
@@ -470,7 +570,7 @@ def _get_master_key() -> bytes:
 
     Raises:
         MasterKeyNotConfiguredError: If KESTREL_DATA_KEY not set, or a
-            key-file passphrase has no salt and cannot create one
+            key-file passphrase has no durable salt
     """
     return _master_key_from(_require_data_key())
 
@@ -490,9 +590,9 @@ def get_fernet() -> Optional[AEADCipher]:
     Despite the legacy name, returns an ``AEADCipher`` (AES-256-GCM with
     Fernet read-compat) — drop-in for the previous ``Fernet`` instance.
 
-    A key-file passphrase whose salt cannot be created yields a cipher that
-    decrypts legacy ciphertext and raises ``MasterKeyNotConfiguredError``
-    on encrypt.
+    A key-file passphrase without a durable salt yields a cipher that raises
+    ``MasterKeyNotConfiguredError`` on encrypt, yet still decrypts with the
+    salt on disk (if readable) and the legacy key.
 
     Returns:
         AEADCipher if key is available, None otherwise.
@@ -509,12 +609,7 @@ def _global_cipher_from(key: str) -> AEADCipher:
         return AEADCipher(key)
 
     logger.debug("Key is not a raw Fernet key, deriving from passphrase")
-    legacy = AEADCipher(_derive_legacy_passphrase_master_key(key))
-    try:
-        primary = AEADCipher(_derive_passphrase_master_key(key))
-    except _KeyFileSaltUnavailableError as refusal:
-        return _LegacyReadOnlyCipher(legacy, str(refusal))  # type: ignore[return-value]
-    return _ReadFallbackCipher(primary, legacy)  # type: ignore[return-value]
+    return _cipher_for(_resolve_passphrase_master_keys(key))
 
 
 def get_master_key_bytes() -> Optional[bytes]:
@@ -531,8 +626,8 @@ def get_master_key_bytes() -> Optional[bytes]:
         44 bytes, or None if key not available.
 
     Raises:
-        MasterKeyNotConfiguredError: If a key-file passphrase has no salt
-            and cannot create one; new data must not use the legacy key.
+        MasterKeyNotConfiguredError: If a key-file passphrase has no
+            durable salt; new data must not use the legacy key.
     """
     key = _get_data_key()
     if not key:
@@ -548,13 +643,6 @@ def _master_key_bytes_from(key: str) -> bytes:
 
     logger.debug("Key is not a raw Fernet key, deriving bytes from passphrase")
     return base64.urlsafe_b64encode(_derive_passphrase_master_key(key))
-
-
-def _legacy_master_key_bytes_from(key: str) -> bytes:
-    """Derive legacy master bytes for read fallback in get_agent_fernet()."""
-    if _is_fernet_key(key):
-        return key.encode()
-    return base64.urlsafe_b64encode(_derive_legacy_passphrase_master_key(key))
 
 
 def _derive_agent_cipher_key(master: bytes, agent_id: str) -> bytes:
@@ -579,11 +667,13 @@ def get_agent_fernet(agent_id: str) -> Optional[AEADCipher]:
 
     Returns:
         AEADCipher with agent-specific key, or None if no master key. A
-        key-file passphrase whose salt cannot be created yields a cipher
-        that decrypts legacy ciphertext and refuses to encrypt.
+        key-file passphrase without a durable salt yields a cipher that
+        refuses to encrypt, yet still decrypts with the salt on disk (if
+        readable) and the legacy key.
     """
-    # Every key below derives from this one read. Key-source errors raised
-    # here must propagate: None would make callers store plaintext.
+    # Every key below derives from this one read. Key-source and salt errors
+    # raised outside the handler below must propagate: None would make
+    # callers store plaintext.
     key = _get_data_key()
     if not key:
         return None
@@ -592,23 +682,15 @@ def get_agent_fernet(agent_id: str) -> Optional[AEADCipher]:
         logger.warning("get_agent_fernet called with empty agent_id, falling back to global key")
         return _global_cipher_from(key)
 
-    legacy_master = _legacy_master_key_bytes_from(key)
-    write_refusal: Optional[str] = None
-    try:
-        master = _master_key_bytes_from(key)
-    except _KeyFileSaltUnavailableError as refusal:
-        write_refusal = str(refusal)
-        master = legacy_master
+    if _is_fernet_key(key):
+        master_keys = _MasterKeys(key.encode(), None, (key.encode(),))
+    else:
+        master_keys = _resolve_passphrase_master_keys(key).map(base64.urlsafe_b64encode)
 
     try:
-        derived = _derive_agent_cipher_key(master, agent_id)
-        cipher = AEADCipher(derived)
-        if write_refusal is not None:
-            return _LegacyReadOnlyCipher(cipher, write_refusal)  # type: ignore[return-value]
-        if legacy_master != master:
-            legacy = AEADCipher(_derive_agent_cipher_key(legacy_master, agent_id))
-            return _ReadFallbackCipher(cipher, legacy)  # type: ignore[return-value]
-        return cipher
+        return _cipher_for(
+            master_keys.map(lambda master: _derive_agent_cipher_key(master, agent_id))
+        )
     except Exception as e:
         logger.error(f"Failed to derive agent key: {e}")
         return None
@@ -631,7 +713,7 @@ def get_agent_key(agent_did: str, purpose: str) -> bytes:
 
     Raises:
         MasterKeyNotConfiguredError: If KESTREL_DATA_KEY not set, or a
-            key-file passphrase has no salt and cannot create one
+            key-file passphrase has no durable salt
         InvalidPurposeError: If purpose not in VALID_PURPOSES
         ValueError: If agent_did is empty
     """
@@ -676,9 +758,9 @@ def encrypt(agent_did: str, purpose: str, plaintext: bytes) -> bytes:
 
     Always emits v2 (``KSAv2:``) tokens. Existing Fernet-encrypted data
     keeps decrypting via the AEADCipher legacy-read path with the same
-    derived key. A key-file passphrase that has no salt and cannot create
-    one raises ``MasterKeyNotConfiguredError`` instead of writing with the
-    legacy unsalted key.
+    derived key. A key-file passphrase without a durable salt raises
+    ``MasterKeyNotConfiguredError`` instead of writing with the legacy
+    unsalted key.
     """
     key = get_agent_key(agent_did, purpose)
     return AEADCipher(key).encrypt(plaintext)
@@ -687,29 +769,27 @@ def encrypt(agent_did: str, purpose: str, plaintext: bytes) -> bytes:
 def decrypt(agent_did: str, purpose: str, ciphertext: bytes) -> bytes:
     """Decrypt bytes for an agent with purpose-specific key.
 
-    Accepts both v2 and legacy Fernet ciphertext. A key-file passphrase
-    with no salt (and no way to create one) has no current key, so only
-    its legacy key is tried.
+    Accepts both v2 and legacy Fernet ciphertext. Decryption never creates
+    or syncs a key-file salt: it tries the salt on disk (if readable) and
+    then the legacy key, even while new writes are refused.
     """
     _require_agent_purpose(agent_did, purpose)
-    # Both keys derive from this one read of the data key.
+    # Every key derives from this one read of the data key.
     data_key = _require_data_key()
-    legacy_key = _derive_purpose_key(
-        _derive_legacy_passphrase_master_key(data_key), agent_did, purpose
+    if _is_fernet_key(data_key):
+        masters = (
+            _decode_fernet_master_key(data_key),
+            _derive_legacy_passphrase_master_key(data_key),
+        )
+    else:
+        masters = _passphrase_read_master_keys(data_key)
+    readers = tuple(
+        AEADCipher(_derive_purpose_key(master, agent_did, purpose)) for master in masters
     )
     try:
-        key = _derive_purpose_key(_master_key_from(data_key), agent_did, purpose)
-    except _KeyFileSaltUnavailableError:
-        key = legacy_key
-    try:
-        return AEADCipher(key).decrypt(ciphertext)
-    except DecryptionError as primary_error:
-        if legacy_key == key:
-            raise primary_error
-        try:
-            return AEADCipher(legacy_key).decrypt(ciphertext)
-        except DecryptionError:
-            raise primary_error
+        return _decrypt_with_any(readers, ciphertext)
+    except DecryptionError:
+        raise
     except Exception as e:
         raise DecryptionError(f"Decryption failed: {e}") from e
 

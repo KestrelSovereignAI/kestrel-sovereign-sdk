@@ -28,9 +28,13 @@ _SPAWN = multiprocessing.get_context("spawn")
 _CHILD_TIMEOUT_SECONDS = 60
 _INTERRUPTED_EXIT_CODE = 17
 _PUBLISHER_THREAD = "salt-publisher"
-_WRITE_REFUSAL = re.compile(
+_CREATE_REFUSAL = re.compile(
     r"Refusing to encrypt new data with the legacy unsalted key.*"
     r"KESTREL_DATA_KEY_SALT .*KESTREL_DATA_KEY_SALT_FILE"
+)
+_SYNC_REFUSAL = re.compile(
+    r"durable .*Refusing to encrypt new data under a salt that a crash could lose.*"
+    r"KESTREL_DATA_KEY_SALT_FILE at .*KESTREL_DATA_KEY_SALT to its contents"
 )
 
 requires_posix_permissions = pytest.mark.skipif(
@@ -135,11 +139,7 @@ def _old_purpose_key(key: str, agent_did: str, purpose: str) -> bytes:
     return encryption._derive_purpose_key(master, agent_did, purpose)
 
 
-def _old_agent_cipher_key(key: str, agent_id: str, fernet_shaped: bool) -> bytes:
-    if fernet_shaped:
-        master = key.encode("ascii")
-    else:
-        master = base64.urlsafe_b64encode(hashlib.sha256(key.encode("utf-8")).digest())
+def _agent_cipher_key(master: bytes, agent_id: str) -> bytes:
     hkdf = HKDF(
         algorithm=hashes.SHA256(),
         length=encryption.KEY_SIZE,
@@ -147,6 +147,27 @@ def _old_agent_cipher_key(key: str, agent_id: str, fernet_shaped: bool) -> bytes
         info=b"kestrel-agent-v1",
     )
     return hkdf.derive(master)
+
+
+def _old_agent_cipher_key(key: str, agent_id: str, fernet_shaped: bool) -> bytes:
+    if fernet_shaped:
+        master = key.encode("ascii")
+    else:
+        master = base64.urlsafe_b64encode(hashlib.sha256(key.encode("utf-8")).digest())
+    return _agent_cipher_key(master, agent_id)
+
+
+def _ciphertexts_under(master: bytes, agent_did: str, purpose: str, label: str) -> dict:
+    """Ciphertext another process wrote under a raw master key, for each read path."""
+    return {
+        "purpose": AEADCipher(encryption._derive_purpose_key(master, agent_did, purpose)).encrypt(
+            f"{label} purpose".encode()
+        ),
+        "global": AEADCipher(master).encrypt(f"{label} global".encode()),
+        "agent": AEADCipher(
+            _agent_cipher_key(base64.urlsafe_b64encode(master), agent_did)
+        ).encrypt(f"{label} agent".encode()),
+    }
 
 
 @pytest.fixture(params=["fernet", "passphrase_salt", "passphrase_no_salt"])
@@ -497,15 +518,17 @@ def test_interrupted_salt_creation_does_not_block_next_start(monkeypatch, tmp_pa
     assert encryption.decrypt(agent_did, "conversations", ciphertext) == b"after crash"
 
 
-def _assert_writes_refused_and_legacy_reads(passphrase: str, key_file: Path) -> None:
+def _assert_writes_refused_and_existing_ciphertext_reads(
+    passphrase: str, key_file: Path, refusal: re.Pattern
+) -> list:
+    """Assert every write refuses and every read path decrypts; return the read key labels."""
     agent_did = "did:key:z6MkReadOnlySecret"
     purpose = "conversations"
-    legacy_purpose = AEADCipher(_old_purpose_key(passphrase, agent_did, purpose)).encrypt(b"legacy purpose")
-    legacy_global = AEADCipher(_old_global_key(passphrase, False)).encrypt(b"legacy global")
-    legacy_agent = AEADCipher(_old_agent_cipher_key(passphrase, agent_did, False)).encrypt(b"legacy agent")
-
     global_cipher = encryption.get_fernet()
     agent_cipher = encryption.get_agent_fernet(agent_did)
+    # None would make callers store plaintext.
+    assert global_cipher is not None
+    assert agent_cipher is not None
     writes = (
         lambda: encryption.encrypt(agent_did, purpose, b"new write"),
         lambda: encryption.encrypt_string(agent_did, purpose, "new write"),
@@ -514,15 +537,25 @@ def _assert_writes_refused_and_legacy_reads(passphrase: str, key_file: Path) -> 
         lambda: global_cipher.encrypt(b"new write"),
         lambda: agent_cipher.encrypt(b"new write"),
         lambda: encryption.encrypt_bytes(b"new write", global_cipher),
+        lambda: encryption.encrypt_bytes(b"new write", agent_cipher),
+        lambda: encryption.encrypt_string_fernet("new write", agent_cipher),
     )
     for write in writes:
-        with pytest.raises(MasterKeyNotConfiguredError, match=_WRITE_REFUSAL):
+        with pytest.raises(MasterKeyNotConfiguredError, match=refusal):
             write()
 
-    assert encryption.decrypt(agent_did, purpose, legacy_purpose) == b"legacy purpose"
-    assert global_cipher.decrypt(legacy_global) == b"legacy global"
-    assert agent_cipher.decrypt(legacy_agent) == b"legacy agent"
-    assert not _salt_path(key_file).exists()
+    masters = {"legacy": hashlib.sha256(passphrase.encode("utf-8")).digest()}
+    salt_path = _salt_path(key_file)
+    if salt_path.exists():
+        # Another process may already have written under a salt this one cannot make durable.
+        salt = base64.urlsafe_b64decode(salt_path.read_bytes())
+        masters["salted"] = base64.urlsafe_b64decode(_salted_master_key_bytes(passphrase, salt))
+    for label, master in masters.items():
+        existing = _ciphertexts_under(master, agent_did, purpose, label)
+        assert encryption.decrypt(agent_did, purpose, existing["purpose"]) == f"{label} purpose".encode()
+        assert global_cipher.decrypt(existing["global"]) == f"{label} global".encode()
+        assert agent_cipher.decrypt(existing["agent"]) == f"{label} agent".encode()
+    return sorted(masters)
 
 
 def test_key_file_passphrase_salt_creation_failure_refuses_writes_and_reads_legacy(
@@ -538,7 +571,10 @@ def test_key_file_passphrase_salt_creation_failure_refuses_writes_and_reads_lega
     _use_only_key_file(monkeypatch, key_file)
     monkeypatch.setattr(encryption, "_publish_salt_file", read_only_mount)
 
-    _assert_writes_refused_and_legacy_reads(passphrase, key_file)
+    assert _assert_writes_refused_and_existing_ciphertext_reads(
+        passphrase, key_file, _CREATE_REFUSAL
+    ) == ["legacy"]
+    assert not _salt_path(key_file).exists()
     assert "legacy unsalted SHA-256 mode" not in caplog.text
 
 
@@ -555,7 +591,10 @@ def test_key_file_passphrase_in_read_only_directory_refuses_writes_until_writabl
 
     secret_dir.chmod(0o500)
     try:
-        _assert_writes_refused_and_legacy_reads(passphrase, key_file)
+        assert _assert_writes_refused_and_existing_ciphertext_reads(
+            passphrase, key_file, _CREATE_REFUSAL
+        ) == ["legacy"]
+        assert not _salt_path(key_file).exists()
     finally:
         secret_dir.chmod(0o700)
     assert "legacy unsalted SHA-256 mode" not in caplog.text
@@ -563,6 +602,84 @@ def test_key_file_passphrase_in_read_only_directory_refuses_writes_until_writabl
     master = encryption.get_master_key_bytes()
     salt = base64.urlsafe_b64decode(_salt_path(key_file).read_bytes())
     assert master == _salted_master_key_bytes(passphrase, salt)
+
+
+@pytest.mark.parametrize("established", [False, True], ids=["new_salt", "established_salt"])
+def test_key_file_salt_sync_failure_refuses_writes_and_reads_existing_ciphertext(
+    monkeypatch, caplog, tmp_path, established
+):
+    key_file = tmp_path / "kestrel_data_key"
+    passphrase = "passphrase whose salt directory cannot be synced"
+    key_file.write_text(passphrase, encoding="utf-8")
+    if established:
+        _write_salt(_salt_path(key_file), b"\x66" * encryption.PASSPHRASE_SALT_SIZE)
+
+    def sync_fails(directory):
+        raise OSError(errno.EIO, os.strerror(errno.EIO), str(directory))
+
+    _use_only_key_file(monkeypatch, key_file)
+    monkeypatch.setattr(encryption, "_fsync_directory", sync_fails)
+
+    assert _assert_writes_refused_and_existing_ciphertext_reads(
+        passphrase, key_file, _SYNC_REFUSAL
+    ) == ["legacy", "salted"]
+    assert "legacy unsalted SHA-256 mode" not in caplog.text
+
+
+@requires_posix_permissions
+def test_unsyncable_key_file_directory_refuses_writes_and_reads_existing_ciphertext(
+    monkeypatch, tmp_path
+):
+    secret_dir = tmp_path / "secrets"
+    secret_dir.mkdir()
+    key_file = secret_dir / "kestrel_data_key"
+    passphrase = "passphrase in a directory that cannot be opened to sync"
+    key_file.write_text(passphrase, encoding="utf-8")
+    _use_only_key_file(monkeypatch, key_file)
+
+    # Write and search permission publish the salt; without read permission the
+    # directory cannot be opened to fsync its new entry.
+    secret_dir.chmod(0o300)
+    try:
+        assert _assert_writes_refused_and_existing_ciphertext_reads(
+            passphrase, key_file, _SYNC_REFUSAL
+        ) == ["legacy", "salted"]
+    finally:
+        secret_dir.chmod(0o700)
+
+    # Once the directory can be synced, the published salt is adopted, not replaced.
+    salt = base64.urlsafe_b64decode(_salt_path(key_file).read_bytes())
+    assert encryption.get_master_key_bytes() == _salted_master_key_bytes(passphrase, salt)
+
+
+@pytest.mark.parametrize("established", [False, True], ids=["no_salt", "unsynced_salt"])
+def test_decrypt_never_creates_or_syncs_a_key_file_salt(monkeypatch, tmp_path, established):
+    key_file = tmp_path / "kestrel_data_key"
+    passphrase = "passphrase read without salt side effects"
+    key_file.write_text(passphrase, encoding="utf-8")
+    salt_path = _salt_path(key_file)
+    masters = {"legacy": hashlib.sha256(passphrase.encode("utf-8")).digest()}
+    if established:
+        salt = b"\x77" * encryption.PASSPHRASE_SALT_SIZE
+        _write_salt(salt_path, salt)
+        masters["salted"] = base64.urlsafe_b64decode(_salted_master_key_bytes(passphrase, salt))
+    effects = []
+    _use_only_key_file(monkeypatch, key_file)
+    monkeypatch.setattr(
+        encryption, "_publish_salt_file", lambda path, salt: effects.append(("publish", path))
+    )
+    monkeypatch.setattr(
+        encryption, "_fsync_directory", lambda directory: effects.append(("sync", directory))
+    )
+    agent_did = "did:key:z6MkReadsOnly"
+    purpose = "conversations"
+
+    for label, master in masters.items():
+        ciphertext = _ciphertexts_under(master, agent_did, purpose, label)["purpose"]
+        assert encryption.decrypt(agent_did, purpose, ciphertext) == f"{label} purpose".encode()
+
+    assert effects == []
+    assert salt_path.exists() is established
 
 
 def test_established_key_file_salt_needs_no_writable_directory(monkeypatch, tmp_path):

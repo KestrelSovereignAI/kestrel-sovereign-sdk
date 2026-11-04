@@ -29,12 +29,17 @@ All notable changes to this project are documented in this file.
   file. A temp file left by an interrupted creation does not block the next
   start. Creating the salt now requires hard-link support in that directory;
   otherwise configure the salt explicitly as above.
-- Each process syncs the salt's directory before first using an automatic
-  `<key file>.salt`, whether it published that salt or found one another
-  process had linked but not yet synced. A crash can therefore no longer lose a
-  salt that ciphertext was already written under. If the directory cannot be
-  synced, key operations raise `MasterKeyNotConfiguredError`; configure the
-  salt explicitly with `KESTREL_DATA_KEY_SALT` or `KESTREL_DATA_KEY_SALT_FILE`.
+- Each process syncs the salt's directory before first encrypting with an
+  automatic `<key file>.salt`, whether it published that salt or found one
+  another process had linked but not yet synced. A crash can therefore no
+  longer lose a salt that ciphertext was already written under. If the
+  directory cannot be synced, new writes and key export raise
+  `MasterKeyNotConfiguredError`; point `KESTREL_DATA_KEY_SALT_FILE` at that
+  salt file or set `KESTREL_DATA_KEY_SALT` to its contents.
+- Decryption never creates or syncs a key-file salt. `decrypt` and the ciphers
+  from `get_fernet` / `get_agent_fernet` try a readable `<key file>.salt`,
+  even one not yet durable, and then the legacy key, so existing ciphertext
+  stays readable while new writes are refused.
 
 ## 0.47.0
 
