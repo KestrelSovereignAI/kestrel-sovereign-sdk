@@ -116,11 +116,18 @@ class DefaultServerCallContextBuilder(ServerCallContextBuilder):
             state['auth'] = request.auth
         state['headers'] = dict(request.headers)
         # Every A2A-Version carrier, so negotiation can reject conflicts.
+        # Service parameter names are case-insensitive in either carrier.
         from starlette.datastructures import QueryParams  # noqa: PLC0415
 
         state['a2a_versions'] = [
             *request.headers.getlist(VERSION_HEADER),
-            *QueryParams(request.query_params).getlist(VERSION_HEADER),
+            *(
+                value
+                for name, value in QueryParams(
+                    request.query_params
+                ).multi_items()
+                if name.lower() == VERSION_HEADER.lower()
+            ),
         ]
         return ServerCallContext(
             user=self.build_user(request),

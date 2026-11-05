@@ -115,9 +115,10 @@ No runtime module alias, monkey patch, private protocol or signature fallback is
 installed. A separately installed `a2a` Python package does not supply Kestrel's
 SDK implementation. Full host conformance and interoperability remain host gates.
 
-The native client factory accepts A2A 1.0 interfaces, including patch revisions,
-and never automatically selects the upstream 0.3 compatibility transports. The
-retained upstream `compat` modules are outside Kestrel's supported client API.
+The client factory follows upstream and may select an A2A 0.3 interface, through
+the retained `compat` transports, when a card offers one. Callers that require
+A2A 1.0 filter the card's interfaces first. The `compat` modules are outside
+Kestrel's supported client API.
 
 Python module relocation does not create a separate Protobuf registry. The
 original protocol descriptors register their names process-wide; a separately
@@ -134,9 +135,10 @@ to satisfy a vendored module's hint can create the descriptor conflicts above.
 The retained gRPC server does not negotiate `A2A-Version` metadata
 ([#91](https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk/issues/91)).
 HTTP handlers accept `A2A-Version` in headers or query parameters, including
-case-insensitive parameter names. Every supplied value must match the handler's
-Major.Minor release; patch numbers are ignored. Empty values mean 0.3, so a
-supported value cannot hide a conflicting or empty value in another carrier.
+case-insensitive parameter names. Every supplied value must be compatible with
+the handler's version, which upstream decides by the major version alone. Empty
+values mean 0.3, so a supported value cannot hide a conflicting or empty value
+in another carrier.
 
 ## Dependencies
 

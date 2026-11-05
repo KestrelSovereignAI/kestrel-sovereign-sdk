@@ -227,7 +227,7 @@ def test_every_version_carrier_captured_in_state():
     request.headers = Headers(
         raw=[(b'a2a-version', b'1.0'), (b'a2a-version', b'0.3')]
     )
-    request.query_params = QueryParams('A2A-Version=1.0.1')
+    request.query_params = QueryParams('A2A-Version=1.0.1&a2a-version=0.3')
 
     ctx = DefaultServerCallContextBuilder().build(request)
-    assert ctx.state['a2a_versions'] == ['1.0', '0.3', '1.0.1']
+    assert ctx.state['a2a_versions'] == ['1.0', '0.3', '1.0.1', '0.3']
