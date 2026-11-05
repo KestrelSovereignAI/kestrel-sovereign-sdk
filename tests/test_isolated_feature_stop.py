@@ -1315,10 +1315,11 @@ async def test_same_task_start_stop_restart_then_cross_task_stop_keeps_parent_al
 ):
     """Same-task lifecycle calls cannot leave stale ownership for a later stop."""
 
-    monkeypatch.setattr(client_module, "_SUBPROCESS_STOP_TIMEOUT", 0.03)
-    first_process = _GracefulProcess()
-    second_process = _GracefulProcess()
+    # This case exercises successful shutdown, not a retirement deadline.
+    first_process = _NeverReapedProcess()
+    second_process = _NeverReapedProcess()
     processes = [first_process, second_process]
+    spawned: list[_NeverReapedProcess] = []
     restarted_after_return = asyncio.Event()
     release_parent = asyncio.Event()
     parent_cancelled = asyncio.Event()
@@ -1327,6 +1328,7 @@ async def test_same_task_start_stop_restart_then_cross_task_stop_keeps_parent_al
         process = processes.pop(0)
         process.stdin = _CloseTrackingWriter()
         process.stdout = _TransportOnlyReader()
+        spawned.append(process)
         return process
 
     async def initialize(self, *args, **kwargs):
@@ -1339,6 +1341,7 @@ async def test_same_task_start_stop_restart_then_cross_task_stop_keeps_parent_al
         return []
 
     async def shutdown(self):
+        spawned[-1].finish(0)
         return {}
 
     monkeypatch.setattr(client_module.asyncio, "create_subprocess_exec", spawn)
@@ -1366,14 +1369,18 @@ async def test_same_task_start_stop_restart_then_cross_task_stop_keeps_parent_al
     except TimeoutError:
         assert parent.done()
         await parent
-    assert first_process.terminate_calls == 1
+    assert first_process.returncode == 0
+    assert first_process.wait_calls == 1
+    assert first_process.terminate_calls == 0
     assert first_process.kill_calls == 0
 
     # A different T2 performs the later stop after the same T1 restarted.
     await wrapper.stop()
     assert not parent.done()
     assert not parent_cancelled.is_set()
-    assert second_process.terminate_calls == 1
+    assert second_process.returncode == 0
+    assert second_process.wait_calls == 1
+    assert second_process.terminate_calls == 0
     assert second_process.kill_calls == 0
 
     release_parent.set()
