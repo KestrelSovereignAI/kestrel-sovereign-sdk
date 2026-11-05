@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 332 tracked files (298 `.py`, 9 `.md`, 25 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 337 tracked files (303 `.py`, 9 `.md`, 25 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -90,6 +90,8 @@ Repo entry points and standard project files.
   - `class PermissionLevel`; `class FeaturePermissionDefaults`; `class ContributionContractError`; `class WaitProviderRegistration`; `class WorkflowRegistration`; `class ContextClauseRegistration`; `class SetupStepContext`; `class SetupFlow`; `…`
 - **kestrel_sdk/features/host_base.py** — Host-scoped feature contract — SDK interface.
   - `class HostContext`; `class HostFeature`
+- **kestrel_sdk/features/host_errors.py** — Host-owned classification of execution-control errors.
+  - `def register_control_error_predicate(fn)`; `def is_host_control_error(exc)`
 - **kestrel_sdk/features/ui.py** — SDK-owned UI contribution shape.
   - `class UIContributions`
 - **kestrel_sdk/hooks/__init__.py** — Kestrel SDK — Hook interfaces.
@@ -121,6 +123,8 @@ Repo entry points and standard project files.
   - `class ToolCall`; `class ToolCallStarted`; `class TokenCount`; `class FileRef`; `class CacheMarker`; `class WebSearchOptions`; `class CodeExecOptions`; `class ComputerUseOptions`; `…`
 - **kestrel_sdk/llm/types.py** — Stable LLM-related types shared across feature packages.
   - `class BackendType`
+- **kestrel_sdk/logging_summary.py** — Non-content summaries of caller text for log lines.
+  - `def content_log_summary(text)`
 - **kestrel_sdk/metrics.py** — Kestrel Prometheus Metrics — shared metric definitions for the Kestrel ecosystem.
   - `def generate_metrics()`; `def get_content_type()`
 - **kestrel_sdk/native_a2a/LICENSE** — —
@@ -427,7 +431,7 @@ Repo entry points and standard project files.
   - `class VectorSearchBackend`
 - **kestrel_sdk/tools/__init__.py** — Kestrel SDK — Tool interfaces.
 - **kestrel_sdk/tools/base.py** — Base classes and interfaces for Kestrel agent tools.
-  - `def coerce_json_value(value, param_type, nullable)`; `class ToolCategory`; `class ToolParameter`; `class ToolSchema`; `class GovernedToolBinding`; `class CommandParseError`; `class AgentTool`; `class ToolExecutionError`
+  - `def coerce_json_value(value, param_type, nullable)`; `class ToolCategory`; `class ToolParameter`; `def coerce_tool_arguments(tool_name, parameters, arguments)`; `class ToolSchema`; `class GovernedToolBinding`; `class CommandParseError`; `class AgentTool`; `…`
 - **kestrel_sdk/tools/deferred.py** — In-process render delivery after the host completes post-tool policy.
   - `class FinalizedToolResult`; `class ToolPublicationContext`; `class DeferredToolResultHost`; `class ToolPublicationHost`; `class DeferredToolResult`
 - **kestrel_sdk/tools/parts.py** — Pending typed-parts buffer for the tool call currently executing.
@@ -537,6 +541,8 @@ Repo entry points and standard project files.
   - `def test_freeze_copies_deeply_and_is_read_only()`; `def test_self_reference_is_a_cycle_error_not_recursion()`; `def test_shared_but_acyclic_containers_are_not_cycles()`; `def test_non_string_keys_are_rejected_by_default()`; `def test_non_finite_numbers_are_rejected(number)`; `def test_unsupported_types_are_rejected()`; `def test_depth_nodes_and_keys_budgets()`; `def test_measured_size_equals_canonical_encoding(value)`; `…`
 - **tests/test_hook_input.py** — SDK 0.9 — HookInput narration-check fields (kestrel-sovereign #1048 Wave 5D).
   - `def test_post_response_narration_fields_present_and_default_to_none()`; `def test_post_response_narration_fields_round_trip_through_to_dict()`; `def test_to_dict_exact_shape_for_post_response_event()`; `def test_positional_args_through_agent_spawn_keep_pre_0_9_meaning()`; `def test_pre_0_9_callers_still_construct_without_narration_fields()`
+- **tests/test_host_control_errors.py** — The host, not the SDK, decides which tool exceptions are control (#105).
+  - `class ControlError`; `def no_registered_predicate(monkeypatch)`; `def feature()`; `class TestDynamicToolExecute`; `class TestRegistration`
 - **tests/test_host_feature_contract.py** — Tests for the host-scoped feature contract (issue #46).
   - `class ExampleHostFeature`; `def test_hostfeature_importable_from_sdk_top_level()`; `def test_hostfeature_is_abc_and_distinct_from_feature()`; `def test_hostfeature_has_no_agent_binding()`; `def test_declares_required_contract_methods()`; `def test_name_and_capability_slugs()`; `def test_base_defaults_are_thin()`; `async def test_host_contribution_owner_does_not_claim_legacy_owner(legacy_owner)`; `…`
 - **tests/test_human_control_contracts.py** — Consumer/epoch custody and bounded manual input, without a runtime adapter.
@@ -561,6 +567,8 @@ Repo entry points and standard project files.
   - `async def test_cancelled_stop_retains_detached_child_and_delivers_first_cancellation(monkeypatch)`; `async def test_stop_never_reaped_process_uses_only_signal_phase_observations(monkeypatch)`; `async def test_stop_does_not_reobserve_process_after_prior_close_task(monkeypatch)`; `async def test_stop_reobserves_process_after_client_close_can_unblock_waiter(monkeypatch)`; `async def test_stop_timeout_does_not_fence_start_that_settles_before_timeout_update(monkeypatch)`; `async def test_stop_preserves_nested_timeout_cancellation_counts(monkeypatch)`; `async def test_stop_nested_timeout_and_external_cancels_continue_after_catch(monkeypatch)`; `async def test_start_rejects_while_a_detached_child_has_unresolved_retirement(monkeypatch)`; `…`
 - **tests/test_llm_contract.py** — Tests for the LLM provider contract.
   - `class TestContractVersion`; `class TestToolCall`; `class TestLLMResponse`; `class TestModelCategory`; `class TestModelInfo`; `class TestProviderInfo`; `class TestProviderCapabilities`; `class TestBackendType`; `…`
+- **tests/test_logging_summary.py** — ``content_log_summary`` describes caller text without any of it (#105).
+  - `def test_summary_is_length_and_a_short_digest()`; `def test_summary_contains_none_of_the_text()`; `def test_same_text_matches_within_the_process_and_different_text_does_not()`; `def test_digest_is_keyed_not_a_plain_hash()`; `def test_lone_surrogate_and_empty_text_do_not_raise()`
 - **tests/test_native_a2a_skills.py** — Features contribute native skills; only the serving agent owns a card.
   - `class SkillFeature`; `def test_skills_are_official_models_with_native_json()`; `def test_skills_follow_current_tool_exposure_and_are_fresh()`; `def test_skill_metadata_comes_from_current_tool_schema()`; `def test_empty_exposure_has_no_skills()`; `def test_invalid_required_skill_fields_fail_with_the_native_error(name, description)`; `def test_features_do_not_publish_fake_agent_cards()`; `def test_draft_wire_models_are_retired(module)`; `…`
 - **tests/test_operator_contracts.py** — Focused tests for feature-owned operator SDK contracts.
@@ -580,7 +588,7 @@ Repo entry points and standard project files.
 - **tests/test_run_contracts.py** — Focused tests for durable operator run-plane contracts.
   - `def test_launch_contains_only_semantic_input_and_record_owns_runtime_clock()`; `def test_launch_authorization_binds_all_trusted_authority()`; `def test_manual_and_agent_launch_shape_invariants()`; `def test_run_models_are_frozen_and_correlate_attempt_and_external_job()`; `def test_resolved_run_authorization_rechecks_durable_launch_scope()`; `def test_resolved_run_tenant_mismatch_matches_tenant_scoped_absence()`; `def test_terminal_state_and_separate_control_and_artifact_actions()`; `def test_control_expected_sequence_is_validated_and_outside_key_scope()`; `…`
 - **tests/test_security_encryption.py** — Tests for SDK encryption key derivation and migration behavior.
-  - `def key_shape(request, monkeypatch, tmp_path)`; `def clear_master_key_cache()`; `def test_passphrase_master_key_uses_salted_pbkdf2_600k(monkeypatch, tmp_path)`; `def test_env_passphrase_without_salt_warns_once_and_uses_legacy(monkeypatch, caplog, tmp_path)`; `def test_same_passphrase_and_env_salt_yield_same_key_across_derivations(monkeypatch)`; `def test_key_file_passphrase_persists_salt_next_to_key(monkeypatch, tmp_path)`; `def test_key_file_passphrase_salt_write_failure_falls_back_to_legacy(monkeypatch, caplog, tmp_path)`; `def test_passphrase_master_key_is_cached_for_encrypt_decrypt(monkeypatch)`; `…`
+  - `def key_shape(request, monkeypatch, tmp_path)`; `def clear_master_key_cache()`; `def test_passphrase_master_key_uses_salted_pbkdf2_600k(monkeypatch, tmp_path)`; `def test_env_passphrase_without_salt_warns_once_and_uses_legacy(monkeypatch, caplog, tmp_path)`; `def test_same_passphrase_and_env_salt_yield_same_key_across_derivations(monkeypatch)`; `def test_key_file_passphrase_persists_salt_next_to_key(monkeypatch, tmp_path)`; `def test_key_file_salt_is_published_privately_without_temp_files(monkeypatch, tmp_path)`; `def test_concurrent_first_starts_converge_on_one_durable_salt(tmp_path)`; `…`
 - **tests/test_timeline_protocol.py** — Tests for timeline protocols.
   - `class StubTimeline`; `class StubEvent`; `class StubPerson`; `def test_timeline_protocol_conformance()`; `def test_timeline_protocol_optional_subject_name()`; `def test_event_protocol_conformance()`; `def test_event_protocol_optional_fields()`; `def test_person_protocol_conformance()`; `…`
 - **tests/test_timeline_sharing.py** — Tests for timeline sharing protocols.
@@ -588,9 +596,11 @@ Repo entry points and standard project files.
 - **tests/test_tls_dependencies.py** — Public install contracts for the SDK's optional HTTPS clients.
   - `def selected_requirements(extra)`; `def test_https_profiles_share_the_certifi_dependency_policy(extra)`
 - **tests/test_tool_argument_coercion.py** — Tool arguments are coerced to the type their schema declares (issue #78).
-  - `def feature()`; `class TestJsonArgumentPath`; `class TestJsonNull`; `class TestUncoercibleArguments`; `class TestCommandPrefixPath`; `class TestSharedRules`
+  - `def feature()`; `def invoke(request, feature)`; `class TestPublicName`; `class TestJsonArgumentPath`; `class TestJsonNull`; `class TestUncoercibleArguments`; `class TestCommandPrefixPath`; `class TestSharedRules`
 - **tests/test_tool_exposure.py** — Tool model exposure is host metadata, separate from schema and permission.
   - `def schema()`; `def test_tools_are_visible_to_the_model_by_default()`; `def test_tool_descriptor_retains_explicit_model_exposure(visible)`; `def test_model_exposure_does_not_change_the_native_provider_schema()`; `def test_model_exposure_requires_an_explicit_boolean(invalid)`
+- **tests/test_tool_log_content.py** — The SDK tool wrapper logs non-content facts only (#105).
+  - `async def test_tool_exception_message_is_not_logged(caplog)`; `async def test_rejected_argument_value_is_not_logged(caplog)`
 - **tests/test_tool_result.py** — Tests for ToolResult — the cross-feature tool envelope contract.
   - `class TestToolResultStatus`; `class TestToolResultOk`; `class TestToolResultFailed`; `class TestToolResultPartial`; `class TestToolResultTypeGuards`; `class TestToolResultFrozen`; `class TestToolResultSerialization`; `class TestHonestyLayerInvariants`; `…`
 - **tests/test_tool_schema_annotations.py** — @tool parameter-schema generation from real and PEP 563 annotations.
