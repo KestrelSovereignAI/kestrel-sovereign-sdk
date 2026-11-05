@@ -39,16 +39,14 @@ def _drive(coro):
 
 
 class TestDrainStreamingWithToolsHappy:
-    def test_text_only_stream_no_final_response_is_allowed(self):
-        """Pinned: pure-text streams MAY terminate without a final
-        LLMResponse (the contract reserves the terminal LLMResponse
-        for tool-call responses)."""
-        items = ["hello ", "world"]
+    def test_text_only_stream_has_terminal_response(self):
+        terminal = LLMResponse(content="hello world", stop_reason="stop")
+        items = ["hello ", "world", terminal]
         result = _drive(drain_streaming_with_tools(_stream_from(items)))
         assert result.text == "hello world"
         assert result.text_chunks == ["hello ", "world"]
         assert result.tool_starts == []
-        assert result.final_response is None
+        assert result.final_response is terminal
 
     def test_single_tool_call_with_marker_and_response(self):
         items = [
@@ -265,7 +263,7 @@ class TestDrainStreamingWithToolsViolations:
 
 class TestDrainStreamingTextOnly:
     def test_text_only_returns_concatenated_text(self):
-        items = ["hello ", "there ", "world"]
+        items = ["hello ", "there ", "world", LLMResponse(stop_reason="stop")]
         text = _drive(drain_streaming_text_only(_stream_from(items)))
         assert text == "hello there world"
 
@@ -274,10 +272,9 @@ class TestDrainStreamingTextOnly:
         with pytest.raises(AssertionError, match="text-only output"):
             _drive(drain_streaming_text_only(_stream_from(items)))
 
-    def test_response_in_text_only_stream_is_rejected(self):
-        items = ["hello", LLMResponse(content="hello")]
-        with pytest.raises(AssertionError, match="text-only output"):
-            _drive(drain_streaming_text_only(_stream_from(items)))
+    def test_terminal_content_is_not_rendered_again(self):
+        items = ["hello", LLMResponse(content="metadata is not another chunk")]
+        assert _drive(drain_streaming_text_only(_stream_from(items))) == "hello"
 
 
 # ---------------------------------------------------------------------------

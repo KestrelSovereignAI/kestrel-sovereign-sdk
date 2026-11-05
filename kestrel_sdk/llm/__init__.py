@@ -38,6 +38,7 @@ detect drift at import time::
 """
 
 from .adapter import LLMAdapter
+from .errors import LLMProtocolError
 from .capabilities import (
     BatchMode,
     FilesMode,
@@ -171,11 +172,17 @@ from .types import BackendType
 # ``ProviderCapabilities.supports_decisions``. Additive: adapters that do not
 # override the new methods keep their defaults (``DecisionsNotSupported`` and
 # an empty model list), so v6 adapters remain conforming.
-SDK_LLM_CONTRACT_VERSION = 7
+# Version 8 (SDK 0.49.0): declares LLMResponse.stop_reason and
+# LLMProtocolError. Every normally exhausted stream, including plain/empty
+# streams, ends in exactly one LLMResponse. Plain streams reject requested
+# or returned tool evidence. Missing/native unsuccessful reasons remain
+# evidence for the host to judge; EOF never supplies a successful reason.
+SDK_LLM_CONTRACT_VERSION = 8
 
 __all__ = [
     "INFERENCE_LEASE_PROVIDER_ENTRY_POINT_GROUP",
     "SDK_LLM_CONTRACT_VERSION",
+    "LLMProtocolError",
     "BackendType",
     "BatchHandle",
     "BatchMode",

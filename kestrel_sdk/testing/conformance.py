@@ -54,11 +54,10 @@ class StreamingWithToolsResult:
         tool_starts: Every ``ToolCallStarted`` marker the stream
             yielded, in order. Index uniqueness has already been
             asserted by the drain helper.
-        final_response: The single terminal ``LLMResponse``, or
-            ``None`` if the stream completed text-only without one.
-            Pure-text streams are explicitly allowed to terminate
-            without a final ``LLMResponse``; tool-call streams MUST
-            yield exactly one.
+        final_response: The single terminal ``LLMResponse``. This is
+            ``None`` only while draining; a normal return always has one,
+            including text-only/empty streams. Its native reason may still
+            be ``None`` or unsuccessful: the host judges completion.
     """
 
     text: str = ""
@@ -80,11 +79,10 @@ async def drain_streaming_with_tools(
       :class:`LLMResponse`. Anything else is a contract violation —
       adapters MUST NOT smuggle adapter-specific data through the
       streaming channel.
-    * At most one terminal ``LLMResponse``. The contract says
-      *exactly* one when the response includes tool calls; the
-      drain helper enforces *at most* one and exposes the count to
-      the caller via ``final_response is not None``.
-    * The ``LLMResponse``, when present, is the LAST item in the
+    * Exactly one terminal ``LLMResponse`` on normal completion,
+      including text-only and empty streams. A native reason of ``None``
+      remains unknown; this helper validates shape, not completion policy.
+    * The ``LLMResponse`` is the LAST item in the
       stream. Anything yielded after it is a violation (the
       contract pins the response as terminal so consumers can rely
       on its presence to know the stream is complete).
@@ -118,6 +116,13 @@ async def drain_streaming_with_tools(
     not assert plugin-specific properties — that's the caller's
     job after drain returns.
     """
+    return await _drain_streaming(stream, text_only=False)
+
+
+async def _drain_streaming(
+    stream: AsyncIterator[StreamItem], *, text_only: bool
+) -> StreamingWithToolsResult:
+    """The shared frame-order and envelope checks for both stream surfaces."""
     out = StreamingWithToolsResult()
 
     async for item in stream:
@@ -133,6 +138,11 @@ async def drain_streaming_with_tools(
             out.text += item
             continue
         if isinstance(item, ToolCallStarted):
+            if text_only:
+                raise AssertionError(
+                    "Stream yielded tool evidence but the test scenario "
+                    "specified text-only output."
+                )
             assert_tool_call_started_contract(item)
             for prev in out.tool_starts:
                 if prev.index == item.index:
@@ -145,6 +155,11 @@ async def drain_streaming_with_tools(
             out.tool_starts.append(item)
             continue
         if isinstance(item, LLMResponse):
+            if text_only and item.has_tool_calls:
+                raise AssertionError(
+                    "Stream yielded assembled tool calls but the test "
+                    "scenario specified text-only output."
+                )
             assert_response_contract(item)
             out.final_response = item
             continue
@@ -156,12 +171,15 @@ async def drain_streaming_with_tools(
             "channel; carry it on LLMResponse.raw instead."
         )
 
+    if out.final_response is None:
+        raise AssertionError(
+            "Stream never yielded a terminal LLMResponse. Contract: all "
+            "normally completed streams MUST yield exactly one terminal "
+            "LLMResponse as the LAST item, including text-only/empty streams."
+        )
+
     # Cross-cutting checks once the stream has drained.
-    final_tool_calls = (
-        out.final_response.tool_calls
-        if out.final_response is not None
-        else None
-    ) or []
+    final_tool_calls = out.final_response.tool_calls or []
 
     if final_tool_calls and not out.tool_starts:
         # Codex review caught this gap: an adapter that yields a
@@ -180,15 +198,6 @@ async def drain_streaming_with_tools(
         )
 
     if out.tool_starts:
-        if out.final_response is None:
-            raise AssertionError(
-                "Stream emitted ToolCallStarted markers but never yielded "
-                "a terminal LLMResponse. Contract: tool-call streams "
-                "MUST yield exactly one LLMResponse at end-of-stream "
-                f"so consumers see the assembled call. Markers seen: "
-                f"{len(out.tool_starts)} (indices "
-                f"{[s.index for s in out.tool_starts]})."
-            )
         if not out.final_response.has_tool_calls:
             raise AssertionError(
                 "Stream emitted ToolCallStarted markers but the terminal "
@@ -250,9 +259,12 @@ async def drain_streaming_with_tools(
 async def drain_streaming_text_only(
     stream: AsyncIterator[StreamItem],
 ) -> str:
-    """Drain a streaming response that the test asserts is text-only
-    and return the concatenated text. Raises :class:`AssertionError`
-    if the stream yields any non-string items.
+    """Validate a plain stream and return only its concatenated text chunks.
+
+    Exactly one terminal ``LLMResponse`` is required and its metadata/content
+    is not rendered again. Tool markers or assembled tool calls are rejected.
+    A missing or unsuccessful native reason is valid evidence shape, not a
+    successful generation; the host must still judge it.
 
     Use this when the test scenario specifies "no tool call should
     fire" (e.g. asserting a refusal flow stays in text mode); pairing
@@ -260,17 +272,7 @@ async def drain_streaming_text_only(
     test intent explicit at the call site rather than buried in a
     type guard.
     """
-    text_chunks: List[str] = []
-    async for item in stream:
-        if not isinstance(item, str):
-            raise AssertionError(
-                f"Stream yielded {type(item).__name__}={item!r} but the "
-                "test scenario specified text-only output. Use "
-                "drain_streaming_with_tools when the scenario allows "
-                "tool calls."
-            )
-        text_chunks.append(item)
-    return "".join(text_chunks)
+    return (await _drain_streaming(stream, text_only=True)).text
 
 
 def assert_tool_call_started_contract(marker: ToolCallStarted) -> None:
@@ -341,6 +343,10 @@ def assert_response_contract(response: LLMResponse) -> None:
     Mostly mirrors what the dataclass already enforces; the helper
     adds the cross-field rules:
 
+    * ``stop_reason`` is ``None`` or a non-empty exact ``str``. Unknown,
+      blocked and output-limit literals are accepted unchanged; completion
+      policy belongs to the host, not this conformance kit.
+
     * ``tool_calls`` is either ``None`` (no tools called) or a
       non-empty list. The empty-list case is reserved for adapters
       that filtered all calls and downgraded to text-only — those
@@ -361,6 +367,13 @@ def assert_response_contract(response: LLMResponse) -> None:
       positives for tools whose schema legitimately includes a
       ``raw`` parameter.
     """
+    if response.stop_reason is not None and (
+        type(response.stop_reason) is not str or not response.stop_reason
+    ):
+        raise AssertionError(
+            "LLMResponse.stop_reason must be None or a non-empty exact str; "
+            "preserve the native literal and convert provider enums to their value."
+        )
     if response.tool_calls is not None:
         if not isinstance(response.tool_calls, list):
             raise AssertionError(

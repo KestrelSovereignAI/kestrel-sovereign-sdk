@@ -2,30 +2,130 @@
 
 All notable changes to this project are documented in this file.
 
-## 0.47.0
+## 0.50.0
 
 ### Changed
 
-- The modified A2A SDK in `kestrel_sdk.native_a2a` moves from upstream
-  a2a-python 1.2.3 to upstream `main` after 1.3.0 (`11f1116`), bringing in
-  upstream's server, client and v0.3 compatibility fixes and its new `plugins`
-  package. Kestrel's signing, HTTP authorization, version negotiation, native
-  client selection, discovery and response-decoding changes are re-applied.
-  Where upstream landed its own fix for the same defect (malformed signature
-  headers, unknown response fields, per-client HTTP ownership, JSON-RPC
-  envelopes), the reviewed implementation is kept and upstream's regression
-  tests run against it. The wire protocol remains A2A 1.0.1. `VENDORED.json`
-  records the base as `1.3.0-12-g11f1116`.
-- Signing regressions pin that an empty `securityRequirements` element stays in
-  the signed bytes, and that adding or removing a requirement on the card or a
-  skill invalidates the signature.
+- `kestrel_sdk.native_a2a` moves from upstream a2a-python 1.2.3 to upstream
+  `main` after 1.3.0 (`11f1116`) and converges on it. Where upstream fixed a
+  defect Kestrel had also patched, upstream's fix replaces Kestrel's. Agent
+  Card signing and verification, response decoding, JSON-RPC envelopes,
+  client selection and server version matching now behave as upstream. The
+  remaining Kestrel patch is listed in the README. `VENDORED.json` records
+  the base as `1.3.0-12-g11f1116`. The wire protocol remains A2A 1.0.1.
+- Breaking: Agent Card signatures cover upstream's canonical form, which
+  omits empty strings, lists and objects. A card that contains an empty
+  value, such as a security requirement with no scopes, verifies here but
+  not in SDKs that canonicalize the served JSON unchanged. Publish cards
+  without empty values.
+- Breaking: a key provider error that is a PyJWT `PyJWTError`, including
+  `PyJWKClientConnectionError`, now skips that signature instead of
+  propagating. Server version validation accepts any `1.x` client version,
+  and the client factory may select an A2A 0.3 interface when a card offers
+  one.
+
+## 0.49.0
+
+### Changed
+
+- LLM contract version 8 declares `LLMResponse.stop_reason`, appended after
+  the existing fields with a `None` default. Adapters preserve the provider's
+  non-empty string literal and case; unknown, blocked and output-limit
+  reasons remain evidence for the host to judge. Text, usage, tool calls and
+  EOF must never manufacture a successful reason.
+- Every normally completed stream, including plain-text and empty streams,
+  must yield exactly one final `LLMResponse` as its last item. Its content is
+  assembled metadata, not another chunk to render. Errors and cancellation
+  propagate; native streams close before the terminal is yielded.
+- Plain streams reject nonempty requested tools before dispatch and reject
+  unexpected returned tool evidence. Use `get_streaming_response_with_tools`
+  for tool calls. Its terminal is now required even without tool calls.
+- Both public conformance drain helpers enforce one shared terminal-order
+  implementation and check native stop metadata without classifying success.
+  Dataclass construction remains permissive, as for existing fields.
+
+### Added
+
+- Public lightweight `kestrel_sdk.llm.LLMProtocolError` for provider protocol
+  contradictions. Hosts must classify it as a failed generation. Migration:
+  populate `stop_reason` directly and update plain streams and their tests to
+  include a terminal; do not import Core's private completion helper. See
+  [the completion contract migration](docs/llm-completion.md).
+
+## 0.48.0
+
+### Added
+
+- `kestrel_sdk.tools.coerce_tool_arguments(tool_name, parameters, arguments)`
+  is the public form of the `@tool` wrapper's argument coercion (#78), so a
+  host's tool wrapper coerces exactly as the SDK's does. It returns
+  `(arguments, error)`. `kestrel_sdk.features.base._coerce_tool_arguments`
+  remains an alias to the same function object.
+- `kestrel_sdk.features.host_errors` lets a host classify execution-control
+  errors. After `register_control_error_predicate(fn)`, the SDK
+  `DynamicTool.execute` re-raises the original exception, unchanged, whenever
+  `is_host_control_error(exc)` is true, instead of turning it into a failure
+  dict. The host owns the predicate; the SDK never decides what counts as
+  control. With none registered nothing is control, so standalone behaviour is
+  unchanged. Registration is process-global: the same function again is a
+  no-op, a different one raises `RuntimeError`, and a predicate must return a
+  `bool`.
+- `kestrel_sdk.logging_summary.content_log_summary(text)` describes caller
+  text for a log line as `chars=N digest=<12 hex>` (a process-keyed HMAC),
+  mirroring Core's helper of the same name.
+
+### Changed
+
+- **Behaviour change for `KESTREL_DATA_KEY_FILE` passphrase deployments without
+  a writable salt location** (for example a read-only secret mount with no
+  `<key file>.salt`, `KESTREL_DATA_KEY_SALT` or `KESTREL_DATA_KEY_SALT_FILE`).
+  New writes no longer fall back to the legacy unsalted SHA-256 key: `encrypt`,
+  `get_agent_key`, `get_master_key_bytes` and `encrypt` on the ciphers from
+  `get_fernet` / `get_agent_fernet` raise `MasterKeyNotConfiguredError` naming
+  the remedy. Decryption still reads existing legacy ciphertext. Set
+  `KESTREL_DATA_KEY_SALT`, point `KESTREL_DATA_KEY_SALT_FILE` at an existing
+  salt file, or make the key file's directory writable. Env-only
+  `KESTREL_DATA_KEY` passphrases keep their documented legacy mode and warning.
+- An explicit `KESTREL_DATA_KEY_FILE` that is missing, unreadable, empty or not
+  UTF-8 raises `MasterKeyNotConfiguredError` naming the path. It no longer
+  falls through to `/run/secrets/kestrel_data_key` or `KESTREL_DATA_KEY`.
 
 ### Fixed
 
-- A JSON-RPC error object with members beyond `code`, `message` and `data`, or
-  without a string `message`, raises the A2A error mapped from its code instead
-  of a generic `A2AClientError`, as upstream does. Malformed envelopes and
-  success results with another request's ID are still rejected.
+- The sibling `<key file>.salt` is published atomically and never replaced: it
+  is fsynced in a private (`0o600`) temp file and hard-linked into place.
+  Concurrent first starts adopt the first published salt, so no process can
+  strand ciphertext under an overwritten salt, and readers never see a partial
+  file. A temp file left by an interrupted creation does not block the next
+  start. Creating the salt now requires hard-link support in that directory;
+  otherwise configure the salt explicitly as above.
+- Each process syncs the salt's directory before first encrypting with an
+  automatic `<key file>.salt`, whether it published that salt or found one
+  another process had linked but not yet synced. A crash can therefore no
+  longer lose a salt that ciphertext was already written under. If the
+  directory cannot be synced, new writes and key export raise
+  `MasterKeyNotConfiguredError`; point `KESTREL_DATA_KEY_SALT_FILE` at that
+  salt file or set `KESTREL_DATA_KEY_SALT` to its contents.
+- Decryption never creates or syncs a key-file salt. `decrypt` and the ciphers
+  from `get_fernet` / `get_agent_fernet` try a readable `<key file>.salt`,
+  even one not yet durable, and then the legacy key, so existing ciphertext
+  stays readable while new writes are refused.
+- The SDK tool wrapper no longer writes caller content into logs. A tool's
+  exception is logged as the tool name, exception class and
+  `content_log_summary` of its message; a rejected argument as the tool,
+  parameter and expected type, never the received value. The rejection record
+  now comes from the `kestrel_sdk.tools.base` logger. Model-facing error text
+  is unchanged.
+
+## 0.47.0
+
+### Added
+
+- `DatabaseBackend.owns_open_transaction` exposes current-task transaction
+  custody. The default is `None` (unknown); credential and external-effect
+  publishers must require exactly `False` before starting a transaction that
+  must commit independently. Core's native backends already provide this
+  ownership check.
 
 ## 0.46.0
 
