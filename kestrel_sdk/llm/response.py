@@ -346,6 +346,14 @@ class LLMResponse:
         cache_read_input_tokens: Anthropic prompt-cache: tokens *read*
             from the cache on this call. Same ``0``-vs-``None``
             distinction as cache_creation_input_tokens.
+        stop_reason: The provider's native terminal reason, as a non-empty
+            exact ``str``, or ``None`` when it reported none. Preserve the
+            literal value and case; convert provider enums to their string
+            value. Never infer a reason from text, usage, tool calls, or EOF.
+            This is evidence for the host to judge, not a completion or tool
+            authorization decision. Unknown and unsuccessful reasons must
+            remain unchanged. Like the other fields, construction does not
+            validate types; the SDK conformance helpers check this shape.
     """
 
     content: Optional[str] = None
@@ -360,6 +368,7 @@ class LLMResponse:
     cache_read_input_tokens: Optional[int] = None
     citations: List[Citation] = field(default_factory=list)
     server_tool_calls: List[ServerToolUse] = field(default_factory=list)
+    stop_reason: Optional[str] = None
 
     @property
     def has_tool_calls(self) -> bool:

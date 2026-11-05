@@ -44,6 +44,7 @@ from pydantic import BaseModel
 
 from .capabilities import ProviderCapabilities
 from .decisions import DecisionModelInfo, DecisionsNotSupported, ValidatedDecisionRequest
+from .errors import LLMProtocolError
 from .model_info import ModelInfo
 from .response import (
     BatchHandle,
@@ -105,6 +106,13 @@ class LLMAdapter(ABC):
         Returns:
             :class:`LLMResponse` with content and/or tool calls and
             (when the provider reports them) usage / cache breakdown.
+            Set ``stop_reason`` to the provider's native literal, or ``None``
+            when absent. The host judges that evidence; adapters must not
+            substitute a successful reason for missing or unsuccessful ones.
+
+        Raises:
+            LLMProtocolError: The native response violates the provider
+                protocol. Use a content-free rule description.
         """
 
     async def get_streaming_response(
@@ -115,15 +123,19 @@ class LLMAdapter(ABC):
         tools: Optional[List[Dict[str, Any]]] = None,
         response_format: Optional[Type[BaseModel]] = None,
         **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        """Stream a chat completion as text chunks.
+    ) -> AsyncIterator[Union[str, LLMResponse]]:
+        """Stream text chunks followed by one terminal response envelope.
 
         Default implementation raises :class:`NotImplementedError`.
         Override in subclasses that support streaming. The framework
         is expected to gate streaming on
         :attr:`ModelInfo.supports_streaming` before calling this.
 
-        For text-only streaming. Adapters whose backend can also stream
+        For text-only streaming. Reject nonempty ``tools`` with
+        :class:`~kestrel_sdk.llm.LLMProtocolError` before sending any request.
+        Also reject unexpected tool evidence in the response; never strip
+        markers or assembled calls and return an empty successful answer.
+        Adapters whose backend can also stream
         tool calls should implement
         :meth:`get_streaming_response_with_tools` (yielding the
         tagged-union of text chunks, :class:`ToolCallStarted` markers,
@@ -134,24 +146,33 @@ class LLMAdapter(ABC):
             client: Provider-native client.
             model: Model id.
             messages: Chat messages in OpenAI format.
-            tools: Optional tools. Streaming with tools is
-                provider-specific; some adapters yield text chunks
-                until a tool call is detected and then complete the
-                stream.
+            tools: Must be ``None`` or empty. Use
+                :meth:`get_streaming_response_with_tools` for tools.
             response_format: Optional Pydantic model for structured
                 output. Streaming with structured output is not
                 supported by all providers.
             **kwargs: Provider-specific parameters.
 
         Yields:
-            Text chunks as they arrive.
+            Text chunks as they arrive, then exactly one :class:`LLMResponse`
+            as the last item on normal completion, even for an empty stream.
+            Its content is assembled text, not another text chunk to render.
+            It carries the native ``stop_reason`` and reported usage. A
+            missing reason stays ``None``; an envelope or EOF alone does not
+            prove completion. Errors and cancellation propagate without a
+            fabricated terminal in ``finally``. Close owned native streams
+            before yielding the terminal; a cleanup failure is not success.
         """
+        if tools:
+            raise LLMProtocolError(
+                "Plain streaming does not accept tools; use get_streaming_response_with_tools."
+            )
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support streaming"
         )
         # The unreachable yield is required for Python to recognize this
         # as an async generator function so static analysers and the
-        # ``AsyncIterator[str]`` return type both check out. Without it
+        # ``AsyncIterator`` return type both check out. Without it
         # the function would be a coroutine returning ``None``.
         if False:  # pragma: no cover
             yield ""
@@ -182,12 +203,15 @@ class LLMAdapter(ABC):
           may be a hallucinated success claim, and the chat client
           should clear or revise the bubble once a
           :class:`ToolCallStarted` arrives.
-        * :class:`LLMResponse` — yielded exactly once, at end-of-stream,
-          when the response includes one or more tool calls. Source of
-          truth for the assembled tool calls (id, name, arguments) and
-          for token usage. Adapters that finish the stream with
-          text-only output need not yield an :class:`LLMResponse`; the
-          stream simply terminates.
+        * :class:`LLMResponse` — yielded exactly once as the last item on
+          normal completion, including text-only and empty streams. Source
+          of truth for assembled content, tool calls (id, name, arguments),
+          native ``stop_reason`` and reported usage. The terminal's content
+          must not be rendered a second time. Preserve absent reasons as
+          ``None`` and unsuccessful/unknown native literals unchanged;
+          neither EOF nor an envelope proves completion or authorizes tools.
+          Errors and cancellation propagate without a fabricated terminal in
+          ``finally``. Close owned native streams before the terminal.
 
         Default implementation raises :class:`NotImplementedError`.
         Override in adapters whose backend supports streaming with
@@ -208,8 +232,13 @@ class LLMAdapter(ABC):
            text-before-tool and text-during-tool cases.
         3. The terminal :class:`LLMResponse` is yielded after all text
            chunks and ``ToolCallStarted`` events for the response.
-           Consumers can rely on its presence to know the stream is
-           complete in the tool-call case.
+           No item may follow it. Its presence establishes the envelope's
+           final position; the host still judges its completion evidence.
+
+        Native stream contradictions (conflicting terminal reasons or content
+        after terminal evidence) raise :class:`~kestrel_sdk.llm.LLMProtocolError`.
+        Usage-only events after a native stop may update usage before the one
+        terminal envelope; they must not erase its reason or imply success.
 
         **Argument handling for malformed JSON**: when the accumulated
         tool-call argument JSON cannot be parsed at end-of-stream

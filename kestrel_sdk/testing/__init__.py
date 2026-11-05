@@ -25,6 +25,11 @@ The intentional split:
   are independent of how the bytes were produced. The helpers
   enforce them.
 
+Contract version 8 requires a terminal response on plain and empty streams
+too. Both drain helpers enforce the same terminal ordering and native
+``stop_reason`` shape. They do not classify a reason as successful: that
+decision belongs to the host. Cancellation/transport errors propagate.
+
 Usage from a plugin's test suite::
 
     import asyncio

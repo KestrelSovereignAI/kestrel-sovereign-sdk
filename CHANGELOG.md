@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.49.0
+
+### Changed
+
+- LLM contract version 8 declares `LLMResponse.stop_reason`, appended after
+  the existing fields with a `None` default. Adapters preserve the provider's
+  non-empty string literal and case; unknown, blocked and output-limit
+  reasons remain evidence for the host to judge. Text, usage, tool calls and
+  EOF must never manufacture a successful reason.
+- Every normally completed stream, including plain-text and empty streams,
+  must yield exactly one final `LLMResponse` as its last item. Its content is
+  assembled metadata, not another chunk to render. Errors and cancellation
+  propagate; native streams close before the terminal is yielded.
+- Plain streams reject nonempty requested tools before dispatch and reject
+  unexpected returned tool evidence. Use `get_streaming_response_with_tools`
+  for tool calls. Its terminal is now required even without tool calls.
+- Both public conformance drain helpers enforce one shared terminal-order
+  implementation and check native stop metadata without classifying success.
+  Dataclass construction remains permissive, as for existing fields.
+
+### Added
+
+- Public lightweight `kestrel_sdk.llm.LLMProtocolError` for provider protocol
+  contradictions. Hosts must classify it as a failed generation. Migration:
+  populate `stop_reason` directly and update plain streams and their tests to
+  include a terminal; do not import Core's private completion helper. See
+  [the completion contract migration](docs/llm-completion.md).
+
 ## 0.48.0
 
 ### Added
