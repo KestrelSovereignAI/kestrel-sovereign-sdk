@@ -1370,6 +1370,7 @@ async def test_same_task_start_stop_restart_then_cross_task_stop_keeps_parent_al
         assert parent.done()
         await parent
     assert first_process.returncode == 0
+    assert first_process.wait_calls == 1
     assert first_process.terminate_calls == 0
     assert first_process.kill_calls == 0
 
@@ -1378,6 +1379,7 @@ async def test_same_task_start_stop_restart_then_cross_task_stop_keeps_parent_al
     assert not parent.done()
     assert not parent_cancelled.is_set()
     assert second_process.returncode == 0
+    assert second_process.wait_calls == 1
     assert second_process.terminate_calls == 0
     assert second_process.kill_calls == 0
 
