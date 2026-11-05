@@ -1,4 +1,6 @@
 # Modified by Kestrel: isolated SDK namespace; see VENDORED.json.
+import json
+
 from collections.abc import AsyncGenerator, Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, NoReturn
@@ -7,10 +9,6 @@ import httpx
 
 from kestrel_sdk.native_a2a.client.client import ClientCallContext
 from kestrel_sdk.native_a2a.client.errors import A2AClientError, A2AClientTimeoutError
-from kestrel_sdk.native_a2a.client.transports.response_parsing import (
-    decode_response_text,
-    load_json_response,
-)
 
 
 def _default_sse_error_handler(sse_data: str) -> NoReturn:
@@ -39,6 +37,8 @@ def handle_http_exceptions(
         raise A2AClientError(f'HTTP Error {e.response.status_code}: {e}') from e
     except httpx.RequestError as e:
         raise A2AClientError(f'Network communication error: {e}') from e
+    except json.JSONDecodeError as e:
+        raise A2AClientError(f'JSON Decode Error: {e}') from e
 
 
 def get_http_args(context: ClientCallContext | None) -> dict[str, Any]:
@@ -63,7 +63,7 @@ async def send_http_request(
     with handle_http_exceptions(status_error_handler):
         response = await httpx_client.send(request)
         response.raise_for_status()
-    return load_json_response(response.content)
+        return response.json()
 
 
 async def parse_sse_stream(
@@ -147,7 +147,7 @@ async def send_http_stream_request(
                 'content-type', ''
             ):
                 content = await response.aread()
-                yield decode_response_text(content)
+                yield content.decode('utf-8')
                 return
 
             async for event_name, data in parse_sse_stream(response):

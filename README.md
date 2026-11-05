@@ -94,27 +94,31 @@ source checkout to verify custody offline. Reproduce updates from an explicit
 Git tree with `--source`, `--revision` and `--base`; the importer refuses an existing
 output directory and never consumes dirty working-tree files.
 
-The snapshot contains signing, HTTP authorization, borrowed-client lifetime,
-Agent Card discovery, response-decoding and HTTP version-negotiation fixes. Python imports and package-resource references are
-relocated; protocol names, JSON fields and protobuf descriptors are preserved.
-The repository maintains the upstream signing/JCS, client factory, response
-decoding and HTTP authorization regressions under `tests/native_a2a`, including
-independent canonicalization vectors. These are SDK regressions, not a claim
-that Kestrel has passed the full A2A TCK.
+The snapshot is upstream `main` after release 1.3.0, with the exact base
+commit in `VENDORED.json`, plus a minimal Kestrel patch in `UPSTREAM.patch`:
 
-Signature key providers return a key or raise PyJWT `PyJWKError` for an unknown
-or untrusted key so verification can try the next signature. Other lookup
-errors, including `PyJWKClientConnectionError`, propagate to the caller. A
-peer-controlled mismatch between a signature algorithm and a returned key
-rejects that signature while allowing a later valid signature to verify.
+- `utils.versioning.major_minor`, which Kestrel Core imports.
+- HTTP+JSON error handlers re-raise Starlette `HTTPException`, so
+  authentication keeps its status and challenge headers, and native HTTP+JSON
+  errors use `application/a2a+json`.
+- Version validation checks every `A2A-Version` header and query parameter,
+  not only the first.
+
+Everything else, including Agent Card signing and canonicalization, is
+upstream's. Python imports and package-resource references are relocated;
+protocol names, JSON fields and protobuf descriptors are preserved.
+`tests/native_a2a` holds relocated copies of the upstream test files the patch
+changes. These are SDK regressions, not a claim that Kestrel has passed the
+full A2A TCK.
 
 No runtime module alias, monkey patch, private protocol or signature fallback is
 installed. A separately installed `a2a` Python package does not supply Kestrel's
 SDK implementation. Full host conformance and interoperability remain host gates.
 
-The native client factory accepts A2A 1.0 interfaces, including patch revisions,
-and never automatically selects the upstream 0.3 compatibility transports. The
-retained upstream `compat` modules are outside Kestrel's supported client API.
+The client factory follows upstream and may select an A2A 0.3 interface, through
+the retained `compat` transports, when a card offers one. Callers that require
+A2A 1.0 filter the card's interfaces first. The `compat` modules are outside
+Kestrel's supported client API.
 
 Python module relocation does not create a separate Protobuf registry. The
 original protocol descriptors register their names process-wide; a separately
@@ -131,9 +135,10 @@ to satisfy a vendored module's hint can create the descriptor conflicts above.
 The retained gRPC server does not negotiate `A2A-Version` metadata
 ([#91](https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk/issues/91)).
 HTTP handlers accept `A2A-Version` in headers or query parameters, including
-case-insensitive parameter names. Every supplied value must match the handler's
-Major.Minor release; patch numbers are ignored. Empty values mean 0.3, so a
-supported value cannot hide a conflicting or empty value in another carrier.
+case-insensitive parameter names. Every supplied value must be compatible with
+the handler's version, which upstream decides by the major version alone. Empty
+values mean 0.3, so a supported value cannot hide a conflicting or empty value
+in another carrier.
 
 ## Dependencies
 

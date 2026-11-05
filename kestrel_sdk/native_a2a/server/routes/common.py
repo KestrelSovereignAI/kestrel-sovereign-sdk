@@ -28,6 +28,7 @@ from kestrel_sdk.native_a2a.extensions.common import (
     get_requested_extensions,
 )
 from kestrel_sdk.native_a2a.server.context import ServerCallContext
+from kestrel_sdk.native_a2a.utils.constants import VERSION_HEADER
 
 
 def serialize_list_tasks_response(
@@ -113,11 +114,21 @@ class DefaultServerCallContextBuilder(ServerCallContextBuilder):
         state = {}
         if 'auth' in request.scope:
             state['auth'] = request.auth
-        # Keep the immutable mapping's duplicate entries for negotiation.
-        state['headers'] = request.headers
-        # Preserve duplicate parameters so version negotiation can reject
-        # conflicting requests instead of silently choosing one value.
-        state['query_params'] = tuple(request.query_params.multi_items())
+        state['headers'] = dict(request.headers)
+        # Every A2A-Version carrier, so negotiation can reject conflicts.
+        # Service parameter names are case-insensitive in either carrier.
+        from starlette.datastructures import QueryParams  # noqa: PLC0415
+
+        state['a2a_versions'] = [
+            *request.headers.getlist(VERSION_HEADER),
+            *(
+                value
+                for name, value in QueryParams(
+                    request.query_params
+                ).multi_items()
+                if name.lower() == VERSION_HEADER.lower()
+            ),
+        ]
         return ServerCallContext(
             user=self.build_user(request),
             state=state,

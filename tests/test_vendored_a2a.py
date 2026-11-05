@@ -1,5 +1,6 @@
 """Custody, isolation and packaging contracts for the modified official SDK."""
 
+import json
 import subprocess
 import sys
 import tomllib
@@ -26,8 +27,11 @@ def test_import_uses_the_pinned_git_tree_and_refuses_overwrite(tmp_path):
     revision = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     (sdk / "sample.py").write_text("raise RuntimeError('unreviewed working tree')\n")
     destination = tmp_path / "host"
+    subprocess.run(["git", "-C", str(source), "tag", "v9.9.9", revision], check=True)
     import_vendor(destination, source, revision, revision)
     assert check_vendor(destination) == []
+    manifest = json.loads((destination / "kestrel_sdk" / "native_a2a" / "VENDORED.json").read_text())
+    assert manifest["base_release"] == "9.9.9"
     assert "unreviewed" not in (destination / "kestrel_sdk" / "native_a2a" / "sample.py").read_text()
     with pytest.raises(FileExistsError, match="Refusing to overwrite"):
         import_vendor(destination, source, revision, revision)
@@ -47,6 +51,7 @@ def test_relocation_changes_modules_but_preserves_protocol_identifiers():
     signals = '"a2a.task_changed" "a2a.push-config.v1" "a2a.question_answered" "a2a.inbound_authorization"'
     assert relocate(signals) == signals
     assert relocate("from a2a import types\n") == "from kestrel_sdk.native_a2a import types\n"
+    assert relocate("from a2a.plugins import manager\n") == "from kestrel_sdk.native_a2a.plugins import manager\n"
     assert relocate("files('a2a').joinpath('alembic.ini')") == "files('kestrel_sdk.native_a2a').joinpath('alembic.ini')"
 
 

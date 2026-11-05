@@ -1,10 +1,11 @@
 # Modified by Kestrel: isolated SDK namespace; see VENDORED.json.
+import functools
 import logging
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from google.protobuf.json_format import MessageToDict, Parse
+from google.protobuf.json_format import MessageToDict
 
 from kestrel_sdk.native_a2a.server.context import ServerCallContext
 from kestrel_sdk.native_a2a.server.request_handlers.request_handler import RequestHandler
@@ -20,18 +21,24 @@ from kestrel_sdk.native_a2a.types.a2a_pb2 import (
     GetTaskPushNotificationConfigRequest,
     SubscribeToTaskRequest,
 )
-from kestrel_sdk.native_a2a.utils import constants, json_utils, proto_utils
-from kestrel_sdk.native_a2a.utils.error_handlers import (
-    build_rest_error_payload,
-    rest_error_handler,
-    rest_stream_error_handler,
-)
+from kestrel_sdk.native_a2a.utils import constants, error_handlers, json_utils, proto_utils
+from kestrel_sdk.native_a2a.utils.error_handlers import build_rest_error_payload
 from kestrel_sdk.native_a2a.utils.errors import (
     InvalidRequestError,
     TaskNotFoundError,
 )
 from kestrel_sdk.native_a2a.utils.telemetry import SpanKind, trace_class
 from kestrel_sdk.native_a2a.utils.version_validator import validate_version
+
+
+# Native HTTP+JSON errors use the A2A media type, like its other responses.
+rest_error_handler = functools.partial(
+    error_handlers.rest_error_handler, media_type=constants.A2A_JSON_MEDIA_TYPE
+)
+rest_stream_error_handler = functools.partial(
+    error_handlers.rest_stream_error_handler,
+    media_type=constants.A2A_JSON_MEDIA_TYPE,
+)
 
 
 if TYPE_CHECKING:
@@ -181,7 +188,7 @@ class RestDispatcher:
         ) -> a2a_pb2.SendMessageResponse:
             body = await request.body()
             params = a2a_pb2.SendMessageRequest()
-            Parse(body, params, ignore_unknown_fields=True)
+            proto_utils.parse_lenient(body, params)
             task_or_message = await self.request_handler.on_message_send(
                 params, context
             )
@@ -204,7 +211,7 @@ class RestDispatcher:
         ) -> AsyncIterator[dict[str, Any]]:
             body = await request.body()
             params = a2a_pb2.SendMessageRequest()
-            Parse(body, params, ignore_unknown_fields=True)
+            proto_utils.parse_lenient(body, params)
             async for event in self.request_handler.on_message_send_stream(
                 params, context
             ):
@@ -316,7 +323,7 @@ class RestDispatcher:
         ) -> a2a_pb2.TaskPushNotificationConfig:
             body = await request.body()
             params = a2a_pb2.TaskPushNotificationConfig()
-            Parse(body, params, ignore_unknown_fields=True)
+            proto_utils.parse_lenient(body, params)
             params.task_id = request.path_params['id']
             return await self.request_handler.on_create_task_push_notification_config(
                 params, context

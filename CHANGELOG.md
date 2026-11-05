@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.50.0
+
+### Changed
+
+- `kestrel_sdk.native_a2a` moves from upstream a2a-python 1.2.3 to upstream
+  `main` after 1.3.0 (`11f1116`) and converges on it. Where upstream fixed a
+  defect Kestrel had also patched, upstream's fix replaces Kestrel's. Agent
+  Card signing and verification, response decoding, JSON-RPC envelopes,
+  client selection and server version matching now behave as upstream. The
+  remaining Kestrel patch is listed in the README. `VENDORED.json` records
+  the base as `1.3.0-12-g11f1116`. The wire protocol remains A2A 1.0.1.
+- Breaking: Agent Card signatures cover upstream's canonical form, which
+  omits empty strings, lists and objects. A card that contains an empty
+  value, such as a security requirement with no scopes, verifies here but
+  not in SDKs that canonicalize the served JSON unchanged. Publish cards
+  without empty values.
+- Breaking: a key provider error that is a PyJWT `PyJWTError`, including
+  `PyJWKClientConnectionError`, now skips that signature instead of
+  propagating. Server version validation accepts any `1.x` client version,
+  and the client factory may select an A2A 0.3 interface when a card offers
+  one.
+
 ## 0.49.0
 
 ### Changed

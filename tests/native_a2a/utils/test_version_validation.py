@@ -1,4 +1,4 @@
-# Modified by Kestrel: isolated SDK namespace; see VENDORED.json.
+# Modified by Kestrel: isolated SDK namespace; see kestrel_sdk/native_a2a/VENDORED.json.
 """Tests for version validation decorators."""
 
 import pytest
@@ -44,34 +44,6 @@ async def test_validate_version_case_insensitive():
 
     result = await handler.async_method(None, context)
     assert result == 'success'
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('streaming', [False, True])
-@pytest.mark.parametrize(
-    'version', ['1.0', '1.0.0', '1.0.999', '', '1.1', 'invalid']
-)
-async def test_query_version_for_unary_and_streaming(
-    streaming: bool, version: str
-) -> None:
-    handler = TestHandler()
-    context = ServerCallContext(
-        state={'query_params': (('a2A-vErSiOn', version),)}
-    )
-
-    async def invoke() -> None:
-        if streaming:
-            assert [
-                item async for item in handler.async_gen_method(None, context)
-            ] == ['success']
-        else:
-            assert await handler.async_method(None, context) == 'success'
-
-    if version.startswith('1.0'):
-        await invoke()
-    else:
-        with pytest.raises(VersionNotSupportedError):
-            await invoke()
 
 
 @pytest.mark.asyncio
@@ -139,7 +111,7 @@ async def test_validate_version_no_context():
 
 
 @pytest.mark.asyncio
-async def test_validate_version_ignores_patch_but_requires_minor():
+async def test_validate_version_ignore_minor_patch():
     handler = TestHandler()
 
     # 1.0.1 should match 1.0
@@ -156,12 +128,12 @@ async def test_validate_version_ignores_patch_but_requires_minor():
     result = await handler.async_method(None, context_zero_patch)
     assert result == 'success'
 
-    # 1.1.0 is a different protocol release, not a patch of 1.0.
+    # 1.1.0 should match 1.0
     context_diff_minor = ServerCallContext(
         state={'headers': {constants.VERSION_HEADER: '1.1.0'}}
     )
-    with pytest.raises(VersionNotSupportedError):
-        await handler.async_method(None, context_diff_minor)
+    result = await handler.async_method(None, context_diff_minor)
+    assert result == 'success'
 
     # 2.0.0 should NOT match 1.0
     context_diff_major = ServerCallContext(
@@ -169,38 +141,6 @@ async def test_validate_version_ignores_patch_but_requires_minor():
     )
     with pytest.raises(VersionNotSupportedError):
         await handler.async_method(None, context_diff_major)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    'version', ['1.1', '1.1.0', '1.99', '0.3', '2.0', 'invalid']
-)
-@pytest.mark.parametrize('streaming', [False, True])
-async def test_unsupported_release_refused_before_handler(
-    version: str, streaming: bool
-) -> None:
-    handler = TestHandler()
-    context = ServerCallContext(
-        state={'headers': {constants.VERSION_HEADER: version}}
-    )
-    with pytest.raises(VersionNotSupportedError):
-        if streaming:
-            async for _ in handler.async_gen_method(None, context):
-                pytest.fail('Unsupported version entered the streaming handler')
-        else:
-            await handler.async_method(None, context)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('version', ['1.0', '1.0.0', '1.0.1', '1.0.999'])
-async def test_streaming_handler_ignores_patch(version: str) -> None:
-    handler = TestHandler()
-    context = ServerCallContext(
-        state={'headers': {constants.VERSION_HEADER: version}}
-    )
-    assert [item async for item in handler.async_gen_method(None, context)] == [
-        'success'
-    ]
 
 
 @pytest.mark.asyncio
@@ -225,3 +165,25 @@ async def test_validate_version_handler_expects_patch():
     )
     result = await handler.method(None, context_diff_patch)
     assert result == 'success'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('versions', 'accepted'),
+    [
+        (['1.0'], True),
+        (['1.0', '1.0.1'], True),
+        (['1.0', '0.3'], False),
+        (['0.3', '1.0'], False),
+        (['1.0', ''], False),
+    ],
+)
+async def test_validate_version_checks_every_carrier(versions, accepted):
+    handler = TestHandler()
+    context = ServerCallContext(state={'headers': {}, 'a2a_versions': versions})
+
+    if accepted:
+        assert await handler.async_method(None, context) == 'success'
+    else:
+        with pytest.raises(VersionNotSupportedError):
+            await handler.async_method(None, context)

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, TypedDict, cast
 
 from google.api.field_behavior_pb2 import FieldBehavior, field_behavior
 from google.protobuf.descriptor import FieldDescriptor
-from google.protobuf.json_format import Parse, ParseDict
+from google.protobuf.json_format import Parse, ParseDict, ParseError
 from google.protobuf.message import Message as ProtobufMessage
 from google.rpc import error_details_pb2
 
@@ -68,8 +68,17 @@ def parse_lenient(
 
     Returns:
         The parsed message.
+
+    Raises:
+        ParseError: If the data is not valid ProtoJSON, including bytes that
+            are not valid UTF-8.
     """
-    if isinstance(data, str | bytes):
+    if isinstance(data, bytes):
+        try:
+            data = data.decode('utf-8')
+        except UnicodeDecodeError as e:
+            raise ParseError(f'Failed to load JSON: {e}.') from e
+    if isinstance(data, str):
         return Parse(data, message, ignore_unknown_fields=True)
     return ParseDict(data, message, ignore_unknown_fields=True)
 
@@ -184,12 +193,6 @@ def _field_is_repeated(field: FieldDescriptor) -> bool:
     return getattr(field, 'label', None) == FieldDescriptor.LABEL_REPEATED
 
 
-def _field_is_required(field: FieldDescriptor) -> bool:
-    """Whether the protocol annotates this field as REQUIRED."""
-    behaviors = field.GetOptions().Extensions[field_behavior]  # type: ignore[index]  # ty: ignore[invalid-argument-type]
-    return FieldBehavior.REQUIRED in behaviors
-
-
 def parse_params(params: QueryParams, message: ProtobufMessage) -> None:
     """Converts REST query parameters back into a Protobuf message.
 
@@ -232,6 +235,10 @@ def parse_params(params: QueryParams, message: ProtobufMessage) -> None:
             if raw_val is not None:
                 parsed_val: Any = raw_val
                 if field.type == field.TYPE_BOOL and isinstance(raw_val, str):
+                    if raw_val.lower() not in ('true', 'false'):
+                        raise ParseError(
+                            f'Invalid boolean query parameter {k}: expected "true" or "false".'
+                        )
                     parsed_val = raw_val.lower() == 'true'
                 processed[k] = parsed_val
 
@@ -321,7 +328,8 @@ def _validate_proto_required_fields_internal(
         # `desc.fields` is typed as a union of the pure-Python and C-extension
         # FieldDescriptor; narrow to the canonical one for the helpers below.
         field = cast('FieldDescriptor', raw_field)
-        if _field_is_required(field):
+        options = field.GetOptions()
+        if FieldBehavior.REQUIRED in options.Extensions[field_behavior]:  # type: ignore[index]  # ty: ignore[invalid-argument-type]
             violation = _check_required_field_violation(msg, field)
             if violation:
                 errors.append(violation)

@@ -21,7 +21,7 @@ from pathlib import Path
 def relocate(text: str) -> str:
     """Relocate module references without changing qualified protobuf names."""
     relocated = re.sub(
-        r"(?<![\w./])a2a\.(?=(?:_base|auth|client|compat|extensions|helpers|migrations|server|types|utils|a2a_db_cli)\b)",
+        r"(?<![\w./])a2a\.(?=(?:_base|auth|client|compat|extensions|helpers|migrations|plugins|server|types|utils|a2a_db_cli)\b)",
         "kestrel_sdk.native_a2a.",
         text,
     )
@@ -41,6 +41,8 @@ def import_vendor(root: Path, source: Path, revision: str, base: str) -> None:
     """Materialize a pinned, licensed snapshot with reversible relocation."""
     tree = _git(source, "rev-parse", revision + "^{tree}").decode().strip()
     base_commit = _git(source, "rev-parse", base + "^{commit}").decode().strip()
+    # The nearest upstream release tag; a base past it reads 1.3.0-12-g11f1116.
+    base_release = _git(source, "describe", "--tags", "--always", base_commit).decode().strip().removeprefix("v")
     destination = root / "kestrel_sdk" / "native_a2a"
     if destination.exists():
         raise FileExistsError(f"Refusing to overwrite vendored source: {destination}")
@@ -93,7 +95,7 @@ def import_vendor(root: Path, source: Path, revision: str, base: str) -> None:
     manifest = {
         "repository": "https://github.com/a2aproject/a2a-python",
         "protocol": "1.0.1",
-        "base_release": "1.2.3",
+        "base_release": base_release,
         "base_commit": base_commit,
         "reviewed_source_tree": tree,
         "namespace": "kestrel_sdk.native_a2a",
