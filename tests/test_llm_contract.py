@@ -28,6 +28,7 @@ from kestrel_sdk.llm import (
     FileRef,
     FilesMode,
     LLMAdapter,
+    LLMProtocolError,
     LLMResponse,
     ModelCategory,
     ModelInfo,
@@ -570,16 +571,20 @@ class TestLLMAdapterIsAbstract:
 
 
 class TestLLMAdapterOptionalSurface:
-    def test_streaming_default_raises(self):
+    @pytest.mark.parametrize(
+        ("tools", "error"),
+        [(None, NotImplementedError), ([], NotImplementedError), ([{}], LLMProtocolError)],
+    )
+    def test_streaming_default_raises(self, tools, error):
         class A(LLMAdapter):
             async def get_response(self, client, model, messages, **kwargs):
                 return LLMResponse()
 
         async def _drive():
-            async for _ in A().get_streaming_response(None, "m", []):
+            async for _ in A().get_streaming_response(None, "m", [], tools=tools):
                 pass
 
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(error):
             asyncio.run(_drive())
 
     def test_list_models_default_raises(self):
@@ -614,7 +619,7 @@ class TestLLMAdapterOptionalSurface:
 
     def test_streaming_signature_is_async_generator(self):
         """The default impl uses an unreachable ``yield`` so static
-        type checkers see ``AsyncIterator[str]``. Verify the shape
+        type checkers see an ``AsyncIterator``. Verify the shape
         survived: the function must be recognized as an async
         generator function."""
         assert inspect.isasyncgenfunction(LLMAdapter.get_streaming_response)
@@ -1058,14 +1063,16 @@ class TestLLMAdapterContractVersion:
         ``kestrel_sdk.llm.decisions``, ``LLMAdapter.adecide()`` /
         ``list_decision_models()`` and ``ProviderCapabilities.supports_decisions``.
         Additive; v6 adapters keep conforming through the defaults.
+      * 8 — declared native completion evidence, a shared protocol error,
+        and mandatory terminal envelopes on plain/empty streams (SDK 0.49.0).
     """
 
-    def test_contract_version_is_7(self):
+    def test_contract_version_is_8(self):
         from kestrel_sdk.llm import SDK_LLM_CONTRACT_VERSION
 
-        assert SDK_LLM_CONTRACT_VERSION == 7, (
-            "LLM contract version 7 adds the optional decisions surface while "
-            "keeping get_response as the only LLMAdapter abstract method."
+        assert SDK_LLM_CONTRACT_VERSION == 8, (
+            "LLM contract version 8 requires native completion evidence and "
+            "one terminal envelope on every normally completed stream."
         )
 
 
@@ -1211,11 +1218,8 @@ class TestStreamingWithToolsOverride:
         assert isinstance(captured[2], LLMResponse)
         assert captured[2].has_tool_calls
 
-    def test_override_text_only_path_does_not_require_llm_response(self):
-        """Adapters that finish a stream with text-only output MAY
-        terminate without yielding a final LLMResponse — the
-        contract says LLMResponse is yielded once when the response
-        includes one or more tool calls."""
+    def test_override_text_only_path_emits_terminal_response(self):
+        """Plain text still ends in a native completion/usage envelope."""
 
         class Streamer(LLMAdapter):
             async def get_response(self, client, model, messages, **kwargs):
@@ -1226,6 +1230,7 @@ class TestStreamingWithToolsOverride:
             ):
                 yield "hello "
                 yield "world"
+                yield LLMResponse(content="hello world", stop_reason="stop")
 
         items = []
 
@@ -1236,9 +1241,10 @@ class TestStreamingWithToolsOverride:
                 items.append(item)
 
         asyncio.run(_drive())
-        assert items == ["hello ", "world"]
-        # No LLMResponse, no ToolCallStarted — pure text streaming
-        # through the same channel is a documented and supported path.
+        assert items[:2] == ["hello ", "world"]
+        assert len(items) == 3
+        assert isinstance(items[2], LLMResponse)
+        assert items[2].stop_reason == "stop"
 
     def test_override_can_emit_multiple_concurrent_tool_calls(self):
         """Codex finding #2: multiple concurrent tool calls must be
