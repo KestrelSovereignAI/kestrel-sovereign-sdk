@@ -863,6 +863,12 @@ The bounded `operation_id` marks one intended operation and is reused only
 when resubmitting that operation. It grants no authority and does not prove
 an outcome; hosts validate their documented bounds before admission.
 
+`ResourceOutcomeUnknown` delivery evidence also survives explicit exception causes
+and `ExceptionGroup` members. `kestrel_sdk.resources.observed_outcome_unknown`
+returns those original errors once each, excludes incidental handling context,
+and never grants host execution authority. Tool wrappers preserve a carrier
+containing that evidence instead of converting it into an ordinary failure.
+
 These bindings are in-process host interfaces, not wire credentials. The
 host implementation is required; the SDK itself does not execute tools.
 

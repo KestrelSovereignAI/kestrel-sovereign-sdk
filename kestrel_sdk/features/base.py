@@ -32,7 +32,7 @@ from typing import (
 )
 
 from kestrel_sdk.logging_summary import content_log_summary
-from kestrel_sdk.resources import ResourceOutcomeUnknown
+from kestrel_sdk.resources import ResourceOutcomeUnknown, observed_outcome_unknown
 from kestrel_sdk.tools.base import (
     ToolSchema,
     ToolParameter,
@@ -554,7 +554,7 @@ class Feature(ABC):
                                 # for the host's custody, not a tool failure:
                                 # the host's registered predicate decides,
                                 # and the original propagates unchanged.
-                                if is_host_control_error(e):
+                                if is_host_control_error(e) or observed_outcome_unknown(e):
                                     raise
                                 # The message can quote what the tool failed
                                 # on, so the log gets its class and a digest.
