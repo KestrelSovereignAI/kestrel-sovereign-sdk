@@ -82,6 +82,75 @@ def _dyn_tool(feature: Feature, name: str) -> AgentTool:
 
 class TestDynamicToolExecute:
     @pytest.mark.asyncio
+    async def test_class_tool_uses_the_discovering_feature_host(self):
+        class ClassFeature(_RaisingFeature):
+            @classmethod
+            @tool(name='class_value', description='Class-bound tool with no receiver argument')
+            async def class_value(cls) -> str:
+                return 'class tool completed'
+
+        exposed = _dyn_tool(ClassFeature(), 'class_value')
+        assert exposed.schema.parameters == []
+        assert await exposed.execute() == {
+            'success': True, 'result': 'class tool completed', 'tool': 'class_value',
+        }
+
+    @pytest.mark.asyncio
+    async def test_class_tool_preserves_its_instance_hosts_original_error(self):
+        class DurableHost:
+            supports_durable_tool_effects = True
+
+        original = TimeoutError('Original class tool acknowledgement unavailable')
+
+        class ClassFeature(_RaisingFeature):
+            @classmethod
+            @tool(name='class_error', description='Class tool under the instance host boundary')
+            async def class_error(cls) -> None:
+                raise original
+
+        with pytest.raises(TimeoutError) as raised:
+            await _dyn_tool(ClassFeature(DurableHost()), 'class_error').execute()
+        assert raised.value is original
+
+    @pytest.mark.asyncio
+    async def test_cls_named_data_argument_remains_in_the_native_tool_schema(self):
+        class ArgumentFeature(_RaisingFeature):
+            @tool(name='class_argument', description='Ordinary cls data argument')
+            async def class_argument(self, cls: str) -> str:
+                return cls
+
+        exposed = _dyn_tool(ArgumentFeature(), 'class_argument')
+        assert [parameter.name for parameter in exposed.schema.parameters] == ['cls']
+        assert (await exposed.execute(cls='original-data'))['result'] == 'original-data'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('error_type', [TimeoutError, OSError])
+    @pytest.mark.parametrize('withdraw_capability', [False, True])
+    async def test_durable_host_receives_the_original_error_before_result_projection(
+        self, tmp_path, error_type, withdraw_capability,
+    ):
+        class DurableHost:
+            supports_durable_tool_effects = True
+
+        host = DurableHost()
+        original = error_type('Original acknowledgement unavailable after the effect')
+        witness = tmp_path / 'original-effect'
+
+        class JournalFeature(_RaisingFeature):
+            @tool(name='write_then_fail', description='Preserve the effect boundary error')
+            async def write_then_fail(self) -> None:
+                witness.write_text('one original effect')
+                if withdraw_capability:
+                    host.supports_durable_tool_effects = False
+                raise original
+
+        feature = JournalFeature(host)
+        with pytest.raises(error_type) as raised:
+            await _dyn_tool(feature, 'write_then_fail').execute()
+        assert raised.value is original
+        assert witness.read_text() == 'one original effect'
+
+    @pytest.mark.asyncio
     async def test_registered_control_error_propagates_as_the_same_object(
         self, feature
     ):

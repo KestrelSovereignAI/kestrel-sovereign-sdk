@@ -1,4 +1,4 @@
-"""Host-owned classification of execution-control errors.
+"""Host ownership of execution errors and their public projection.
 
 A host can run SDK features inside execution custody: it raises its own
 authority, commit and retirement errors through the tool methods it calls.
@@ -11,6 +11,11 @@ for the process, and the SDK wrapper re-raises the original exception,
 unchanged, whenever that predicate says so. The SDK never decides what counts
 as control: with nothing registered, no exception is control and standalone
 behaviour is unchanged.
+
+A durable-effect host also owns ordinary error classification: only its
+original journal can distinguish a failed operation from an uncertain effect.
+Feature tools snapshot that contract before running their bodies and preserve
+the original exception until that boundary has classified it.
 """
 
 from __future__ import annotations
@@ -19,6 +24,16 @@ import threading
 from typing import Callable, Optional
 
 ControlErrorPredicate = Callable[[BaseException], bool]
+
+
+def host_owns_tool_error_boundary(host: object) -> bool:
+    """Whether the host promises durable classification before projection.
+
+    This capability describes error ownership, never execution authority.
+    Callers capture it before execution so withdrawing a capability while a
+    tool runs cannot erase that tool's original error.
+    """
+    return getattr(host, "supports_durable_tool_effects", None) is True
 
 _registration_lock = threading.Lock()
 _control_error_predicate: Optional[ControlErrorPredicate] = None

@@ -732,6 +732,9 @@ async def test_stop_timeout_does_not_fence_start_that_settles_before_timeout_upd
     """A real timeout cannot overwrite a startup finally that queued first."""
 
     monkeypatch.setattr(client_module, "_SUBPROCESS_STOP_TIMEOUT", 0.03)
+    settlement_wait_ready = asyncio.Event()
+    handoff_queued = asyncio.Event()
+    timeout_update_queued = asyncio.Event()
     spawn_started = asyncio.Event()
     spawn_cancelled = asyncio.Event()
     release_start_finally = asyncio.Event()
@@ -750,6 +753,28 @@ async def test_stop_timeout_does_not_fence_start_that_settles_before_timeout_upd
 
     monkeypatch.setattr(client_module.asyncio, "create_subprocess_exec", stalled_spawn)
     wrapper = SubprocessIsolatedFeatureClient(command=["unused"])
+    class ObservedStateLock(asyncio.Lock):
+        async def acquire(self):
+            if self.locked():
+                if asyncio.current_task() is wrapper._stop_task:
+                    timeout_update_queued.set()
+                else:
+                    handoff_queued.set()
+            return await super().acquire()
+
+    wrapper._state_lock = ObservedStateLock()
+    wait_results = []
+    original_wait = wrapper._wait_for_start_settlement
+
+    async def wait_after_handoff_is_queued(generation):
+        # Start the real timeout only after the native handoff has queued.
+        # This controls ordering, without replacing the settlement outcome.
+        await settlement_wait_ready.wait()
+        result = await original_wait(generation)
+        wait_results.append(result)
+        return result
+
+    monkeypatch.setattr(wrapper, "_wait_for_start_settlement", wait_after_handoff_is_queued)
     start_task = asyncio.create_task(wrapper.start())
     await asyncio.wait_for(spawn_started.wait(), timeout=1)
 
@@ -762,8 +787,9 @@ async def test_stop_timeout_does_not_fence_start_that_settles_before_timeout_upd
     await wrapper._state_lock.acquire()
     try:
         release_start_finally.set()
-        await asyncio.sleep(0)
-        await asyncio.sleep(client_module._SUBPROCESS_STOP_TIMEOUT * 2)
+        await asyncio.wait_for(handoff_queued.wait(), timeout=1)
+        settlement_wait_ready.set()
+        await asyncio.wait_for(timeout_update_queued.wait(), timeout=1)
     finally:
         wrapper._state_lock.release()
 
@@ -771,6 +797,7 @@ async def test_stop_timeout_does_not_fence_start_that_settles_before_timeout_upd
     with pytest.raises(asyncio.CancelledError):
         await start_task
 
+    assert wait_results[0] is False, "the first real settlement wait must time out"
     assert wrapper._starting is False
     assert wrapper._starting_generation is None
     assert wrapper._start_settled.is_set()
