@@ -82,6 +82,33 @@ def _dyn_tool(feature: Feature, name: str) -> AgentTool:
 
 class TestDynamicToolExecute:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('error_type', [TimeoutError, OSError])
+    @pytest.mark.parametrize('withdraw_capability', [False, True])
+    async def test_durable_host_receives_the_original_error_before_result_projection(
+        self, tmp_path, error_type, withdraw_capability,
+    ):
+        class DurableHost:
+            supports_durable_tool_effects = True
+
+        host = DurableHost()
+        original = error_type('Original acknowledgement unavailable after the effect')
+        witness = tmp_path / 'original-effect'
+
+        class JournalFeature(_RaisingFeature):
+            @tool(name='write_then_fail', description='Preserve the effect boundary error')
+            async def write_then_fail(self) -> None:
+                witness.write_text('one original effect')
+                if withdraw_capability:
+                    host.supports_durable_tool_effects = False
+                raise original
+
+        feature = JournalFeature(host)
+        with pytest.raises(error_type) as raised:
+            await _dyn_tool(feature, 'write_then_fail').execute()
+        assert raised.value is original
+        assert witness.read_text() == 'one original effect'
+
+    @pytest.mark.asyncio
     async def test_registered_control_error_propagates_as_the_same_object(
         self, feature
     ):

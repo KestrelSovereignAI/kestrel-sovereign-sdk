@@ -869,6 +869,12 @@ returns those original errors once each, excludes incidental handling context,
 and never grants host execution authority. Tool wrappers preserve a carrier
 containing that evidence instead of converting it into an ordinary failure.
 
+A host declaring `supports_durable_tool_effects = True` owns tool error
+classification. Feature wrappers capture that contract before execution and
+propagate the original exception so the host can settle its admitted effect
+before projecting a public error. Changing the declaration during execution
+cannot erase the error. The declaration grants no execution authority.
+
 These bindings are in-process host interfaces, not wire credentials. The
 host implementation is required; the SDK itself does not execute tools.
 
