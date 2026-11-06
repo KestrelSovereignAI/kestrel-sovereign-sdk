@@ -853,12 +853,15 @@ The flag does not grant permission or change the tool's argument schema.
 
 Hosts implementing `GovernedToolBinding` report the actual normalized tool
 name and retain the original registration identity. `invoke(arguments,
-session_id=..., source=...)` must re-enter normal permission, approval,
+session_id=..., operation_id=..., source=...)` must re-enter normal permission, approval,
 argument-validation and dispatch-evidence handling and recheck the target
 before execution. `is_current` is diagnostic information; it is never
 permission to call a tool directly. Removed or replaced registrations fail
 with `ResourceConflict`. Unconfirmed effects/evidence fail with
 `ResourceOutcomeUnknown` and must not be automatically repeated.
+The bounded `operation_id` marks one intended operation and is reused only
+when resubmitting that operation. It grants no authority and does not prove
+an outcome; hosts validate their documented bounds before admission.
 
 These bindings are in-process host interfaces, not wire credentials. The
 host implementation is required; the SDK itself does not execute tools.

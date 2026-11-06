@@ -349,7 +349,9 @@ class GovernedToolBinding(Protocol):
         ``operation_id`` is the bounded opaque identity of one intended call.
         Reuse it only when resubmitting that same operation; a new intent uses
         a new identity. The host binds it to the authenticated principal,
-        stable registration and arguments. It never grants authority itself.
+        agent, stable registration and arguments. It grants no authority and
+        does not prove an outcome. Hosts validate their documented key bounds
+        before admission.
 
         Stale bindings raise ResourceConflict before effect. An effect whose
         dispatch evidence cannot be confirmed raises ResourceOutcomeUnknown;
