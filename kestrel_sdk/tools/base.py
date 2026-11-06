@@ -341,9 +341,15 @@ class GovernedToolBinding(Protocol):
         ...
 
     async def invoke(
-        self, arguments: Dict[str, Any], *, session_id: str, source: str = "external",
+        self, arguments: Dict[str, Any], *, session_id: str, operation_id: str,
+        source: str = "external",
     ) -> Any:
         """Dispatch against this exact registration through the governed path.
+
+        ``operation_id`` is the bounded opaque identity of one intended call.
+        Reuse it only when resubmitting that same operation; a new intent uses
+        a new identity. The host binds it to the authenticated principal,
+        stable registration and arguments. It never grants authority itself.
 
         Stale bindings raise ResourceConflict before effect. An effect whose
         dispatch evidence cannot be confirmed raises ResourceOutcomeUnknown;
