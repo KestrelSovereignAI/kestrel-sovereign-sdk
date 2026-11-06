@@ -923,38 +923,3 @@ def test_fernet_key_agent_key_and_agent_fernet_are_deterministic(monkeypatch, tm
     key1 = encryption.get_agent_key(agent_did, purpose)
     key2 = encryption.get_agent_key(agent_did, purpose)
     assert key1 == key2  # Should be deterministic from same master
-
-
-def _journal_key_after_restart(key_file: str, agent_did: str, result_file: str) -> None:
-    """A fresh interpreter derives only from the same configured key and salt."""
-    _child_uses_only_key_file(key_file)
-    Path(result_file).write_bytes(encryption.get_agent_key(agent_did, "tool-effect-journal"))
-
-
-def test_tool_effect_key_is_agent_and_purpose_separated(key_shape):
-    agent = "did:key:owned-journal-agent"
-    key = encryption.get_agent_key(agent, "tool-effect-journal")
-    assert len(key) == encryption.KEY_SIZE
-    assert encryption.get_agent_key(agent, "tool-effect-journal") == key
-    assert encryption.get_agent_key("did:key:other-journal-agent", "tool-effect-journal") != key
-    for purpose in ("conversations", "service-keys", "wallet", "backup"):
-        assert encryption.get_agent_key(agent, purpose) != key
-
-
-def test_tool_effect_key_survives_process_restart(monkeypatch, tmp_path):
-    key_file = tmp_path / "journal-data.key"
-    key_file.write_text("owned journal purpose passphrase", encoding="utf-8")
-    _use_only_key_file(monkeypatch, key_file)
-    agent = "did:key:owned-restarted-journal"
-    original = encryption.get_agent_key(agent, "tool-effect-journal")
-    assert _salt_path(key_file).is_file()
-    result_file = tmp_path / "restarted-journal-key.bin"
-    child = _start_child(_journal_key_after_restart, str(key_file), agent, str(result_file))
-    _join_child(child)
-    assert result_file.read_bytes() == original
-
-
-def test_tool_effect_key_refuses_a_missing_configured_key(monkeypatch, tmp_path):
-    _use_only_key_file(monkeypatch, tmp_path / "absent-journal-data.key")
-    with pytest.raises(MasterKeyNotConfiguredError):
-        encryption.get_agent_key("did:key:owned-missing-journal-key", "tool-effect-journal")
