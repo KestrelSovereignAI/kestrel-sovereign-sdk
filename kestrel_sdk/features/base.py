@@ -498,7 +498,8 @@ class Feature(ABC):
 
                 # Create a dynamic AgentTool wrapper
                 class DynamicTool(AgentTool):
-                    def __init__(self, func, schema_data):
+                    def __init__(self, feature, func, schema_data):
+                        self.feature = feature
                         self.func = func
                         self._schema_data = schema_data
 
@@ -517,7 +518,7 @@ class Feature(ABC):
                         )
 
                     async def execute(self, **kwargs) -> Dict[str, Any]:
-                        host_owns_errors = host_owns_tool_error_boundary(self.func.__self__.agent)
+                        host_owns_errors = host_owns_tool_error_boundary(self.feature.agent)
                         from kestrel_sdk.tools.result import ToolResult
                         from kestrel_sdk.tools.deferred import DeferredToolResult
 
@@ -616,7 +617,7 @@ class Feature(ABC):
                             response["parts"] = list(pending_parts)
                         return response
 
-                tools.append(DynamicTool(method, schema_data))
+                tools.append(DynamicTool(self, method, schema_data))
         return tools
 
 
@@ -668,8 +669,8 @@ def tool(name: str, description: str, category: ToolCategory = ToolCategory.SYST
             )
             resolved_hints = {}
 
-        for param_name, param in sig.parameters.items():
-            if param_name == 'self':
+        for position, (param_name, param) in enumerate(sig.parameters.items()):
+            if position == 0 and param_name in {'self', 'cls'}:
                 continue
 
             annotation = resolved_hints.get(param_name, param.annotation)
