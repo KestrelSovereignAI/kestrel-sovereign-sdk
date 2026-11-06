@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 337 tracked files (303 `.py`, 9 `.md`, 25 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 326 tracked files (294 `.py`, 10 `.md`, 22 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -36,6 +36,7 @@ Repo entry points and standard project files.
 - **docs/code_reviews/claude-pr-24.md** — Claude Review: PR #24 — - PR: https://github.com/KestrelSovereignAI/kestrel-sovereign-sdk/pull/24 - Reviewed: 2026-05-26T16:42:09Z
 - **docs/computer-use.md** — Visual computer use and saved artifacts (contract version 1) — Parent: [Core #3703](https://github.com/KestrelSovereignAI/kestrel-sovereign/issues/3703).
 - **docs/environment-acquisition.md** — Optional environment acquisition custody, API version 1 — Version 0.45.0 combines acquisition custody with the human-control contracts introduced in 0.44.0.
+- **docs/llm-completion.md** — LLM completion contract version 8 — SDK 0.49.0 makes provider completion evidence part of the public contract.
 
 ## `kestrel_sdk/`
 
@@ -113,6 +114,8 @@ Repo entry points and standard project files.
   - `class StructuredOutputMode`; `class ToolStreamingMode`; `class VisionInputMode`; `class ReasoningControlMode`; `class PromptCacheMode`; `class BatchMode`; `class FilesMode`; `class TokenCountMode`; `…`
 - **kestrel_sdk/llm/decisions.py** — Decision contract: typed choice / score / noul questions over a state.
   - `class ChoiceQuestion`; `class ScoreQuestion`; `class NoulQuestion`; `class DecisionRequest`; `class ValidatedDecisionRequest`; `class ChoiceAnswer`; `class ScoreAnswer`; `class NoulAnswer`; `…`
+- **kestrel_sdk/llm/errors.py** — Provider protocol failures shared by SDK-only adapters and their hosts.
+  - `class LLMProtocolError`
 - **kestrel_sdk/llm/inference_lease.py** — Provider-neutral contracts for privately leased inference capacity.
   - `class InferenceLeaseState`; `class InferencePrivacy`; `class InferenceLeaseError`; `class InferenceLeaseConstraintError`; `class InferenceLeaseNotFoundError`; `class InferenceLeaseOwnershipError`; `class InferenceLeaseProviderUnavailableError`; `class InferenceLeaseProvisioningError`; `…`
 - **kestrel_sdk/llm/model_info.py** — Standardized model metadata.
@@ -154,7 +157,7 @@ Repo entry points and standard project files.
 - **kestrel_sdk/native_a2a/client/client.py** — —
   - `class ClientConfig`; `class ClientCallContext`; `class Client`
 - **kestrel_sdk/native_a2a/client/client_factory.py** — —
-  - `class ClientFactory`; `async def create_client(agent, client_config, interceptors, relative_card_path, …)`; `def minimal_agent_card(url, transports)`
+  - `def major_minor(version)`; `class ClientFactory`; `async def create_client(agent, client_config, interceptors, relative_card_path, …)`; `def minimal_agent_card(url, transports)`
 - **kestrel_sdk/native_a2a/client/errors.py** — Custom exceptions for the A2A client.
   - `class A2AClientError`; `class AgentCardResolutionError`; `class A2AClientTimeoutError`
 - **kestrel_sdk/native_a2a/client/interceptors.py** — —
@@ -171,8 +174,6 @@ Repo entry points and standard project files.
   - `def handle_http_exceptions(status_error_handler)`; `def get_http_args(context)`; `async def send_http_request(httpx_client, request, status_error_handler)`; `async def parse_sse_stream(response)`; `async def send_http_stream_request(httpx_client, method, url, status_error_handler, …)`
 - **kestrel_sdk/native_a2a/client/transports/jsonrpc.py** — —
   - `class JsonRpcTransport`
-- **kestrel_sdk/native_a2a/client/transports/response_parsing.py** — Decode peer response data separately from transport and admission failures.
-  - `def load_json_value(payload)`; `def load_json_response(payload)`; `def decode_response_text(payload)`; `def parse_jsonrpc_response(payload)`; `def parse_protobuf_response(payload, message)`
 - **kestrel_sdk/native_a2a/client/transports/rest.py** — —
   - `class RestTransport`
 - **kestrel_sdk/native_a2a/client/transports/tenant_decorator.py** — —
@@ -238,6 +239,13 @@ Repo entry points and standard project files.
 - **kestrel_sdk/native_a2a/migrations/versions/__init__.py** — Alembic migrations scripts for the A2A project.
 - **kestrel_sdk/native_a2a/migrations/versions/b5e3d1c8a2f7_add_task_version_and_task_events.py** — add task_versions and task_events tables
   - `def upgrade()`; `def downgrade()`
+- **kestrel_sdk/native_a2a/plugins/__init__.py** — Plugins: hooks into the A2A client and `DefaultRequestHandlerV2`.
+- **kestrel_sdk/native_a2a/plugins/base.py** — Plugin interfaces.
+  - `class Plugin`; `class ServerPlugin`; `class ClientPlugin`; `class ExecutionPlugin`; `class TaskObserverPlugin`; `class PushPlugin`; `class CompletePlugin`
+- **kestrel_sdk/native_a2a/plugins/manager.py** — Plugin managers and the global registry.
+  - `class PluginManager`; `class SequentialPluginManager`; `def sequential()`; `def set_global(manager)`; `def get_global()`
+- **kestrel_sdk/native_a2a/plugins/types.py** — Argument types passed to plugin hooks.
+  - `class ServerRequest`; `class ServerResponse`; `class ClientRequest`; `class ClientResponse`; `class TaskEventInfo`; `class PushRequest`; `class PushResult`
 - **kestrel_sdk/native_a2a/py.typed** — —
 - **kestrel_sdk/native_a2a/server/__init__.py** — Server-side components for implementing an A2A agent.
 - **kestrel_sdk/native_a2a/server/agent_execution/__init__.py** — Components for executing agent logic within the A2A server.
@@ -249,6 +257,8 @@ Repo entry points and standard project files.
   - `class AgentExecutor`
 - **kestrel_sdk/native_a2a/server/agent_execution/context.py** — —
   - `class RequestContext`
+- **kestrel_sdk/native_a2a/server/agent_execution/plugin_agent_executor.py** — Runs `ExecutionPlugin` hooks around an `AgentExecutor`.
+  - `class PluginEventQueue`; `class PluginAgentExecutor`
 - **kestrel_sdk/native_a2a/server/agent_execution/request_context_builder.py** — —
   - `class RequestContextBuilder`
 - **kestrel_sdk/native_a2a/server/agent_execution/simple_request_context_builder.py** — —
@@ -286,6 +296,8 @@ Repo entry points and standard project files.
 - **kestrel_sdk/native_a2a/server/owner_resolver.py** — —
   - `def resolve_user_scope(context)`
 - **kestrel_sdk/native_a2a/server/request_handlers/__init__.py** — Request handler components for the A2A server.
+- **kestrel_sdk/native_a2a/server/request_handlers/_plugin_hooks.py** — Runs `ServerPlugin` hooks around `DefaultRequestHandlerV2` methods.
+  - `def server_plugin_hooks(method)`
 - **kestrel_sdk/native_a2a/server/request_handlers/default_request_handler.py** — —
   - `class LegacyRequestHandler`
 - **kestrel_sdk/native_a2a/server/request_handlers/default_request_handler_v2.py** — —
@@ -352,7 +364,7 @@ Repo entry points and standard project files.
 - **kestrel_sdk/native_a2a/utils/constants.py** — Constants for well-known URIs used throughout the A2A Python SDK.
   - `class TransportProtocol`
 - **kestrel_sdk/native_a2a/utils/error_handlers.py** — —
-  - `def build_error_details(error)`; `def build_rest_error_payload(error)`; `def rest_error_handler(func)`; `def rest_stream_error_handler(func)`
+  - `def build_error_details(error)`; `def build_rest_error_payload(error)`; `def rest_error_handler(func, media_type)`; `def rest_stream_error_handler(func, media_type)`
 - **kestrel_sdk/native_a2a/utils/errors.py** — Custom exceptions and error types for A2A server-side errors.
   - `class ErrorMapping`; `class A2AError`; `class TaskNotFoundError`; `class TaskNotCancelableError`; `class PushNotificationNotSupportedError`; `class UnsupportedOperationError`; `class ContentTypeNotSupportedError`; `class InternalError`; `…`
 - **kestrel_sdk/native_a2a/utils/grpc_status.py** — —
@@ -468,49 +480,14 @@ Repo entry points and standard project files.
 ## `tests/`
 
 - **tests/__init__.py** — —
-- **tests/native_a2a/client/test_card_resolver.py** — —
-  - `def mock_httpx_client()`; `def base_url()`; `def resolver(mock_httpx_client, base_url)`; `def mock_response()`; `def valid_agent_card_data()`; `class TestA2ACardResolverInit`; `class TestGetAgentCard`; `class TestParseAgentCard`
-- **tests/native_a2a/client/test_client_factory.py** — Tests for the ClientFactory.
-  - `def test_factory_rejects_unsupported_protocol_before_opening_client(binding, version)`; `async def test_factory_selects_native_binding_after_unsupported_first_binding(client_preference)`; `def base_agent_card()`; `def test_client_factory_selects_preferred_transport(base_agent_card)`; `def test_client_factory_selects_secondary_transport_url(base_agent_card)`; `def test_client_factory_server_preference(base_agent_card)`; `def test_client_factory_prefers_1_0_ignoring_patch_version(base_agent_card, v1_version)`; `def test_client_factory_no_compatible_transport(base_agent_card)`; `…`
-- **tests/native_a2a/client/test_client_factory_grpc.py** — Tests for GRPC transport selection in ClientFactory.
-  - `def grpc_agent_card()`; `def test_grpc_priority_1_0(grpc_agent_card)`; `def test_grpc_unsupported_versions_are_rejected(grpc_agent_card)`; `def test_grpc_priority_lt_0_3_raises_value_error(grpc_agent_card)`; `def test_grpc_invalid_version_raises_value_error(grpc_agent_card)`; `def test_grpc_unspecified_version_uses_grpc_transport(grpc_agent_card)`
-- **tests/native_a2a/client/test_discovery_validation.py** — Peer-controlled discovery uses the same decoder as native responses.
-  - `async def test_discovery_normalizes_peer_decoding_errors(body)`; `async def test_discovery_preserves_forward_fields_without_mutating_the_card()`; `async def test_discovery_does_not_misclassify_verifier_failures(error)`
-- **tests/native_a2a/client/test_errors.py** — —
-  - `class TestA2AClientError`; `class TestClientErrorRepr`
-- **tests/native_a2a/client/transports/test_http_helpers.py** — —
-  - `def test_default_sse_error_handler()`; `async def test_parse_sse_stream_edge_cases()`; `async def test_send_http_stream_request_non_sse(mocker)`
-- **tests/native_a2a/client/transports/test_jsonrpc_client.py** — Tests for the JSON-RPC client transport.
-  - `async def async_iterable_from_list(items)`; `def mock_httpx_client(monkeypatch)`; `def agent_card()`; `def transport(mock_httpx_client, agent_card)`; `def transport_with_url(mock_httpx_client)`; `def create_send_message_request(text)`; `class TestJsonRpcTransportInit`; `class TestSendMessage`; `…`
-- **tests/native_a2a/client/transports/test_response_decoding.py** — Malformed peer data is typed without catching local transport callbacks.
-  - `async def invoke(transport, method, params)`; `def peer_response(request, binding, method, fault)`; `def transport_for(http, binding)`; `async def test_malformed_json_is_typed_on_every_operation(binding, method, params, fault)`; `async def test_malformed_known_protobuf_response_field_is_typed(binding, method, params)`; `async def test_nonfinite_json_never_becomes_a_task(binding, fault)`; `async def test_local_admission_exception_is_preserved_before_response_decoding(binding, method, params, kind)`; `async def test_valid_data_strings_survive_response_decoding(binding)`; `…`
-- **tests/native_a2a/client/transports/test_rest_client.py** — —
-  - `def mock_httpx_client()`; `def mock_agent_card()`; `async def async_iterable_from_list(items)`; `class TestRestTransport`; `class TestRestTransportExtensions`; `class TestTaskCallback`; `class TestRestTransportTenant`; `class TestRestUnrecognizedResponseFields`
-- **tests/native_a2a/server/routes/test_agent_card_routes.py** — —
-  - `def agent_card()`; `def test_get_agent_card_success(agent_card)`; `def test_get_agent_card_with_modifier(agent_card)`; `def test_agent_card_custom_url(agent_card)`; `def card_client()`; `def test_response_carries_a_weak_etag()`; `def test_cache_control_is_sent_only_when_configured()`; `def test_etag_changes_with_the_card()`; `…`
-- **tests/native_a2a/server/routes/test_http_authorization_errors.py** — HTTP authorization errors remain HTTP errors on both native bindings.
-  - `class RejectingHandler`; `async def test_native_routes_preserve_http_authorization_errors(status_code, tenant, binding, method, …)`; `class ProtocolRejectingHandler`; `async def test_native_protocol_errors_use_their_binding_media_type(tenant, binding, method, path, …)`
-- **tests/native_a2a/server/routes/test_http_version_parameters.py** — Exercise version carriers through real HTTP routes and task storage.
-  - `class ObservedExecutor`; `class ObservedTaskStore`; `def create_app(executor, store)`; `async def get_task(client, binding, task_id, headers, …)`; `async def send_streaming_message(client, binding, query)`; `async def test_http_version_carriers_before_task_read(binding, headers, query, accepted)`; `async def test_query_version_before_streaming_execution(binding, version)`; `async def test_version_query_rejection_escapes_error_and_warning_logs(binding, streaming, control, caplog)`
-- **tests/native_a2a/utils/jcs_depth_vectors.json** — (configuration)
-- **tests/native_a2a/utils/jcs_vectors.json** — (configuration)
-- **tests/native_a2a/utils/signing_interop_vectors.json** — (configuration)
-- **tests/native_a2a/utils/test_jcs.py** — RFC 8785 (JCS) conformance tests for Agent Card canonicalization.
-  - `def test_vector_corpus_is_complete()`; `def test_vector_must_accept(vector)`; `def test_vector_must_reject(vector)`; `def test_vector_agrees_with_independent_implementation(vector)`; `def test_non_ascii_is_emitted_as_literal_utf8()`; `def test_line_and_paragraph_separators_are_not_escaped()`; `def test_mandatory_escapes_are_still_applied()`; `def test_non_bmp_characters_survive_as_literal_utf8()`; `…`
-- **tests/native_a2a/utils/test_proto_utils.py** — Tests for kestrel_sdk.native_a2a.utils.proto_utils module.
-  - `class TestToStreamResponse`; `class TestDictSerialization`; `class TestFieldIsRepeatedFallback`; `class TestRestParams`; `class TestValidateProtoRequiredFields`; `class TestWarnOnMissingRequiredFields`; `class TestParseLenient`
-- **tests/native_a2a/utils/test_rest_error_response.py** — Actual native REST error responses preserve their media, status and body.
-  - `async def test_real_rest_error_response(error, code, status, reason)`
-- **tests/native_a2a/utils/test_signing.py** — —
-  - `def create_key_provider(verification_key)`; `def sample_agent_card()`; `def test_signer_and_verifier_symmetric(sample_agent_card)`; `def test_signer_and_verifier_symmetric_multiple_signatures(sample_agent_card)`; `def test_signer_and_verifier_asymmetric(sample_agent_card)`; `def test_canonicalize_agent_card(sample_agent_card)`; `def test_canonicalize_agent_card_preserves_false_capability(sample_agent_card)`; `def test_canonicalize_agent_card_warns_about_missing_required_fields(caplog)`
-- **tests/native_a2a/utils/test_signing_interop.py** — Cross-SDK Agent Card signature tests.
-  - `def test_vector_corpus_is_complete()`; `def test_card_signed_by_any_sdk_verifies(vector)`; `def test_card_canonical_bytes_are_the_shared_form(vector)`; `def test_card_edited_after_signing_is_rejected(vector)`; `def test_malformed_signature_does_not_hide_independent_valid_signature(vector, protected)`; `def test_malformed_only_signature_has_a_verification_error(protected)`; `def test_verifier_does_not_swallow_key_provider_failures(failure)`; `def test_hostile_key_family_does_not_hide_independent_ec_signature(hostile_algorithm, valid_follows)`; `…`
-- **tests/native_a2a/utils/test_signing_presence.py** — Agent Card field-presence rules from A2A 1.0 section 8.4.1.
-  - `def test_public_signing_obeys_field_presence(case)`; `def test_explicit_empty_optional_field_is_signed(field)`
+- **tests/native_a2a/server/routes/test_common.py** — —
+  - `class LegacyEventSourceResponse`; `def test_default_grace_period_supports_legacy_sse_starlette()`; `def test_grace_period_constructor_arguments(grace_period)`; `def test_nonzero_grace_period_requires_cooperative_shutdown_support()`; `def test_negative_grace_period_is_rejected(response_class)`; `class TestStarletteUser`; `class TestDefaultContextBuilder`; `class TestBuildServerCallContext`; `…`
+- **tests/native_a2a/server/routes/test_rest_dispatcher.py** — —
+  - `def agent_card()`; `def mock_handler(agent_card)`; `def rest_dispatcher_instance(mock_handler)`; `def make_mock_request(method, path_params, query_params, headers, …)`; `class TestRestDispatcherInitialization`; `class TestRestDispatcherContextManagement`; `class TestRestDispatcherEndpoints`; `class TestRestDispatcherStreaming`
+- **tests/native_a2a/utils/test_error_handlers.py** — Tests for kestrel_sdk.native_a2a.utils.error_handlers module.
+  - `class MockJSONResponse`; `class MockEventSourceResponse`; `async def test_rest_error_handler_server_error()`; `async def test_rest_error_handler_unknown_exception()`; `async def test_rest_stream_error_handler_server_error()`; `async def test_rest_stream_error_handler_reraises_exception()`; `async def test_rest_error_handler_success()`; `async def test_rest_stream_error_handler_generator_error(caplog)`; `…`
 - **tests/native_a2a/utils/test_version_validation.py** — Tests for version validation decorators.
-  - `class TestHandler`; `async def test_validate_version_success()`; `async def test_validate_version_case_insensitive()`; `async def test_query_version_for_unary_and_streaming(streaming, version)`; `async def test_validate_version_mismatch()`; `async def test_validate_version_missing_defaults_to_0_3()`; `async def test_validate_version_async_gen_success()`; `async def test_validate_version_async_gen_failure()`; `…`
-- **tests/native_a2a/utils/test_versioning.py** — Canonical version parsing shared by client selection and server handlers.
-  - `def test_protocol_release(version, release)`; `def test_invalid_protocol_version()`; `def test_invalid_handler_configuration_fails_at_decoration()`
+  - `class TestHandler`; `async def test_validate_version_success()`; `async def test_validate_version_case_insensitive()`; `async def test_validate_version_mismatch()`; `async def test_validate_version_missing_defaults_to_0_3()`; `async def test_validate_version_async_gen_success()`; `async def test_validate_version_async_gen_failure()`; `async def test_validate_version_no_context()`; `…`
 - **tests/test_channel_delivery_contracts.py** — —
   - `class EchoChannel`; `class EchoDeliveryProvider`; `def test_async_channel_contract()`; `def test_async_delivery_contract()`; `def test_output_event_envelope_serializes_destination()`; `def test_entry_point_group_constants_are_stable()`
 - **tests/test_command_argument_binding.py** — ``!command`` argument binding: quoting, ``name=value`` and named failures (#73).
@@ -565,6 +542,8 @@ Repo entry points and standard project files.
   - `async def test_cancelled_send_keeps_windows_frames_ordered_and_lossless()`; `async def test_windows_writer_close_waits_for_active_write_without_blocking()`; `async def test_windows_writer_handles_partial_writes_and_reports_terminal_failures()`; `async def test_windows_writer_partial_frame_failure_fences_queued_and_later_drains()`; `async def test_windows_reader_cancellation_never_uses_default_executor(monkeypatch)`; `async def test_windows_reader_cancelled_asyncio_run_exits_without_waiting_for_worker()`; `async def test_windows_writer_success_releases_references_while_open_and_idle()`; `async def test_windows_writer_terminal_failure_releases_queued_references()`; `…`
 - **tests/test_isolated_feature_stop.py** — Bounded, cancellation-safe subprocess retirement regressions (issue #66).
   - `async def test_cancelled_stop_retains_detached_child_and_delivers_first_cancellation(monkeypatch)`; `async def test_stop_never_reaped_process_uses_only_signal_phase_observations(monkeypatch)`; `async def test_stop_does_not_reobserve_process_after_prior_close_task(monkeypatch)`; `async def test_stop_reobserves_process_after_client_close_can_unblock_waiter(monkeypatch)`; `async def test_stop_timeout_does_not_fence_start_that_settles_before_timeout_update(monkeypatch)`; `async def test_stop_preserves_nested_timeout_cancellation_counts(monkeypatch)`; `async def test_stop_nested_timeout_and_external_cancels_continue_after_catch(monkeypatch)`; `async def test_start_rejects_while_a_detached_child_has_unresolved_retirement(monkeypatch)`; `…`
+- **tests/test_llm_completion_contract.py** — Completion evidence is provider data, never inferred from response content.
+  - `class NativeReason`; `def test_completion_contract_version_is_eight()`; `def test_protocol_error_is_part_of_the_public_lightweight_contract()`; `def test_response_retains_native_completion_reason_without_classifying_it(reason)`; `def test_content_usage_and_raw_shape_do_not_create_completion_evidence(content)`; `def test_completion_field_is_appended_without_reassigning_positional_arguments()`; `def test_structured_content_projection_preserves_completion_and_usage_metadata()`; `def test_plain_stream_annotation_includes_a_terminal_response()`; `…`
 - **tests/test_llm_contract.py** — Tests for the LLM provider contract.
   - `class TestContractVersion`; `class TestToolCall`; `class TestLLMResponse`; `class TestModelCategory`; `class TestModelInfo`; `class TestProviderInfo`; `class TestProviderCapabilities`; `class TestBackendType`; `…`
 - **tests/test_logging_summary.py** — ``content_log_summary`` describes caller text without any of it (#105).
