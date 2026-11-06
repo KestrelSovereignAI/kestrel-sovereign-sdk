@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.51.0
+
+### Changed
+
+- Breaking: `GovernedToolBinding.invoke` requires the keyword `operation_id`.
+  A caller creates a bounded opaque identifier once for an intended operation
+  and reuses it only when resubmitting that operation. Hosts bind it to the
+  caller, agent, stable tool registration and arguments before dispatch. The
+  identifier carries no execution authority and does not prove an outcome.
+- Decorated feature tools preserve `ResourceOutcomeUnknown` and its original
+  cause, so a host can journal an uncertain effect instead of treating it as
+  an ordinary tool rejection and continuing with success narration.
+
 ## 0.50.0
 
 ### Changed
