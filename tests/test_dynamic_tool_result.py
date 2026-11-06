@@ -28,6 +28,7 @@ import pytest
 from kestrel_sdk.features.base import Feature, tool
 from kestrel_sdk.tools.base import ToolCategory
 from kestrel_sdk.tools.result import ToolResult, ToolResultStatus
+from kestrel_sdk.resources import ResourceOutcomeUnknown
 
 
 def _run(coro):
@@ -97,6 +98,26 @@ def _get_dyn_tool(feature: Feature, name: str):
 @pytest.fixture
 def feature():
     return _FixtureFeature(agent=None)
+
+
+@pytest.mark.asyncio
+async def test_unknown_effect_keeps_its_original_exception_after_a_real_file_effect(tmp_path):
+    witness = tmp_path / 'uncertain-effect'
+    original = ResourceOutcomeUnknown('Native remote reply was lost')
+    cause = OSError('Original transport failed after effect')
+    original.__cause__ = cause
+
+    class UncertainFeature(_FixtureFeature):
+        @tool(name='uncertain_effect', description='Write before the reply is lost')
+        async def uncertain_effect(self) -> dict:
+            witness.write_text('one physical effect')
+            raise original
+
+    wrapped = _get_dyn_tool(UncertainFeature(agent=None), 'uncertain_effect')
+    with pytest.raises(ResourceOutcomeUnknown) as observed:
+        await wrapped.execute()
+    assert observed.value is original and observed.value.__cause__ is cause
+    assert witness.read_text() == 'one physical effect'
 
 
 class TestToolResultPassThrough:

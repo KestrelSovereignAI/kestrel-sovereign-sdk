@@ -32,6 +32,7 @@ from typing import (
 )
 
 from kestrel_sdk.logging_summary import content_log_summary
+from kestrel_sdk.resources import ResourceOutcomeUnknown
 from kestrel_sdk.tools.base import (
     ToolSchema,
     ToolParameter,
@@ -546,6 +547,8 @@ class Feature(ABC):
                         with tool_result_parts_buffer() as pending_parts:
                             try:
                                 result = await self.func(**kwargs)
+                            except ResourceOutcomeUnknown:
+                                raise
                             except Exception as e:
                                 # A host execution-control error is a fact
                                 # for the host's custody, not a tool failure:
