@@ -28,7 +28,7 @@ import pytest
 from kestrel_sdk.features.base import Feature, tool
 from kestrel_sdk.tools.base import ToolCategory
 from kestrel_sdk.tools.result import ToolResult, ToolResultStatus
-from kestrel_sdk.resources import ResourceOutcomeUnknown
+from kestrel_sdk.resources import ResourceConflict, ResourceOutcomeUnknown
 
 
 def _run(coro):
@@ -101,22 +101,50 @@ def feature():
 
 
 @pytest.mark.asyncio
-async def test_unknown_effect_keeps_its_original_exception_after_a_real_file_effect(tmp_path):
+@pytest.mark.parametrize('shape', ['bare', 'task-group', 'explicit-cause'])
+async def test_unknown_effect_keeps_its_original_exception_after_a_real_file_effect(tmp_path, shape):
     witness = tmp_path / 'uncertain-effect'
     original = ResourceOutcomeUnknown('Native remote reply was lost')
     cause = OSError('Original transport failed after effect')
     original.__cause__ = cause
+    raised = []
+
+    async def write_then_lose_reply():
+        witness.write_text('one physical effect')
+        raise original
 
     class UncertainFeature(_FixtureFeature):
         @tool(name='uncertain_effect', description='Write before the reply is lost')
         async def uncertain_effect(self) -> dict:
-            witness.write_text('one physical effect')
-            raise original
+            if shape == 'task-group':
+                try:
+                    async with asyncio.TaskGroup() as tasks:
+                        tasks.create_task(write_then_lose_reply())
+                except ExceptionGroup as grouped:
+                    raised.append(grouped)
+                    raise
+            carrier = original if shape == 'bare' else ResourceConflict('Original uncertain precondition')
+            if shape == 'explicit-cause':
+                carrier.__cause__ = original
+            raised.append(carrier)
+            if shape == 'bare':
+                await write_then_lose_reply()
+            else:
+                await _raise_after_write(carrier)
+
+    async def _raise_after_write(carrier):
+        witness.write_text('one physical effect')
+        raise carrier
 
     wrapped = _get_dyn_tool(UncertainFeature(agent=None), 'uncertain_effect')
-    with pytest.raises(ResourceOutcomeUnknown) as observed:
+    with pytest.raises(BaseException) as observed:
         await wrapped.execute()
-    assert observed.value is original and observed.value.__cause__ is cause
+    assert observed.value is raised[0]
+    assert original.__cause__ is cause
+    if shape == 'task-group':
+        assert observed.value.exceptions == (original,)
+    elif shape == 'explicit-cause':
+        assert observed.value.__cause__ is original
     assert witness.read_text() == 'one physical effect'
 
 

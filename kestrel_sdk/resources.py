@@ -73,3 +73,28 @@ class ResourceUnsupported(ResourceError):
 
 class ResourceOutcomeUnknown(ResourceError):
     """Work may have been accepted; reconcile before any potentially unsafe retry."""
+
+
+def observed_outcome_unknown(error: BaseException | None) -> tuple[ResourceOutcomeUnknown, ...]:
+    """Original unknown outcomes in the explicit cause/group graph, each once.
+
+    Incidental handling context is not evidence. Native exception descriptors
+    avoid invoking application attribute hooks while observing that evidence.
+    This classifies delivery uncertainty, never host execution authority.
+    """
+    pending = [error] if error is not None else []
+    seen: set[int] = set()
+    observed = []
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ResourceOutcomeUnknown):
+            observed.append(current)
+        cause = BaseException.__cause__.__get__(current, type(current))
+        if cause is not None:
+            pending.append(cause)
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(BaseExceptionGroup.exceptions.__get__(current, type(current)))
+    return tuple(observed)
