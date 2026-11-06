@@ -32,7 +32,8 @@ Key Hierarchy:
         |-- kestrel-conversations-v1
         |-- kestrel-service-keys-v1
         |-- kestrel-wallet-v1
-        +-- kestrel-backup-v1
+        |-- kestrel-backup-v1
+        +-- kestrel-tool-effect-journal-v1
 """
 import hashlib
 import base64
@@ -76,6 +77,7 @@ VALID_PURPOSES = frozenset([
     "service-keys",
     "wallet",
     "backup",
+    "tool-effect-journal",
 ])
 
 _PASSPHRASE_MASTER_KEY_CACHE: Dict[Tuple[bytes, bytes], bytes] = {}
@@ -706,7 +708,8 @@ def get_agent_key(agent_did: str, purpose: str) -> bytes:
 
     Args:
         agent_did: Agent's DID (required, cannot be empty)
-        purpose: One of "conversations", "service-keys", "wallet", "backup"
+        purpose: One of "conversations", "service-keys", "wallet", "backup",
+            or "tool-effect-journal"
 
     Returns:
         32-byte derived key
