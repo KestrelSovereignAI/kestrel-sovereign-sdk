@@ -101,13 +101,18 @@ def feature():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('shape', ['bare', 'task-group', 'explicit-cause'])
+@pytest.mark.parametrize('shape', ['bare', 'task-group', 'explicit-cause', 'attribute-hook'])
 async def test_unknown_effect_keeps_its_original_exception_after_a_real_file_effect(tmp_path, shape):
     witness = tmp_path / 'uncertain-effect'
     original = ResourceOutcomeUnknown('Native remote reply was lost')
     cause = OSError('Original transport failed after effect')
     original.__cause__ = cause
     raised = []
+
+    class OpaqueConflict(ResourceConflict):
+        @property
+        def __class__(self):
+            raise RuntimeError('Application class hook replaced the original carrier')
 
     async def write_then_lose_reply():
         witness.write_text('one physical effect')
@@ -123,8 +128,10 @@ async def test_unknown_effect_keeps_its_original_exception_after_a_real_file_eff
                 except ExceptionGroup as grouped:
                     raised.append(grouped)
                     raise
-            carrier = original if shape == 'bare' else ResourceConflict('Original uncertain precondition')
-            if shape == 'explicit-cause':
+            carrier = (original if shape == 'bare' else
+                OpaqueConflict('Original opaque carrier') if shape == 'attribute-hook' else
+                ResourceConflict('Original uncertain precondition'))
+            if shape in {'explicit-cause', 'attribute-hook'}:
                 carrier.__cause__ = original
             raised.append(carrier)
             if shape == 'bare':
@@ -143,7 +150,7 @@ async def test_unknown_effect_keeps_its_original_exception_after_a_real_file_eff
     assert original.__cause__ is cause
     if shape == 'task-group':
         assert observed.value.exceptions == (original,)
-    elif shape == 'explicit-cause':
+    elif shape in {'explicit-cause', 'attribute-hook'}:
         assert observed.value.__cause__ is original
     assert witness.read_text() == 'one physical effect'
 

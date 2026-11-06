@@ -90,11 +90,11 @@ def observed_outcome_unknown(error: BaseException | None) -> tuple[ResourceOutco
         if id(current) in seen:
             continue
         seen.add(id(current))
-        if isinstance(current, ResourceOutcomeUnknown):
+        if issubclass(type(current), ResourceOutcomeUnknown):
             observed.append(current)
         cause = BaseException.__cause__.__get__(current, type(current))
         if cause is not None:
             pending.append(cause)
-        if isinstance(current, BaseExceptionGroup):
+        if issubclass(type(current), BaseExceptionGroup):
             pending.extend(BaseExceptionGroup.exceptions.__get__(current, type(current)))
     return tuple(observed)

@@ -35,3 +35,13 @@ def test_application_attribute_hooks_cannot_hide_original_group_evidence():
 
     grouped = HiddenGroup('Opaque application carrier', [original])
     assert observed_outcome_unknown(grouped) == (original,)
+
+
+def test_application_class_claim_cannot_invent_an_unknown_resource_error():
+    class SpoofedConflict(ResourceConflict):
+        @property
+        def __class__(self):
+            return ResourceOutcomeUnknown
+
+    ordinary = SpoofedConflict('Known precondition refusal')
+    assert observed_outcome_unknown(ordinary) == ()
