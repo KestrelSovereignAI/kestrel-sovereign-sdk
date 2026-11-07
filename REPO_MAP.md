@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 326 tracked files (294 `.py`, 10 `.md`, 22 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 328 tracked files (296 `.py`, 10 `.md`, 22 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -91,8 +91,8 @@ Repo entry points and standard project files.
   - `class PermissionLevel`; `class FeaturePermissionDefaults`; `class ContributionContractError`; `class WaitProviderRegistration`; `class WorkflowRegistration`; `class ContextClauseRegistration`; `class SetupStepContext`; `class SetupFlow`; `…`
 - **kestrel_sdk/features/host_base.py** — Host-scoped feature contract — SDK interface.
   - `class HostContext`; `class HostFeature`
-- **kestrel_sdk/features/host_errors.py** — Host-owned classification of execution-control errors.
-  - `def register_control_error_predicate(fn)`; `def is_host_control_error(exc)`
+- **kestrel_sdk/features/host_errors.py** — Host ownership of execution errors and their public projection.
+  - `def host_owns_tool_error_boundary(host)`; `def register_control_error_predicate(fn)`; `def is_host_control_error(exc)`
 - **kestrel_sdk/features/ui.py** — SDK-owned UI contribution shape.
   - `class UIContributions`
 - **kestrel_sdk/hooks/__init__.py** — Kestrel SDK — Hook interfaces.
@@ -405,7 +405,7 @@ Repo entry points and standard project files.
   - `class ResourceClass`; `class PayerKind`; `class SupportStatus`; `def status_for(resource_class, vendor, kind)`; `def is_offerable(resource_class, vendor, kind)`; `def supported_kinds_for(resource_class, vendor)`; `class KeyResolverProtocol`; `class ResolvedResource`; `…`
 - **kestrel_sdk/py.typed** — —
 - **kestrel_sdk/resources.py** — Immutable resource facts shared by environments and durable artifacts.
-  - `class ResourceContract`; `class ResourceScope`; `class ResourceError`; `class ResourceNotFound`; `class ResourceConflict`; `class ResourceUnsupported`; `class ResourceOutcomeUnknown`
+  - `class ResourceContract`; `class ResourceScope`; `class ResourceError`; `class ResourceNotFound`; `class ResourceConflict`; `class ResourceUnsupported`; `class ResourceOutcomeUnknown`; `def observed_outcome_unknown(error)`
 - **kestrel_sdk/security/__init__.py** — Kestrel SDK — Security interfaces, outbound policy and encryption helpers.
 - **kestrel_sdk/security/aead.py** — AEAD container — versioned AES-256-GCM with Fernet-compatible read path.
   - `class AEADCipher`
@@ -507,7 +507,7 @@ Repo entry points and standard project files.
 - **tests/test_docstring_parser.py** — Regression tests for parse_docstring_params wrapped-description truncation.
   - `def test_wrapped_description_not_truncated_at_word_continuation()`; `def test_single_line_params_unchanged()`; `def test_param_with_type_annotation()`
 - **tests/test_dynamic_tool_result.py** — Tests for ``DynamicTool.execute``'s ToolResult-aware pass-through.
-  - `def feature()`; `class TestToolResultPassThrough`; `class TestLegacyShapeDuringMigration`; `def parts_feature()`; `class TestEnvelopeParts`
+  - `def feature()`; `async def test_unknown_effect_keeps_its_original_exception_after_a_real_file_effect(tmp_path, shape)`; `class TestToolResultPassThrough`; `class TestLegacyShapeDuringMigration`; `def parts_feature()`; `class TestEnvelopeParts`
 - **tests/test_environment_acquisition.py** — Shared records and durable host conformance fixture; no provider/cloud IO.
   - `def originals()`; `def preparation(payload, identity)`; `def lease()`; `class EncryptedRowHost`; `class RetainedAttempt`; `def host(tmp_path)`; `def test_explicit_private_serializer_preserves_exact_original_bytes_and_identities()`; `def test_combined_maximum_preparation_round_trips_inside_storage_bound()`; `…`
 - **tests/test_extension_contracts.py** — Contract tests shared by agent UI and application extensions.
@@ -516,6 +516,8 @@ Repo entry points and standard project files.
   - `class ExternalFixtureFeature`; `def test_external_feature_can_expose_every_row_one_seam_via_sdk()`; `def test_contribution_methods_return_instance_stable_objects()`; `def test_owned_identity_supports_exact_deterministic_teardown()`; `def test_permission_vocabulary_is_closed_conservative_and_immutable()`; `def test_registration_validation_prevents_ambiguous_identity()`; `def test_workflow_registration_supports_empty_and_plural_sources()`; `def test_setup_flow_normalizes_real_non_string_enum()`; `…`
 - **tests/test_frozen_json.py** — The shared bounded JSON freeze used by public SDK contracts.
   - `def test_freeze_copies_deeply_and_is_read_only()`; `def test_self_reference_is_a_cycle_error_not_recursion()`; `def test_shared_but_acyclic_containers_are_not_cycles()`; `def test_non_string_keys_are_rejected_by_default()`; `def test_non_finite_numbers_are_rejected(number)`; `def test_unsupported_types_are_rejected()`; `def test_depth_nodes_and_keys_budgets()`; `def test_measured_size_equals_canonical_encoding(value)`; `…`
+- **tests/test_governed_operation_contract.py** — The public binding ABI requires an explicit intent key across transports.
+  - `def test_operation_id_is_a_required_keyword_in_the_public_binding_contract()`; `def test_transport_identity_cannot_substitute_for_an_operation_id(unrelated_id)`; `def test_published_readme_invoke_examples_bind_the_current_public_contract()`
 - **tests/test_hook_input.py** — SDK 0.9 — HookInput narration-check fields (kestrel-sovereign #1048 Wave 5D).
   - `def test_post_response_narration_fields_present_and_default_to_none()`; `def test_post_response_narration_fields_round_trip_through_to_dict()`; `def test_to_dict_exact_shape_for_post_response_event()`; `def test_positional_args_through_agent_spawn_keep_pre_0_9_meaning()`; `def test_pre_0_9_callers_still_construct_without_narration_fields()`
 - **tests/test_host_control_errors.py** — The host, not the SDK, decides which tool exceptions are control (#105).
@@ -564,6 +566,8 @@ Repo entry points and standard project files.
   - `def test_operator_package_exports_complete_contract_surface()`; `def test_top_level_selectively_reexports_canonical_operator_contracts()`; `def test_feature_package_exports_contribution_contracts()`; `def test_run_contract_surface_has_one_canonical_name_per_model()`; `def test_sdk_contract_imports_have_no_runtime_framework_dependency()`; `def test_feature_base_modules_do_not_runtime_import_contribution_models()`; `def test_historic_base_module_ui_annotation_resolves_at_runtime()`; `def test_all_contribution_method_annotations_resolve_without_extra_globals()`; `…`
 - **tests/test_resource_digest_validation.py** — Shared UTC digest normalization handles offset range failures consistently.
   - `def test_normalization_preserves_existing_aware_utc_wire_identity()`; `def test_environment_and_workspace_digest_offsets_never_escape_as_raw_overflow(edge)`; `def test_environment_and_workspace_json_keep_original_instants_and_digests(offset)`; `def test_non_json_offset_conversion_overflow_is_a_validation_error(value)`
+- **tests/test_resource_outcome_unknown.py** — Unknown delivery facts survive explicit nesting without inventing authority.
+  - `def test_explicit_cause_and_group_keep_each_original_once_even_with_cycles()`; `def test_incidental_handling_context_does_not_claim_an_unknown_outcome()`; `def test_application_attribute_hooks_cannot_hide_original_group_evidence()`; `def test_application_class_claim_cannot_invent_an_unknown_resource_error()`
 - **tests/test_run_contracts.py** — Focused tests for durable operator run-plane contracts.
   - `def test_launch_contains_only_semantic_input_and_record_owns_runtime_clock()`; `def test_launch_authorization_binds_all_trusted_authority()`; `def test_manual_and_agent_launch_shape_invariants()`; `def test_run_models_are_frozen_and_correlate_attempt_and_external_job()`; `def test_resolved_run_authorization_rechecks_durable_launch_scope()`; `def test_resolved_run_tenant_mismatch_matches_tenant_scoped_absence()`; `def test_terminal_state_and_separate_control_and_artifact_actions()`; `def test_control_expected_sequence_is_validated_and_outside_key_scope()`; `…`
 - **tests/test_security_encryption.py** — Tests for SDK encryption key derivation and migration behavior.
