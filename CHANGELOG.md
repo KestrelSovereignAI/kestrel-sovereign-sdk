@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## 0.52.0
 
+### Changed
+
+- `kestrel_sdk.native_a2a` moves to upstream a2a-python `main` at `2cc1dd5`
+  (`1.3.0-21-g2cc1dd5`), picking up upstream's server and v0.3 compatibility
+  fixes since `11f1116`: cancellation metadata reaches `AgentExecutor.cancel`,
+  input modes match on type and subtype, event queues close when a task
+  fails to start, and `after_handler_run` runs for cancelled calls.
+
 ### Removed
 
 - Breaking: `kestrel_sdk.native_a2a.utils.versioning` is removed from the

@@ -32,7 +32,7 @@ index 93dc034..c8f0784 100644
              user=self.build_user(request),
              state=state,
 diff --git a/src/a2a/server/routes/rest_dispatcher.py b/src/a2a/server/routes/rest_dispatcher.py
-index df1ab99..d1a4f8e 100644
+index 80964e5..240866a 100644
 --- a/src/a2a/server/routes/rest_dispatcher.py
 +++ b/src/a2a/server/routes/rest_dispatcher.py
 @@ -1,3 +1,4 @@
@@ -188,10 +188,10 @@ index 9d285ca..5b7b7b8 100644
 +    ctx = DefaultServerCallContextBuilder().build(request)
 +    assert ctx.state['a2a_versions'] == ['1.0', '0.3', '1.0.1', '0.3']
 diff --git a/tests/server/routes/test_rest_dispatcher.py b/tests/server/routes/test_rest_dispatcher.py
-index 4865b0c..dd86c45 100644
+index 3d7bb39..4cb2e5e 100644
 --- a/tests/server/routes/test_rest_dispatcher.py
 +++ b/tests/server/routes/test_rest_dispatcher.py
-@@ -215,6 +215,17 @@ class TestRestDispatcherEndpoints:
+@@ -271,6 +271,17 @@ class TestRestDispatcherEndpoints:
          response = await rest_dispatcher_instance.on_get_task(req)
          assert response.status_code == 404
  

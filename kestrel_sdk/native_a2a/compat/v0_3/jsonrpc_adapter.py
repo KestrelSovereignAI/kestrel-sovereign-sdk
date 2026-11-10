@@ -32,7 +32,7 @@ from kestrel_sdk.native_a2a.server.jsonrpc_models import (
     InternalError as CoreInternalError,
 )
 from kestrel_sdk.native_a2a.server.jsonrpc_models import (
-    InvalidRequestError as CoreInvalidRequestError,
+    InvalidParamsError as CoreInvalidParamsError,
 )
 from kestrel_sdk.native_a2a.server.jsonrpc_models import (
     JSONRPCError as CoreJSONRPCError,
@@ -129,7 +129,7 @@ class JSONRPC03Adapter:
 
                 return self._generate_error_response(
                     request_id,
-                    CoreInvalidRequestError(data=str(e)),
+                    CoreInvalidParamsError(data=str(e)),
                 )
 
             call_context = self._context_builder.build(request)
