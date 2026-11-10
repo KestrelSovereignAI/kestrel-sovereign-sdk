@@ -159,21 +159,6 @@ index 4a776c2..d6daba5 100644
              headers = context.state.get('headers', {})
              # Header names are usually case-insensitive in most frameworks, but dict lookup is case-sensitive.
              # We check both standard and lowercase versions.
-diff --git a/src/a2a/utils/versioning.py b/src/a2a/utils/versioning.py
-new file mode 100644
-index 0000000..7a9862b
---- /dev/null
-+++ b/src/a2a/utils/versioning.py
-@@ -0,0 +1,9 @@
-+"""Protocol compatibility is determined by the Major.Minor release."""
-+
-+from packaging.version import Version
-+
-+
-+def major_minor(version: str) -> tuple[int, int]:
-+    """Return the protocol release, ignoring the specification patch number."""
-+    parsed = Version(version)
-+    return parsed.major, parsed.minor
 diff --git a/tests/server/routes/test_common.py b/tests/server/routes/test_common.py
 index 9d285ca..5b7b7b8 100644
 --- a/tests/server/routes/test_common.py

@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.52.0
+
+### Removed
+
+- Breaking: `kestrel_sdk.native_a2a.utils.versioning` is removed from the
+  vendored A2A SDK's Kestrel patch. Use upstream's own
+  `kestrel_sdk.native_a2a.client.client_factory.major_minor`, which has the
+  same semantics, or `packaging.version` directly. Kestrel Core stopped
+  importing the shim in KestrelSovereignAI/kestrel-sovereign#4005. The
+  remaining patch covers HTTP+JSON error handling and `A2A-Version` carriers.
+
 ## 0.51.0
 
 ### Changed

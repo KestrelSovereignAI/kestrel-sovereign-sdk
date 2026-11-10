@@ -97,7 +97,6 @@ output directory and never consumes dirty working-tree files.
 The snapshot is upstream `main` after release 1.3.0, with the exact base
 commit in `VENDORED.json`, plus a minimal Kestrel patch in `UPSTREAM.patch`:
 
-- `utils.versioning.major_minor`, which Kestrel Core imports.
 - HTTP+JSON error handlers re-raise Starlette `HTTPException`, so
   authentication keeps its status and challenge headers, and native HTTP+JSON
   errors use `application/a2a+json`.
