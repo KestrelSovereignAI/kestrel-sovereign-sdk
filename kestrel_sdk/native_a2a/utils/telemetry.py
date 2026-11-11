@@ -254,6 +254,13 @@ def trace_function(  # noqa: PLR0915
                 span.set_status(StatusCode.OK)
             except _NON_ERROR_EXCEPTIONS as ge:
                 exception = None
+                # Bare cancellation remains the existing tracing concern,
+                # not an implicit host-control policy decision.
+                host_control = isinstance(
+                    ge, Exception
+                ) and is_host_control_error(ge)
+                if host_control:
+                    raise
                 logger.debug(
                     '%s in span %s',
                     type(ge).__name__,
@@ -261,13 +268,18 @@ def trace_function(  # noqa: PLR0915
                 )
                 span.record_exception(ge)
                 raise
-            except Exception as e:
-                exception = e
-                host_control = is_host_control_error(e)
+            except BaseException as e:
+                # Compound controls may contain cancellation and therefore
+                # not inherit Exception. Preserve them before diagnostics.
+                host_control = not isinstance(
+                    e, asyncio.CancelledError
+                ) and is_host_control_error(e)
                 if host_control:
                     raise
-                span.record_exception(e)
-                span.set_status(StatusCode.ERROR, description=str(e))
+                if isinstance(e, Exception):
+                    exception = e
+                    span.record_exception(e)
+                    span.set_status(StatusCode.ERROR, description=str(e))
                 raise
             finally:
                 if attribute_extractor and not host_control:
@@ -309,13 +321,16 @@ def trace_function(  # noqa: PLR0915
                 result = func(*args, **kwargs)
                 span.set_status(StatusCode.OK)
 
-            except Exception as e:
-                exception = e
-                host_control = is_host_control_error(e)
+            except BaseException as e:
+                host_control = not isinstance(
+                    e, asyncio.CancelledError
+                ) and is_host_control_error(e)
                 if host_control:
                     raise
-                span.record_exception(e)
-                span.set_status(StatusCode.ERROR, description=str(e))
+                if isinstance(e, Exception):
+                    exception = e
+                    span.record_exception(e)
+                    span.set_status(StatusCode.ERROR, description=str(e))
                 raise
             finally:
                 if attribute_extractor and not host_control:

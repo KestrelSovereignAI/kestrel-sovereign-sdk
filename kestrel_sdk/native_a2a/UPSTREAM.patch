@@ -95,6 +95,49 @@ index 2263f33..1e07992 100644
 +        message=error.message if isinstance(error, A2AError) else str(error),
 +        data=error.data if isinstance(error, A2AError) else None,
      )
+diff --git a/src/a2a/compat/v0_3/rest_adapter.py b/src/a2a/compat/v0_3/rest_adapter.py
+index 9b91f3b..852df9e 100644
+--- a/src/a2a/compat/v0_3/rest_adapter.py
++++ b/src/a2a/compat/v0_3/rest_adapter.py
+@@ -4,6 +4,8 @@ import logging
+ from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
+ from typing import TYPE_CHECKING, Any
+ 
++from kestrel_sdk.features.host_errors import is_host_control_error
++
+ 
+ if TYPE_CHECKING:
+     from sse_starlette.sse import EventSourceResponse
+@@ -87,6 +89,8 @@ class REST03Adapter:
+         try:
+             await request.body()
+         except (ValueError, RuntimeError, OSError) as e:
++            if is_host_control_error(e):
++                raise
+             raise InvalidRequestError(
+                 message=f'Failed to pre-consume request body: {e}'
+             ) from e
+diff --git a/src/a2a/compat/v0_3/rest_handler.py b/src/a2a/compat/v0_3/rest_handler.py
+index 9e0773f..96bbaf6 100644
+--- a/src/a2a/compat/v0_3/rest_handler.py
++++ b/src/a2a/compat/v0_3/rest_handler.py
+@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
+ from typing import TYPE_CHECKING, Any
+ 
+ from google.protobuf.json_format import MessageToDict
++from kestrel_sdk.features.host_errors import is_host_control_error
+ 
+ 
+ if TYPE_CHECKING:
+@@ -257,6 +258,8 @@ class REST03Handler:
+                 int(history_length_str) if history_length_str else None
+             )
+         except ValueError as e:
++            if is_host_control_error(e):
++                raise
+             raise InvalidParamsError(
+                 message=f'Failed to parse historyLength field: {e}.'
+             ) from e
 diff --git a/src/a2a/server/request_handlers/response_helpers.py b/src/a2a/server/request_handlers/response_helpers.py
 index 262e103..0f806c2 100644
 --- a/src/a2a/server/request_handlers/response_helpers.py
@@ -486,7 +529,7 @@ index 9eb6d02..f72c020 100644
      if isinstance(data, str):
          return Parse(data, message, ignore_unknown_fields=True)
 diff --git a/src/a2a/utils/telemetry.py b/src/a2a/utils/telemetry.py
-index d20caad..5899f34 100644
+index d20caad..c4acaeb 100644
 --- a/src/a2a/utils/telemetry.py
 +++ b/src/a2a/utils/telemetry.py
 @@ -72,6 +72,7 @@ import os
@@ -505,15 +548,40 @@ index d20caad..5899f34 100644
  
              try:
                  # Async wrapper, await for the function call to complete.
-@@ -260,16 +262,21 @@ def trace_function(  # noqa: PLR0915
-                 raise
-             except Exception as e:
-                 exception = e
-+                host_control = is_host_control_error(e)
+@@ -251,6 +253,13 @@ def trace_function(  # noqa: PLR0915
+                 span.set_status(StatusCode.OK)
+             except _NON_ERROR_EXCEPTIONS as ge:
+                 exception = None
++                # Bare cancellation remains the existing tracing concern,
++                # not an implicit host-control policy decision.
++                host_control = isinstance(
++                    ge, Exception
++                ) and is_host_control_error(ge)
 +                if host_control:
 +                    raise
-                 span.record_exception(e)
-                 span.set_status(StatusCode.ERROR, description=str(e))
+                 logger.debug(
+                     '%s in span %s',
+                     type(ge).__name__,
+@@ -258,18 +267,28 @@ def trace_function(  # noqa: PLR0915
+                 )
+                 span.record_exception(ge)
+                 raise
+-            except Exception as e:
+-                exception = e
+-                span.record_exception(e)
+-                span.set_status(StatusCode.ERROR, description=str(e))
++            except BaseException as e:
++                # Compound controls may contain cancellation and therefore
++                # not inherit Exception. Preserve them before diagnostics.
++                host_control = not isinstance(
++                    e, asyncio.CancelledError
++                ) and is_host_control_error(e)
++                if host_control:
++                    raise
++                if isinstance(e, Exception):
++                    exception = e
++                    span.record_exception(e)
++                    span.set_status(StatusCode.ERROR, description=str(e))
                  raise
              finally:
 -                if attribute_extractor:
@@ -529,7 +597,7 @@ index d20caad..5899f34 100644
                          logger.exception(
                              'attribute_extractor error in span %s',
                              actual_span_name,
-@@ -294,6 +301,7 @@ def trace_function(  # noqa: PLR0915
+@@ -294,24 +313,33 @@ def trace_function(  # noqa: PLR0915
  
              result = None
              exception = None
@@ -537,15 +605,23 @@ index d20caad..5899f34 100644
  
              try:
                  # Sync wrapper, execute the function call.
-@@ -302,16 +310,21 @@ def trace_function(  # noqa: PLR0915
+                 result = func(*args, **kwargs)
+                 span.set_status(StatusCode.OK)
  
-             except Exception as e:
-                 exception = e
-+                host_control = is_host_control_error(e)
+-            except Exception as e:
+-                exception = e
+-                span.record_exception(e)
+-                span.set_status(StatusCode.ERROR, description=str(e))
++            except BaseException as e:
++                host_control = not isinstance(
++                    e, asyncio.CancelledError
++                ) and is_host_control_error(e)
 +                if host_control:
 +                    raise
-                 span.record_exception(e)
-                 span.set_status(StatusCode.ERROR, description=str(e))
++                if isinstance(e, Exception):
++                    exception = e
++                    span.record_exception(e)
++                    span.set_status(StatusCode.ERROR, description=str(e))
                  raise
              finally:
 -                if attribute_extractor:

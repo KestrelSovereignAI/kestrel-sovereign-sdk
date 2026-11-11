@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from google.protobuf.json_format import MessageToDict
+from kestrel_sdk.features.host_errors import is_host_control_error
 
 
 if TYPE_CHECKING:
@@ -258,6 +259,8 @@ class REST03Handler:
                 int(history_length_str) if history_length_str else None
             )
         except ValueError as e:
+            if is_host_control_error(e):
+                raise
             raise InvalidParamsError(
                 message=f'Failed to parse historyLength field: {e}.'
             ) from e
