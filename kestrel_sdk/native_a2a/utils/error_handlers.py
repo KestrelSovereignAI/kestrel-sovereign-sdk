@@ -148,6 +148,7 @@ def _create_error_response(
     if isinstance(error, HTTPException):
         raise error
 
+    payload = build_rest_error_payload(error)
     if isinstance(error, A2AError):
         log_level = (
             logging.ERROR
@@ -166,7 +167,6 @@ def _create_error_response(
     else:
         logger.exception('Unknown error occurred')
 
-    payload = build_rest_error_payload(error)
     # Extract HTTP status code from the payload
     http_code = payload.get('error', {}).get('code', 500)
     return JSONResponse(
@@ -199,6 +199,8 @@ def rest_stream_error_handler(
     """Decorator to catch A2AError for a streaming method. Maps synchronous errors to JSONResponse and logs streaming errors."""
 
     def _log_error(error: Exception) -> None:
+        if is_host_control_error(error):
+            raise error
         if isinstance(error, A2AError):
             log_level = (
                 logging.ERROR

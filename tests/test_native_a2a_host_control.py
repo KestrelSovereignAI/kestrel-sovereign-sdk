@@ -21,6 +21,7 @@ from kestrel_sdk.native_a2a.server.routes.jsonrpc_routes import create_jsonrpc_r
 from kestrel_sdk.native_a2a.server.routes.rest_routes import create_rest_routes
 from kestrel_sdk.native_a2a.types.a2a_pb2 import Task, TaskState, TaskStatus
 from kestrel_sdk.native_a2a.utils.errors import InternalError
+from kestrel_sdk.native_a2a.utils.telemetry import trace_function
 
 
 class HostControlError(Exception):
@@ -29,6 +30,19 @@ class HostControlError(Exception):
 
 class HostA2AControlError(HostControlError, InternalError):
     """An explicit host control failure that is also a normal A2A error type."""
+
+
+class UnformattableHostControl(HostA2AControlError):
+    """Formatting attempts a real unavailable resource, not a safe wire value."""
+
+    def __init__(self, unavailable: Path) -> None:
+        super().__init__("private host control must not be formatted")
+        self.unavailable = unavailable
+        self.formats = 0
+
+    def __str__(self) -> str:
+        self.formats += 1
+        return self.unavailable.read_text()
 
 
 def _host_control(error: BaseException) -> bool:
@@ -59,6 +73,19 @@ class RaisingHostHandler:
     async def on_get_task(self, params, context):
         assert params.id == "original-task"
         with self._original_invocation():
+            raise self.original
+
+    async def on_message_send(self, params, context):
+        with self._original_invocation():
+            raise self.original
+
+    async def on_message_send_stream(self, params, context):
+        with self._original_invocation():
+            if self.phase == "after":
+                yield Task(
+                    id="original-task", context_id="original-context",
+                    status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+                )
             raise self.original
 
     async def on_subscribe_to_task(self, params, context):
@@ -280,6 +307,60 @@ async def test_streaming_request_body_failure_keeps_original_receive_control(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("registered", [False, True])
+@pytest.mark.parametrize("public", [False, True])
+async def test_actual_invalid_utf8_body_keeps_original_decoder_control(
+    tmp_path, streaming, registered, public,
+):
+    observed = []
+
+    def classify(error):
+        if isinstance(error, UnicodeDecodeError):
+            observed.append(error)
+            return registered
+        return False
+
+    host_errors.register_control_error_predicate(classify)
+    handler = RaisingHostHandler(HostControlError("handler must not run"), tmp_path / "forbidden-utf8-handler")
+    app = Starlette(routes=create_rest_routes(handler))
+    payload = b"original-invalid-\xff"
+    path = "/message:stream" if streaming else "/message:send"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=not public),
+        base_url="http://native-host.invalid", trust_env=False,
+    ) as client:
+        async def decode_original():
+            return await client.post(
+                path, content=payload,
+                headers={"a2a-version": "1.0", "content-type": "application/json"},
+            )
+        if registered and not public:
+            with pytest.raises(UnicodeDecodeError) as captured:
+                await decode_original()
+            assert observed and captured.value is observed[0]
+            assert captured.value.object == payload
+            assert captured.value.start == payload.index(b"\xff")
+            frames = []
+            traceback = captured.value.__traceback__
+            while traceback is not None:
+                frames.append(traceback.tb_frame.f_code.co_name)
+                traceback = traceback.tb_next
+            assert "parse_lenient" in frames
+        else:
+            response = await decode_original()
+            assert response.status_code == (500 if registered else 400)
+            if registered:
+                assert observed and observed[0].object == payload
+                assert b"original-invalid" not in response.content
+                assert b"UnicodeDecodeError" not in response.content
+            else:
+                assert response.json()["error"]["status"] == "INVALID_ARGUMENT"
+    assert handler.calls == handler.retired == 0
+    assert not handler.witness.exists()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("binding", ["jsonrpc", "rest"])
 async def test_registered_classifier_does_not_reclassify_ordinary_handler_error(
     tmp_path, binding,
@@ -302,6 +383,94 @@ async def test_registered_classifier_does_not_reclassify_ordinary_handler_error(
         assert response.json()["error"]["status"] == "INTERNAL"
     assert handler.calls == handler.retired == 1
     assert handler.witness.read_text() == "original handler effect"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("binding", ["jsonrpc", "jsonrpc-0.3", "rest"])
+@pytest.mark.parametrize("phase", ["unary", "before", "after"])
+async def test_registered_control_precedes_error_formatting(tmp_path, binding, phase):
+    original = UnformattableHostControl(tmp_path / "unavailable-formatting-resource")
+    host_errors.register_control_error_predicate(_host_control)
+    handler = RaisingHostHandler(original, tmp_path / "formatting-effect", phase)
+    app = Starlette(routes=[
+        *create_jsonrpc_routes(handler, "/rpc", enable_v0_3_compat=True),
+        *create_rest_routes(handler),
+    ])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=True),
+        base_url="http://native-host.invalid", trust_env=False,
+    ) as client:
+        with pytest.raises(Exception) as captured:
+            await _invoke(client, binding, streaming=phase != "unary")
+        assert _retains_original(captured.value, original)
+    assert original.formats == 0
+    assert handler.calls == handler.retired == 1
+    assert handler.witness.read_text() == "original handler effect"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_trace_diagnostics_do_not_replace_original_control(tmp_path, asynchronous):
+    original = UnformattableHostControl(tmp_path / "unavailable-trace-resource")
+    witness = tmp_path / "trace-source-effect"
+    forbidden = tmp_path / "forbidden-control-extractor"
+    host_errors.register_control_error_predicate(_host_control)
+
+    def extractor(span, args, kwargs, result, exception):
+        forbidden.write_text("extractor ran after registered control")
+
+    def operation():
+        witness.write_text("original traced operation")
+        raise original
+
+    async def async_operation():
+        operation()
+
+    traced = trace_function(attribute_extractor=extractor)(async_operation if asynchronous else operation)
+    with pytest.raises(UnformattableHostControl) as captured:
+        if asynchronous:
+            await traced()
+        else:
+            traced()
+    assert captured.value is original
+    assert original.formats == 0
+    assert witness.read_text() == "original traced operation"
+    assert not forbidden.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_trace_extractor_keeps_its_original_registered_resource_error(tmp_path, asynchronous):
+    observed = []
+    witness = tmp_path / "successful-trace-effect"
+    missing = tmp_path / "unavailable-extractor-resource"
+
+    def classify(error):
+        if isinstance(error, FileNotFoundError) and error.filename == str(missing):
+            observed.append(error)
+            return True
+        return False
+
+    host_errors.register_control_error_predicate(classify)
+
+    def extractor(span, args, kwargs, result, exception):
+        missing.read_text()
+
+    def operation():
+        witness.write_text("successful original operation")
+
+    async def async_operation():
+        operation()
+
+    traced = trace_function(attribute_extractor=extractor)(async_operation if asynchronous else operation)
+    with pytest.raises(FileNotFoundError) as captured:
+        if asynchronous:
+            await traced()
+        else:
+            traced()
+    assert observed and all(error is captured.value for error in observed)
+    assert captured.value.filename == str(missing)
+    assert witness.read_text() == "successful original operation"
 
 
 def _retains_original(error: BaseException, original: BaseException) -> bool:

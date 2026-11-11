@@ -27,6 +27,7 @@ from google.protobuf.descriptor import FieldDescriptor
 from google.protobuf.json_format import Parse, ParseDict, ParseError
 from google.protobuf.message import Message as ProtobufMessage
 from google.rpc import error_details_pb2
+from kestrel_sdk.features.host_errors import is_host_control_error
 
 from kestrel_sdk.native_a2a.utils.errors import InvalidParamsError
 
@@ -72,11 +73,15 @@ def parse_lenient(
     Raises:
         ParseError: If the data is not valid ProtoJSON, including bytes that
             are not valid UTF-8.
+        UnicodeDecodeError: If the host classifies the original UTF-8 decoding
+            failure as control.
     """
     if isinstance(data, bytes):
         try:
             data = data.decode('utf-8')
         except UnicodeDecodeError as e:
+            if is_host_control_error(e):
+                raise
             raise ParseError(f'Failed to load JSON: {e}.') from e
     if isinstance(data, str):
         return Parse(data, message, ignore_unknown_fields=True)

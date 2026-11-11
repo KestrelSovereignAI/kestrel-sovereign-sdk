@@ -3,7 +3,7 @@
   "protocol": "1.0.1",
   "base_release": "1.3.0-21-g2cc1dd5",
   "base_commit": "2cc1dd5020874376ed293ef87089e5df9d205571",
-  "reviewed_source_tree": "9167a717ac12c0a0f951b1712d9b7a1947b1fbee",
+  "reviewed_source_tree": "9722b4f28abf68b9639b992ee754f7e1726ce9a7",
   "namespace": "kestrel_sdk.native_a2a",
   "modifications": "Reviewed signing, HTTP authorization and version negotiation, client ownership, discovery/response decoding, native-only client selection, HTTP error media types and original host-control error ownership in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
   "files": {
@@ -553,8 +553,8 @@
       "namespace_modified": true
     },
     "server/routes/rest_dispatcher.py": {
-      "upstream_sha256": "f5a964a4d62948633b8acbc344abfe51c030a695e574e294800b48897ace29fc",
-      "vendored_sha256": "d8581463bf1704956157bc9dcf9d4f907b663db22302d37b2d885f0d3817997d",
+      "upstream_sha256": "c2ca9b2aa7958976346a5f3562a273d366458ab7ea8d7188d33eb3e8445bdd90",
+      "vendored_sha256": "7635693bc5533d3a6f3b10af41cfa7c5c34b0c51421f0e3c1ddef17098cad478",
       "namespace_modified": true
     },
     "server/routes/rest_routes.py": {
@@ -668,8 +668,8 @@
       "namespace_modified": true
     },
     "utils/error_handlers.py": {
-      "upstream_sha256": "1b1eda0744fc7b78d1cf26abb1bc67924c22dc31f8ea85d7013304e47d715482",
-      "vendored_sha256": "f38a4fd2fbd7fe746dbaa5ce9228713e840a8a516d47d3a440f96584359d798e",
+      "upstream_sha256": "d420cd6478b2f5e9675aacc5d4f46ea2961a1571edbc5046bc1ae62b35e9e47d",
+      "vendored_sha256": "86e2af82c3901e1b9c9bf57d02c82af30e95772e3d361d6751a291b96af257cc",
       "namespace_modified": true
     },
     "utils/errors.py": {
@@ -693,8 +693,8 @@
       "namespace_modified": false
     },
     "utils/proto_utils.py": {
-      "upstream_sha256": "558738cb3a166c5d0c21038d0563c8838dd32bdb563f26e66aabdbebc4183d1d",
-      "vendored_sha256": "2733a44f3f501e5da9c38ddb7852a663972767b790a4fddd063380465e44580e",
+      "upstream_sha256": "b2013dfbab3611533f004a083afe73e9e45fc2cdfb73cd0101ec6a410190b8a0",
+      "vendored_sha256": "348b7d80a2bcdc7ff97206f86d9e13d6559af11d0961e87703d910909a663e75",
       "namespace_modified": true
     },
     "utils/push_url_validator.py": {
@@ -713,8 +713,8 @@
       "namespace_modified": true
     },
     "utils/telemetry.py": {
-      "upstream_sha256": "c0737745ca57159d7ecec0746616710e7b4bb62ac548d8b091126225bec2a4b9",
-      "vendored_sha256": "c2e81bac6ca388fd1543be9d3337e175a4615ddef9ee4ae76d3c0eb8530803e8",
+      "upstream_sha256": "a33d26aa7654106dd78460a04c289fa1b9a4ba61230f56f0af4c56c8e2a5b768",
+      "vendored_sha256": "88d936ea3b4661b3d3febef08a96e4612a89c9a3a0702ded20b218a4a459bee1",
       "namespace_modified": true
     },
     "utils/version_validator.py": {
@@ -726,7 +726,7 @@
   "provenance_sha256": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
     "UPSTREAM-PYPROJECT.toml": "5cdf8fdd9f297018cba28c9f91308f122264cab237acc41ee7c54bbb1f6ee776",
-    "UPSTREAM.patch": "e15cf99b8890dfb672b773b56256b2df59118bfc7f91a4e7040fd88fe4e2569d",
+    "UPSTREAM.patch": "a1c1a05ed9c87e01d37a0177ff29a30506ac2e73944c3a587992a17542ee125f",
     "NOTICE": "4924afe3dab57b45b0ae6ed34529d8231904adf8d7eeb35be6b12546be7cd8c0"
   }
 }
