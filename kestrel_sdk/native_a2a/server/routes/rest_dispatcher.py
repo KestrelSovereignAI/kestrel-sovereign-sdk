@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from google.protobuf.json_format import MessageToDict
+from kestrel_sdk.features.host_errors import is_host_control_error
 
 from kestrel_sdk.native_a2a.server.context import ServerCallContext
 from kestrel_sdk.native_a2a.server.request_handlers.request_handler import RequestHandler
@@ -139,6 +140,8 @@ class RestDispatcher:
         try:
             await request.body()
         except (ValueError, RuntimeError, OSError) as e:
+            if is_host_control_error(e):
+                raise
             raise InvalidRequestError(
                 message=f'Failed to pre-consume request body: {e}'
             ) from e

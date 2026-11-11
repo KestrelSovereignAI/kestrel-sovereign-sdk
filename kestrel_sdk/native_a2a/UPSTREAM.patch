@@ -1,3 +1,100 @@
+diff --git a/src/a2a/compat/v0_3/jsonrpc_adapter.py b/src/a2a/compat/v0_3/jsonrpc_adapter.py
+index 2263f33..1e07992 100644
+--- a/src/a2a/compat/v0_3/jsonrpc_adapter.py
++++ b/src/a2a/compat/v0_3/jsonrpc_adapter.py
+@@ -3,6 +3,7 @@ import logging
+ from collections.abc import AsyncIterable, AsyncIterator
+ from typing import TYPE_CHECKING, Any, get_args
+ 
++from kestrel_sdk.features.host_errors import is_host_control_error
+ from sse_starlette.sse import EventSourceResponse
+ from starlette.responses import JSONResponse
+ 
+@@ -87,7 +88,13 @@ class JSONRPC03Adapter:
+         self,
+         request_id: 'str | int | None',
+         error: 'Exception | CoreJSONRPCError',
++        *,
++        invalid_params: bool = False,
+     ) -> JSONResponse:
++        if isinstance(error, BaseException) and is_host_control_error(error):
++            raise error
++        if invalid_params:
++            error = CoreInvalidParamsError(data=str(error))
+         if isinstance(error, CoreJSONRPCError):
+             err_dict = error.model_dump(by_alias=True)
+             return JSONResponse(
+@@ -122,14 +129,14 @@ class JSONRPC03Adapter:
+             try:
+                 specific_request = model_class.model_validate(body)  # type: ignore[attr-defined]
+             except Exception as e:
++                response = self._generate_error_response(
++                    request_id, e, invalid_params=True
++                )
+                 logger.exception(
+                     'Failed to validate base JSON-RPC request for v0.3'
+                 )
+ 
+-                return self._generate_error_response(
+-                    request_id,
+-                    CoreInvalidParamsError(data=str(e)),
+-                )
++                return response
+ 
+             call_context = self._context_builder.build(request)
+             call_context.tenant = (
+@@ -151,10 +158,9 @@ class JSONRPC03Adapter:
+         except A2AError as e:
+             return self._generate_error_response(request_id, e)
+         except Exception as e:
++            response = self._generate_error_response(request_id, e)
+             logger.exception('Unhandled exception in v0.3 JSONRPCAdapter')
+-            return self._generate_error_response(
+-                request_id, CoreInternalError(message=str(e))
+-            )
++            return response
+ 
+     @validate_version(constants.PROTOCOL_VERSION_0_3)
+     async def _process_non_streaming_request(
+@@ -285,10 +291,10 @@ class JSONRPC03Adapter:
+                     )
+                 }
+             except Exception as e:
++                err = _to_v03_jsonrpc_error(e)
+                 logger.exception(
+                     'Error during stream generation in v0.3 JSONRPCAdapter'
+                 )
+-                err = types_v03.InternalError(message=str(e))
+                 err_resp = types_v03.SendStreamingMessageResponse(
+                     root=types_v03.JSONRPCErrorResponse(
+                         id=request_id, error=err
+@@ -315,14 +321,22 @@ _V03_ERROR_CODES = frozenset(
+ )
+ 
+ 
+-def _to_v03_jsonrpc_error(error: A2AError) -> types_v03.JSONRPCError:
+-    """Maps an A2AError to a v0.3 JSON-RPC error carrying its A2A error code.
++def _to_v03_jsonrpc_error(error: Exception) -> types_v03.JSONRPCError:
++    """Map an original ordinary error to its existing v0.3 JSON-RPC response.
+ 
+     Errors without a v0.3 equivalent are reported as InternalError (-32603).
+     """
+-    code = JSON_RPC_ERROR_CODE_MAP.get(type(error), -32603)
++    if is_host_control_error(error):
++        raise error
++    code = (
++        JSON_RPC_ERROR_CODE_MAP.get(type(error), -32603)
++        if isinstance(error, A2AError)
++        else -32603
++    )
+     if code not in _V03_ERROR_CODES:
+         code = -32603
+     return types_v03.JSONRPCError(
+-        code=code, message=error.message, data=error.data
++        code=code,
++        message=error.message if isinstance(error, A2AError) else str(error),
++        data=error.data if isinstance(error, A2AError) else None,
+     )
 diff --git a/src/a2a/server/request_handlers/response_helpers.py b/src/a2a/server/request_handlers/response_helpers.py
 index 262e103..0f806c2 100644
 --- a/src/a2a/server/request_handlers/response_helpers.py
@@ -54,7 +151,7 @@ index 93dc034..c8f0784 100644
              user=self.build_user(request),
              state=state,
 diff --git a/src/a2a/server/routes/jsonrpc_dispatcher.py b/src/a2a/server/routes/jsonrpc_dispatcher.py
-index fb1801b..90d03a4 100644
+index fb1801b..20d1ed3 100644
 --- a/src/a2a/server/routes/jsonrpc_dispatcher.py
 +++ b/src/a2a/server/routes/jsonrpc_dispatcher.py
 @@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
@@ -65,14 +162,35 @@ index fb1801b..90d03a4 100644
  
  from a2a.compat.v0_3.jsonrpc_adapter import JSONRPC03Adapter
  from a2a.server.context import ServerCallContext
-@@ -182,7 +183,16 @@ class JsonRpcDispatcher:
+@@ -170,6 +171,10 @@ class JsonRpcDispatcher:
+         self,
+         request_id: str | int | None,
+         error: Exception | JSONRPCError | A2AError,
++        *,
++        validation_error: type[InvalidRequestError]
++        | type[InvalidParamsError]
++        | None = None,
+     ) -> JSONResponse:
+         """Creates a Starlette JSONResponse for a JSON-RPC error.
+ 
+@@ -178,11 +183,26 @@ class JsonRpcDispatcher:
+         Args:
+             request_id: The ID of the request that caused the error.
+             error: The error object (one of the JSONRPCError types).
++            validation_error: Existing validation projection, applied only after
++                the original exception has passed host-control classification.
+ 
          Returns:
              A `JSONResponse` object formatted as a JSON-RPC error response.
          """
 -        if not isinstance(error, A2AError | JSONRPCError):
 +        if isinstance(error, BaseException) and is_host_control_error(error):
 +            raise error
-+        if isinstance(error, json.decoder.JSONDecodeError | UnicodeDecodeError):
++        if validation_error is not None:
++            error = validation_error(data={'parseError': str(error)})
++        elif isinstance(
++            error, json.decoder.JSONDecodeError | UnicodeDecodeError
++        ):
 +            error = JSONParseError(message=str(error))
 +        elif (
 +            isinstance(error, HTTPException)
@@ -83,7 +201,62 @@ index fb1801b..90d03a4 100644
              error = InternalError(message=str(error))
  
          response_data = build_error_response(request_id, error)
-@@ -341,23 +351,20 @@ class JsonRpcDispatcher:
+@@ -227,8 +247,6 @@ class JsonRpcDispatcher:
+             into JSON-RPC error responses by this method.
+         """
+         request_id = None
+-        body = None
+-
+         try:
+             body = await request.json()
+             if isinstance(body, dict):
+@@ -267,11 +285,11 @@ class JsonRpcDispatcher:
+                         ),
+                     )
+             except Exception as e:
+-                logger.exception('Failed to validate base JSON-RPC request')
+-                return self._generate_error_response(
+-                    request_id,
+-                    InvalidRequestError(data={'parseError': str(e)}),
++                response = self._generate_error_response(
++                    request_id, e, validation_error=InvalidRequestError
+                 )
++                logger.exception('Failed to validate base JSON-RPC request')
++                return response
+ 
+             # 2) Route by method name; unknown -> -32601, known -> validate params (-32602 on failure)
+             method: str | None = base_request.method
+@@ -309,11 +327,11 @@ class JsonRpcDispatcher:
+                     params, model_class(), ignore_unknown_fields=True
+                 )
+             except Exception as e:
+-                logger.exception('Failed to parse request params')
+-                return self._generate_error_response(
+-                    request_id,
+-                    InvalidParamsError(data={'parseError': str(e)}),
++                response = self._generate_error_response(
++                    request_id, e, validation_error=InvalidParamsError
+                 )
++                logger.exception('Failed to parse request params')
++                return response
+ 
+             # 3) Build call context and wrap the request for downstream handling
+             call_context = self._context_builder.build(request)
+@@ -331,33 +349,30 @@ class JsonRpcDispatcher:
+                 )
+             else:
+                 try:
+-                    raw_result = await self._process_non_streaming_request(
+-                        specific_request, call_context
+-                    )
+                     handler_result = JSONRPC20Response(
+-                        result=raw_result, _id=request_id
++                        result=await self._process_non_streaming_request(
++                            specific_request, call_context
++                        ),
++                        _id=request_id,
+                     ).data
+                 except A2AError as e:
                      handler_result = build_error_response(request_id, e)
              return self._create_response(call_context, handler_result)
          except (json.decoder.JSONDecodeError, UnicodeDecodeError) as e:
@@ -111,7 +284,7 @@ index fb1801b..90d03a4 100644
  
      @validate_version(constants.PROTOCOL_VERSION_1_0)
      async def _process_streaming_request(
-@@ -595,6 +602,8 @@ class JsonRpcDispatcher:
+@@ -595,6 +610,8 @@ class JsonRpcDispatcher:
                              event['event'] = 'error'
                          yield event
                  except Exception as e:
@@ -121,15 +294,22 @@ index fb1801b..90d03a4 100644
                          'Unhandled error during JSON-RPC SSE stream'
                      )
 diff --git a/src/a2a/server/routes/rest_dispatcher.py b/src/a2a/server/routes/rest_dispatcher.py
-index 80964e5..240866a 100644
+index 80964e5..c569149 100644
 --- a/src/a2a/server/routes/rest_dispatcher.py
 +++ b/src/a2a/server/routes/rest_dispatcher.py
-@@ -1,3 +1,4 @@
+@@ -1,9 +1,11 @@
 +import functools
  import logging
  
  from collections.abc import AsyncIterator, Awaitable, Callable
-@@ -19,12 +20,8 @@ from a2a.types.a2a_pb2 import (
+ from typing import TYPE_CHECKING, Any, TypeVar
+ 
+ from google.protobuf.json_format import MessageToDict
++from kestrel_sdk.features.host_errors import is_host_control_error
+ 
+ from a2a.server.context import ServerCallContext
+ from a2a.server.request_handlers.request_handler import RequestHandler
+@@ -19,12 +21,8 @@ from a2a.types.a2a_pb2 import (
      GetTaskPushNotificationConfigRequest,
      SubscribeToTaskRequest,
  )
@@ -144,7 +324,7 @@ index 80964e5..240866a 100644
  from a2a.utils.errors import (
      InvalidRequestError,
      TaskNotFoundError,
-@@ -33,6 +30,16 @@ from a2a.utils.telemetry import SpanKind, trace_class
+@@ -33,6 +31,16 @@ from a2a.utils.telemetry import SpanKind, trace_class
  from a2a.utils.version_validator import validate_version
  
  
@@ -161,6 +341,15 @@ index 80964e5..240866a 100644
  if TYPE_CHECKING:
      from sse_starlette.event import ServerSentEvent
      from sse_starlette.sse import EventSourceResponse
+@@ -131,6 +139,8 @@ class RestDispatcher:
+         try:
+             await request.body()
+         except (ValueError, RuntimeError, OSError) as e:
++            if is_host_control_error(e):
++                raise
+             raise InvalidRequestError(
+                 message=f'Failed to pre-consume request body: {e}'
+             ) from e
 diff --git a/src/a2a/utils/error_handlers.py b/src/a2a/utils/error_handlers.py
 index ef81829..0472c5a 100644
 --- a/src/a2a/utils/error_handlers.py
