@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from google.protobuf.json_format import MessageToDict, ParseDict
 from jsonrpc.jsonrpc2 import JSONRPC20Request, JSONRPC20Response
+from kestrel_sdk.features.host_errors import is_host_control_error
 
 from kestrel_sdk.native_a2a.compat.v0_3.jsonrpc_adapter import JSONRPC03Adapter
 from kestrel_sdk.native_a2a.server.context import ServerCallContext
@@ -183,6 +184,8 @@ class JsonRpcDispatcher:
         Returns:
             A `JSONResponse` object formatted as a JSON-RPC error response.
         """
+        if isinstance(error, BaseException) and is_host_control_error(error):
+            raise error
         if not isinstance(error, A2AError | JSONRPCError):
             error = InternalError(message=str(error))
 
@@ -355,10 +358,9 @@ class JsonRpcDispatcher:
         except A2AError as e:
             return self._generate_error_response(request_id, e)
         except Exception as e:
+            response = self._generate_error_response(request_id, e)
             logger.exception('Unhandled exception')
-            return self._generate_error_response(
-                request_id, InternalError(message=str(e))
-            )
+            return response
 
     @validate_version(constants.PROTOCOL_VERSION_1_0)
     async def _process_streaming_request(
@@ -596,6 +598,8 @@ class JsonRpcDispatcher:
                             event['event'] = 'error'
                         yield event
                 except Exception as e:
+                    if is_host_control_error(e):
+                        raise
                     logger.exception(
                         'Unhandled error during JSON-RPC SSE stream'
                     )

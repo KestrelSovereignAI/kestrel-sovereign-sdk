@@ -18,6 +18,7 @@ else:
 
 
 from google.protobuf.json_format import MessageToDict, ParseError
+from kestrel_sdk.features.host_errors import is_host_control_error
 
 from kestrel_sdk.native_a2a.utils.errors import (
     A2A_ERROR_MAPPING,
@@ -105,6 +106,9 @@ def build_rest_error_payload(error: Exception) -> dict[str, Any]:
     Returns:
         A dict with the error payload in the standard REST error format.
     """
+    if is_host_control_error(error):
+        raise error
+
     if isinstance(error, A2AError):
         mapping = A2A_ERROR_MAPPING.get(
             type(error), ErrorMapping(500, 'INTERNAL', 'INTERNAL_ERROR')

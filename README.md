@@ -874,6 +874,15 @@ propagate the original exception so the host can settle its admitted effect
 before projecting a public error. Changing the declaration during execution
 cannot erase the error. The declaration grants no execution authority.
 
+Native JSON-RPC/HTTP+JSON error boundaries also honor the existing process-wide
+`kestrel_sdk.features.host_errors.register_control_error_predicate` policy, before
+projecting unary or streaming failures. Classified control keeps its original
+exception/compound evidence for the embedding's owned caller, not an ordinary
+`InternalError` response. No private host exception object is serialized onto
+the wire, and bare cancellation is not globally reclassified. The host still
+owns its transport, deadlines, original invocation and cleanup; this policy
+alone is not an incremental in-process streaming transport.
+
 These bindings are in-process host interfaces, not wire credentials. The
 host implementation is required; the SDK itself does not execute tools.
 

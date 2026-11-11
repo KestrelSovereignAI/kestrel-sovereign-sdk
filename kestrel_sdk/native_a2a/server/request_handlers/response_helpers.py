@@ -6,6 +6,7 @@ from typing import Any
 from google.protobuf.json_format import MessageToDict
 from google.protobuf.message import Message as ProtoMessage
 from jsonrpc.jsonrpc2 import JSONRPC20Response
+from kestrel_sdk.features.host_errors import is_host_control_error
 
 from kestrel_sdk.native_a2a.compat.v0_3.conversions import to_compat_agent_card
 from kestrel_sdk.native_a2a.server.jsonrpc_models import (
@@ -131,6 +132,9 @@ def build_error_response(
     Returns:
         A dict representing the JSON-RPC error response.
     """
+    if isinstance(error, BaseException) and is_host_control_error(error):
+        raise error
+
     jsonrpc_error: JSONRPCError
     if isinstance(error, JSONRPCError):
         jsonrpc_error = error

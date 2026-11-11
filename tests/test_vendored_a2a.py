@@ -10,6 +10,7 @@ import pytest
 from packaging.requirements import Requirement
 
 from scripts.vendor_a2a import check_vendor, import_vendor, relocate
+from tests.git_support import commit_fixture
 
 
 def test_import_uses_the_pinned_git_tree_and_refuses_overwrite(tmp_path):
@@ -23,7 +24,7 @@ def test_import_uses_the_pinned_git_tree_and_refuses_overwrite(tmp_path):
     (source / "LICENSE").write_text("Apache-2.0\n")
     (source / "pyproject.toml").write_text('[project]\nname = "a2a-sdk"\n')
     subprocess.run(["git", "-C", str(source), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(source), "-c", "user.name=Vendor Test", "-c", "user.email=vendor@example.invalid", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "source"], check=True)
+    commit_fixture(source, "--quiet", "-m", "source")
     revision = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     (sdk / "sample.py").write_text("raise RuntimeError('unreviewed working tree')\n")
     destination = tmp_path / "host"
@@ -37,7 +38,7 @@ def test_import_uses_the_pinned_git_tree_and_refuses_overwrite(tmp_path):
         import_vendor(destination, source, revision, revision)
     (sdk / "sample.py").write_text("from a2a.future_module import Task\n")
     subprocess.run(["git", "-C", str(source), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(source), "-c", "user.name=Vendor Test", "-c", "user.email=vendor@example.invalid", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "unsupported module"], check=True)
+    commit_fixture(source, "--quiet", "-m", "unsupported module")
     invalid = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     refused = tmp_path / "refused"
     with pytest.raises(ValueError, match="Unrelocated SDK import"):

@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.52.1
+
+### Fixed
+
+- Native JSON-RPC and REST error projection preserves the original registered
+  host-control exception, including compound failures and failures after the
+  first streamed event. Ordinary protocol errors keep their existing wire
+  behavior. Classification uses the existing host policy; no Core dependency or
+  new wire extension is introduced. Incremental host transport, deadlines and
+  caller-withdrawal ownership remain separate host responsibilities.
+- The SDK test driver's original diagnostic file descriptor remains available
+  through native interpreter shutdown without an unclosed TextIO finalizer.
+- Test fixtures close their original event loops and HTTP clients, and local
+  fixture Git commits use the canonical project identity.
+
 ## 0.52.0
 
 ### Changed

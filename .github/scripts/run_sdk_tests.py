@@ -9,8 +9,10 @@ import sys
 # Spawned multiprocessing children re-run this script as ``__mp_main__``;
 # only the parent may start diagnostics and the suite.
 if __name__ == "__main__":
-    # Keep diagnostics outside pytest's file-descriptor capture, including crashes.
-    _stderr = os.fdopen(os.dup(2), "w")
+    # Keep diagnostics outside pytest capture for the original process lifetime.
+    # The kernel retires this non-inheritable FD at native exit: no TextIO
+    # finalizer or early atexit close can retire the diagnostic sink instead.
+    _stderr = os.dup(2)
     # Pytest's exception/debugger hooks cancel the shared faulthandler timer.
     # Disable only that plugin; own this timer through interpreter thread joins.
     faulthandler.enable(file=_stderr, all_threads=True)
