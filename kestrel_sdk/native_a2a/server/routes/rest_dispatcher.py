@@ -170,9 +170,10 @@ class RestDispatcher:
                 async for item in stream:
                     yield ServerSentEvent(data=json_utils.dumps(item))
             except Exception as e:
+                payload = build_rest_error_payload(e)
                 logger.exception('Error during REST SSE stream')
                 yield ServerSentEvent(
-                    data=json_utils.dumps(build_rest_error_payload(e)),
+                    data=json_utils.dumps(payload),
                     event='error',
                 )
 

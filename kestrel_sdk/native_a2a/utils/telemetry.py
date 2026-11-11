@@ -73,6 +73,7 @@ import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from kestrel_sdk.features.host_errors import is_host_control_error
 from typing_extensions import Self
 
 from kestrel_sdk.native_a2a.utils._async_queue_compat import QueueShutDown
@@ -245,6 +246,7 @@ def trace_function(  # noqa: PLR0915
 
             result = None
             exception = None
+            host_control = False
 
             try:
                 # Async wrapper, await for the function call to complete.
@@ -261,16 +263,21 @@ def trace_function(  # noqa: PLR0915
                 raise
             except Exception as e:
                 exception = e
+                host_control = is_host_control_error(e)
+                if host_control:
+                    raise
                 span.record_exception(e)
                 span.set_status(StatusCode.ERROR, description=str(e))
                 raise
             finally:
-                if attribute_extractor:
+                if attribute_extractor and not host_control:
                     try:
                         attribute_extractor(
                             span, args, kwargs, result, exception
                         )
-                    except Exception:
+                    except Exception as e:
+                        if is_host_control_error(e):
+                            raise
                         logger.exception(
                             'attribute_extractor error in span %s',
                             actual_span_name,
@@ -295,6 +302,7 @@ def trace_function(  # noqa: PLR0915
 
             result = None
             exception = None
+            host_control = False
 
             try:
                 # Sync wrapper, execute the function call.
@@ -303,16 +311,21 @@ def trace_function(  # noqa: PLR0915
 
             except Exception as e:
                 exception = e
+                host_control = is_host_control_error(e)
+                if host_control:
+                    raise
                 span.record_exception(e)
                 span.set_status(StatusCode.ERROR, description=str(e))
                 raise
             finally:
-                if attribute_extractor:
+                if attribute_extractor and not host_control:
                     try:
                         attribute_extractor(
                             span, args, kwargs, result, exception
                         )
-                    except Exception:
+                    except Exception as e:
+                        if is_host_control_error(e):
+                            raise
                         logger.exception(
                             'attribute_extractor error in span %s',
                             actual_span_name,
