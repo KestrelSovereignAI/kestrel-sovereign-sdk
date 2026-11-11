@@ -95,13 +95,25 @@ Git tree with `--source`, `--revision` and `--base`; the importer refuses an exi
 output directory and never consumes dirty working-tree files.
 
 The snapshot is upstream `main` after release 1.3.0, with the exact base
-commit in `VENDORED.json`, plus a minimal Kestrel patch in `UPSTREAM.patch`:
+commit in `VENDORED.json`, plus Kestrel's patch in `UPSTREAM.patch`:
 
 - HTTP+JSON error handlers re-raise Starlette `HTTPException`, so
   authentication keeps its status and challenge headers, and native HTTP+JSON
   errors use `application/a2a+json`.
 - Version validation checks every `A2A-Version` header and query parameter,
   not only the first.
+- JSON-RPC and REST error handling and telemetry pass registered host-control
+  exceptions to the host's classifier before formatting or recording them.
+
+### Maintaining the vendored copy
+
+This copy is Kestrel's maintained fork. Fixes land here and are not held for
+upstream review, and shrinking `UPSTREAM.patch` is not a goal. Update to a new
+upstream base only for a security fix, an A2A protocol change Kestrel adopts, or
+an interoperability defect Kestrel hits. On a conflict Kestrel's behavior wins;
+drop a patch entry only when upstream now behaves the same, as shown by the
+tests in `tests/native_a2a`. Send upstream only specification defects that
+affect other agents talking to Kestrel.
 
 Everything else, including Agent Card signing and canonicalization, is
 upstream's. Python imports and package-resource references are relocated;
