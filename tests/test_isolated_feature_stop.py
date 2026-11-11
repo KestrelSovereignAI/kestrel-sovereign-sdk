@@ -23,11 +23,14 @@ from kestrel_sdk.isolated_feature import (
     encode_message,
 )
 from kestrel_sdk.isolated_feature.client import SubprocessIsolatedFeatureClient
+from tests.git_support import commit_fixture
 
 
 def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     """Run one local Git command for release-provenance semantic tests."""
 
+    if args and args[0] == "commit":
+        return commit_fixture(cwd, *args[1:], check=check)
     return subprocess.run(
         ["git", *args],
         cwd=cwd,
@@ -88,8 +91,6 @@ def _create_local_release_remote(tmp_path: Path) -> tuple[Path, Path, str]:
     tag = "v0.33.1"
     _git(tmp_path, "init", "--bare", str(remote))
     _git(tmp_path, "init", str(source))
-    _git(source, "config", "user.email", "tests@example.invalid")
-    _git(source, "config", "user.name", "Release Test")
     _git(source, "commit", "--allow-empty", "-m", "release source")
     _git(source, "remote", "add", "origin", str(remote))
     _git(source, "tag", "-a", tag, "-m", "release")

@@ -1,3 +1,25 @@
+diff --git a/src/a2a/server/request_handlers/response_helpers.py b/src/a2a/server/request_handlers/response_helpers.py
+index 262e103..0f806c2 100644
+--- a/src/a2a/server/request_handlers/response_helpers.py
++++ b/src/a2a/server/request_handlers/response_helpers.py
+@@ -5,6 +5,7 @@ from typing import Any
+ from google.protobuf.json_format import MessageToDict
+ from google.protobuf.message import Message as ProtoMessage
+ from jsonrpc.jsonrpc2 import JSONRPC20Response
++from kestrel_sdk.features.host_errors import is_host_control_error
+ 
+ from a2a.compat.v0_3.conversions import to_compat_agent_card
+ from a2a.server.jsonrpc_models import (
+@@ -130,6 +131,9 @@ def build_error_response(
+     Returns:
+         A dict representing the JSON-RPC error response.
+     """
++    if isinstance(error, BaseException) and is_host_control_error(error):
++        raise error
++
+     jsonrpc_error: JSONRPCError
+     if isinstance(error, JSONRPCError):
+         jsonrpc_error = error
 diff --git a/src/a2a/server/routes/common.py b/src/a2a/server/routes/common.py
 index 93dc034..c8f0784 100644
 --- a/src/a2a/server/routes/common.py
@@ -31,6 +53,49 @@ index 93dc034..c8f0784 100644
          return ServerCallContext(
              user=self.build_user(request),
              state=state,
+diff --git a/src/a2a/server/routes/jsonrpc_dispatcher.py b/src/a2a/server/routes/jsonrpc_dispatcher.py
+index fb1801b..07296ad 100644
+--- a/src/a2a/server/routes/jsonrpc_dispatcher.py
++++ b/src/a2a/server/routes/jsonrpc_dispatcher.py
+@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
+ 
+ from google.protobuf.json_format import MessageToDict, ParseDict
+ from jsonrpc.jsonrpc2 import JSONRPC20Request, JSONRPC20Response
++from kestrel_sdk.features.host_errors import is_host_control_error
+ 
+ from a2a.compat.v0_3.jsonrpc_adapter import JSONRPC03Adapter
+ from a2a.server.context import ServerCallContext
+@@ -182,6 +183,8 @@ class JsonRpcDispatcher:
+         Returns:
+             A `JSONResponse` object formatted as a JSON-RPC error response.
+         """
++        if isinstance(error, BaseException) and is_host_control_error(error):
++            raise error
+         if not isinstance(error, A2AError | JSONRPCError):
+             error = InternalError(message=str(error))
+ 
+@@ -354,10 +357,9 @@ class JsonRpcDispatcher:
+         except A2AError as e:
+             return self._generate_error_response(request_id, e)
+         except Exception as e:
++            response = self._generate_error_response(request_id, e)
+             logger.exception('Unhandled exception')
+-            return self._generate_error_response(
+-                request_id, InternalError(message=str(e))
+-            )
++            return response
+ 
+     @validate_version(constants.PROTOCOL_VERSION_1_0)
+     async def _process_streaming_request(
+@@ -595,6 +597,8 @@ class JsonRpcDispatcher:
+                             event['event'] = 'error'
+                         yield event
+                 except Exception as e:
++                    if is_host_control_error(e):
++                        raise
+                     logger.exception(
+                         'Unhandled error during JSON-RPC SSE stream'
+                     )
 diff --git a/src/a2a/server/routes/rest_dispatcher.py b/src/a2a/server/routes/rest_dispatcher.py
 index 80964e5..240866a 100644
 --- a/src/a2a/server/routes/rest_dispatcher.py
@@ -73,10 +138,28 @@ index 80964e5..240866a 100644
      from sse_starlette.event import ServerSentEvent
      from sse_starlette.sse import EventSourceResponse
 diff --git a/src/a2a/utils/error_handlers.py b/src/a2a/utils/error_handlers.py
-index ef81829..ae1eb1b 100644
+index ef81829..0472c5a 100644
 --- a/src/a2a/utils/error_handlers.py
 +++ b/src/a2a/utils/error_handlers.py
-@@ -131,8 +131,18 @@ def build_rest_error_payload(error: Exception) -> dict[str, Any]:
+@@ -17,6 +17,7 @@ else:
+ 
+ 
+ from google.protobuf.json_format import MessageToDict, ParseError
++from kestrel_sdk.features.host_errors import is_host_control_error
+ 
+ from a2a.utils.errors import (
+     A2A_ERROR_MAPPING,
+@@ -104,6 +105,9 @@ def build_rest_error_payload(error: Exception) -> dict[str, Any]:
+     Returns:
+         A dict with the error payload in the standard REST error format.
+     """
++    if is_host_control_error(error):
++        raise error
++
+     if isinstance(error, A2AError):
+         mapping = A2A_ERROR_MAPPING.get(
+             type(error), ErrorMapping(500, 'INTERNAL', 'INTERNAL_ERROR')
+@@ -131,8 +135,18 @@ def build_rest_error_payload(error: Exception) -> dict[str, Any]:
      )
  
  
@@ -96,7 +179,7 @@ index ef81829..ae1eb1b 100644
      if isinstance(error, A2AError):
          log_level = (
              logging.ERROR
-@@ -157,12 +167,13 @@ def _create_error_response(error: Exception) -> Response:
+@@ -157,12 +171,13 @@ def _create_error_response(error: Exception) -> Response:
      return JSONResponse(
          content=payload,
          status_code=http_code,
@@ -111,7 +194,7 @@ index ef81829..ae1eb1b 100644
  ) -> Callable[..., Awaitable[Response]]:
      """Decorator to catch A2AError and map it to an appropriate JSONResponse."""
  
-@@ -171,13 +182,14 @@ def rest_error_handler(
+@@ -171,13 +186,14 @@ def rest_error_handler(
          try:
              return await func(*args, **kwargs)
          except Exception as error:  # noqa: BLE001
@@ -127,7 +210,7 @@ index ef81829..ae1eb1b 100644
  ) -> Callable[..., Coroutine[Any, Any, Any]]:
      """Decorator to catch A2AError for a streaming method. Maps synchronous errors to JSONResponse and logs streaming errors."""
  
-@@ -223,7 +235,7 @@ def rest_stream_error_handler(
+@@ -223,7 +239,7 @@ def rest_stream_error_handler(
                  response.body_iterator = error_catching_iterator()
  
          except Exception as e:  # noqa: BLE001
@@ -159,6 +242,34 @@ index 4a776c2..d6daba5 100644
              headers = context.state.get('headers', {})
              # Header names are usually case-insensitive in most frameworks, but dict lookup is case-sensitive.
              # We check both standard and lowercase versions.
+diff --git a/tests/integration/push_notifications/test_default_push_notification_support.py b/tests/integration/push_notifications/test_default_push_notification_support.py
+index eb7928b..17dccb6 100644
+--- a/tests/integration/push_notifications/test_default_push_notification_support.py
++++ b/tests/integration/push_notifications/test_default_push_notification_support.py
+@@ -144,6 +144,7 @@ async def test_notification_triggering_with_in_message_config_e2e(
+     token = uuid.uuid4().hex
+     a2a_client = ClientFactory(
+         ClientConfig(
++            httpx_client=http_client,
+             supported_protocol_bindings=[TransportProtocol.HTTP_JSON],
+             push_notification_config=TaskPushNotificationConfig(
+                 id='in-message-config',
+@@ -203,6 +204,7 @@ async def test_notification_triggering_after_config_change_e2e(
+     # Configure an A2A client without a push notification config.
+     a2a_client = ClientFactory(
+         ClientConfig(
++            httpx_client=http_client,
+             supported_protocol_bindings=[TransportProtocol.HTTP_JSON],
+         )
+     ).create(minimal_agent_card(agent_server, [TransportProtocol.HTTP_JSON]))
+@@ -290,6 +292,7 @@ async def test_multi_registrar_fan_out_e2e(
+     # (we'll register configs explicitly after the task is created).
+     a2a_client = ClientFactory(
+         ClientConfig(
++            httpx_client=http_client,
+             supported_protocol_bindings=[TransportProtocol.HTTP_JSON],
+         )
+     ).create(minimal_agent_card(agent_server, [TransportProtocol.HTTP_JSON]))
 diff --git a/tests/server/routes/test_common.py b/tests/server/routes/test_common.py
 index 9d285ca..5b7b7b8 100644
 --- a/tests/server/routes/test_common.py
@@ -209,6 +320,116 @@ index 3d7bb39..4cb2e5e 100644
      async def test_list_tasks(self, rest_dispatcher_instance, mock_handler):
          req = make_mock_request(method='GET')
          response = await rest_dispatcher_instance.list_tasks(req)
+diff --git a/tests/server/test_cross_event_loop_locks.py b/tests/server/test_cross_event_loop_locks.py
+index edbac80..c8b46cc 100644
+--- a/tests/server/test_cross_event_loop_locks.py
++++ b/tests/server/test_cross_event_loop_locks.py
+@@ -31,7 +31,8 @@ class _PersistentLoop:
+ 
+     def _run(self) -> None:
+         asyncio.set_event_loop(self._loop)
+-        self._loop.run_forever()
++        with asyncio.Runner(loop_factory=lambda: self._loop):
++            self._loop.run_forever()
+ 
+     def run(self, coro, timeout: float = 10):
+         """Runs coro to completion on this loop and returns its result."""
+@@ -39,9 +40,93 @@ class _PersistentLoop:
+             timeout=timeout
+         )
+ 
+-    def close(self) -> None:
++    def close(self, timeout: float = 10) -> None:
+         self._loop.call_soon_threadsafe(self._loop.stop)
+-        self._thread.join(timeout=10)
++        self._thread.join(timeout=timeout)
++        if self._thread.is_alive():
++            raise TimeoutError(
++                'Original cross-loop thread did not finish shutdown'
++            )
++
++
++@pytest.mark.parametrize('fails', [False, True])
++def test_persistent_loop_retires_original_loop_and_executor(
++    fails: bool,
++) -> None:
++    owner = _PersistentLoop()
++    original_loop = owner._loop
++    original_workers = []
++    original_result = object()
++    original_error = ValueError('original cross-loop operation failed')
++
++    async def original_operation() -> object:
++        original_workers.append(
++            await asyncio.get_running_loop().run_in_executor(
++                None, threading.current_thread
++            )
++        )
++        if fails:
++            raise original_error
++        return original_result
++
++    try:
++        if fails:
++            with pytest.raises(ValueError) as captured:
++                owner.run(original_operation())
++            assert captured.value is original_error
++        else:
++            assert owner.run(original_operation()) is original_result
++        owner.close()
++        assert not owner._thread.is_alive()
++        assert original_loop.is_closed(), (
++            'original loop remains open after its owner joined'
++        )
++        assert len(original_workers) == 1
++        assert not original_workers[0].is_alive()
++    finally:
++        if owner._thread.is_alive():
++            owner.close()
++        if not original_loop.is_closed():
++            # Retire the actual leaked test resource only after the failed
++            # observation, rather than leave it for an unrelated test's GC.
++            original_loop.run_until_complete(
++                original_loop.shutdown_default_executor()
++            )
++            original_loop.close()
++
++
++def test_persistent_loop_timeout_does_not_claim_original_executor_retirement() -> (
++    None
++):
++    owner = _PersistentLoop()
++    entered, release = threading.Event(), threading.Event()
++    original_workers = []
++
++    def original_worker() -> None:
++        original_workers.append(threading.current_thread())
++        entered.set()
++        release.wait()
++
++    async def original_operation() -> None:
++        await asyncio.get_running_loop().run_in_executor(None, original_worker)
++
++    pending = asyncio.run_coroutine_threadsafe(
++        original_operation(), owner._loop
++    )
++    try:
++        assert entered.wait(5)
++        with pytest.raises(TimeoutError, match='Original cross-loop thread'):
++            owner.close(timeout=0)
++        assert owner._thread.is_alive()
++        assert original_workers[0].is_alive()
++        assert not owner._loop.is_closed()
++    finally:
++        release.set()
++        owner._thread.join(timeout=10)
++    assert not owner._thread.is_alive()
++    assert not original_workers[0].is_alive()
++    assert owner._loop.is_closed()
++    assert pending.done()
+ 
+ 
+ @pytest.fixture
 diff --git a/tests/utils/test_error_handlers.py b/tests/utils/test_error_handlers.py
 index 3c30b09..f5c878f 100644
 --- a/tests/utils/test_error_handlers.py

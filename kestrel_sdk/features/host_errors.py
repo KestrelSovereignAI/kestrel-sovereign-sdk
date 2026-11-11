@@ -7,10 +7,15 @@ ordinary exception into a failed result, which would erase such a fact at the
 inner boundary and make the outcome depend on which wrapper ran (#105).
 
 The host owns the answer to "is this control?". It registers one predicate
-for the process, and the SDK wrapper re-raises the original exception,
+for the process, and SDK tool/native HTTP boundaries re-raise the original exception,
 unchanged, whenever that predicate says so. The SDK never decides what counts
 as control: with nothing registered, no exception is control and standalone
 behaviour is unchanged.
+
+Native HTTP error projection uses the same predicate before converting unary
+or streaming failures to public protocol errors. It does not serialize private
+host evidence or make bare cancellation a host control error. An embedding
+still owns its transport, original invocation and cleanup.
 
 A durable-effect host also owns ordinary error classification: only its
 original journal can distinguish a failed operation from an uncertain effect.

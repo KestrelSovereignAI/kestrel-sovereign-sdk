@@ -32,8 +32,37 @@ from kestrel_sdk.resources import ResourceConflict, ResourceOutcomeUnknown
 
 
 def _run(coro):
-    """Tiny sync runner so tests don't need pytest-asyncio just for two cases."""
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+    """Delegate synchronous test execution to the stdlib's owned loop runner."""
+    return asyncio.run(coro)
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_sync_runner_retires_original_loop_on_return_or_error(fails):
+    original_loops = []
+    original_result = object()
+    original_error = ValueError("original sync-test operation failed")
+
+    async def original_operation():
+        original_loops.append(asyncio.get_running_loop())
+        if fails:
+            raise original_error
+        return original_result
+
+    try:
+        if fails:
+            with pytest.raises(ValueError) as captured:
+                _run(original_operation())
+            assert captured.value is original_error
+        else:
+            assert _run(original_operation()) is original_result
+        assert len(original_loops) == 1
+        assert original_loops[0].is_closed(), "original sync-test event loop was not retired"
+    finally:
+        # Only retire the actual test-owned leak after a failed observation;
+        # don't leave its self-pipe sockets for some unrelated later test's GC.
+        for loop in original_loops:
+            if not loop.is_closed():
+                loop.close()
 
 
 class _FixtureFeature(Feature):
