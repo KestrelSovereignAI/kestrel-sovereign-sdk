@@ -172,6 +172,10 @@ class JsonRpcDispatcher:
         self,
         request_id: str | int | None,
         error: Exception | JSONRPCError | A2AError,
+        *,
+        validation_error: type[InvalidRequestError]
+        | type[InvalidParamsError]
+        | None = None,
     ) -> JSONResponse:
         """Creates a Starlette JSONResponse for a JSON-RPC error.
 
@@ -180,13 +184,19 @@ class JsonRpcDispatcher:
         Args:
             request_id: The ID of the request that caused the error.
             error: The error object (one of the JSONRPCError types).
+            validation_error: Existing validation projection, applied only after
+                the original exception has passed host-control classification.
 
         Returns:
             A `JSONResponse` object formatted as a JSON-RPC error response.
         """
         if isinstance(error, BaseException) and is_host_control_error(error):
             raise error
-        if isinstance(error, json.decoder.JSONDecodeError | UnicodeDecodeError):
+        if validation_error is not None:
+            error = validation_error(data={'parseError': str(error)})
+        elif isinstance(
+            error, json.decoder.JSONDecodeError | UnicodeDecodeError
+        ):
             error = JSONParseError(message=str(error))
         elif (
             isinstance(error, HTTPException)
@@ -238,8 +248,6 @@ class JsonRpcDispatcher:
             into JSON-RPC error responses by this method.
         """
         request_id = None
-        body = None
-
         try:
             body = await request.json()
             if isinstance(body, dict):
@@ -278,11 +286,11 @@ class JsonRpcDispatcher:
                         ),
                     )
             except Exception as e:
-                logger.exception('Failed to validate base JSON-RPC request')
-                return self._generate_error_response(
-                    request_id,
-                    InvalidRequestError(data={'parseError': str(e)}),
+                response = self._generate_error_response(
+                    request_id, e, validation_error=InvalidRequestError
                 )
+                logger.exception('Failed to validate base JSON-RPC request')
+                return response
 
             # 2) Route by method name; unknown -> -32601, known -> validate params (-32602 on failure)
             method: str | None = base_request.method
@@ -320,11 +328,11 @@ class JsonRpcDispatcher:
                     params, model_class(), ignore_unknown_fields=True
                 )
             except Exception as e:
-                logger.exception('Failed to parse request params')
-                return self._generate_error_response(
-                    request_id,
-                    InvalidParamsError(data={'parseError': str(e)}),
+                response = self._generate_error_response(
+                    request_id, e, validation_error=InvalidParamsError
                 )
+                logger.exception('Failed to parse request params')
+                return response
 
             # 3) Build call context and wrap the request for downstream handling
             call_context = self._context_builder.build(request)
@@ -342,11 +350,11 @@ class JsonRpcDispatcher:
                 )
             else:
                 try:
-                    raw_result = await self._process_non_streaming_request(
-                        specific_request, call_context
-                    )
                     handler_result = JSONRPC20Response(
-                        result=raw_result, _id=request_id
+                        result=await self._process_non_streaming_request(
+                            specific_request, call_context
+                        ),
+                        _id=request_id,
                     ).data
                 except A2AError as e:
                     handler_result = build_error_response(request_id, e)

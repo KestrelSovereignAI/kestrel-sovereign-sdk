@@ -9,6 +9,9 @@ from pathlib import Path
 
 import httpx
 import pytest
+from google.protobuf.json_format import ParseError
+from jsonrpc.exceptions import JSONRPCInvalidRequestException
+from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.middleware.exceptions import ExceptionMiddleware
@@ -76,13 +79,17 @@ def isolate_host_policy(monkeypatch):
 
 
 async def _invoke(client: httpx.AsyncClient, binding: str, *, streaming: bool = False):
-    headers = {"a2a-version": "1.0"}
-    if binding == "jsonrpc":
+    compatibility = binding == "jsonrpc-0.3"
+    headers = {"a2a-version": "0.3" if compatibility else "1.0"}
+    if binding in {"jsonrpc", "jsonrpc-0.3"}:
+        method = "SubscribeToTask" if streaming else "GetTask"
+        if compatibility:
+            method = "tasks/resubscribe" if streaming else "tasks/get"
         return await client.post(
             "/rpc",
             json={
                 "jsonrpc": "2.0", "id": "original-request",
-                "method": "SubscribeToTask" if streaming else "GetTask",
+                "method": method,
                 "params": {"id": "original-task"},
             },
             headers=headers,
@@ -135,6 +142,141 @@ async def test_native_routes_preserve_original_registered_host_failure(
                 assert response.json()["error"]["status"] == "INTERNAL"
     assert handler.calls == handler.retired == 1
     assert handler.witness.read_text() == "original handler effect"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [HostControlError, HostA2AControlError])
+@pytest.mark.parametrize("compound", [False, True])
+@pytest.mark.parametrize("phase", ["unary", "before", "after"])
+@pytest.mark.parametrize("registered", [False, True])
+async def test_enabled_compatibility_routes_keep_original_host_control(
+    tmp_path, error_type, compound, phase, registered,
+):
+    control = error_type("private original compatibility control")
+    cleanup = OSError("original compatibility cleanup debt")
+    original = ExceptionGroup("original compatibility and cleanup", [control, cleanup]) if compound else control
+    if registered:
+        host_errors.register_control_error_predicate(_host_control)
+    handler = RaisingHostHandler(original, tmp_path / "compatibility-effect", phase)
+    app = Starlette(routes=create_jsonrpc_routes(handler, "/rpc", enable_v0_3_compat=True))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=True),
+        base_url="http://native-host.invalid", trust_env=False,
+    ) as client:
+        if registered:
+            with pytest.raises(Exception) as captured:
+                await _invoke(client, "jsonrpc-0.3", streaming=phase != "unary")
+            assert _retains_original(captured.value, original)
+        else:
+            response = await _invoke(client, "jsonrpc-0.3", streaming=phase != "unary")
+            assert response.status_code == 200
+            if phase == "unary":
+                assert response.json()["error"]["code"] == -32603
+            else:
+                assert b'"error"' in response.content
+    assert handler.calls == handler.retired == 1
+    assert handler.witness.read_text() == "original handler effect"
+
+
+class OriginalFailingRequestBody(httpx.AsyncByteStream):
+    def __init__(self, error: Exception, witness: Path) -> None:
+        self.error, self.witness = error, witness
+        self.entered = self.retired = 0
+
+    async def __aiter__(self):
+        self.entered += 1
+        try:
+            self.witness.write_text("original request body effect")
+            yield b"original request body bytes"
+            raise self.error
+        finally:
+            self.retired += 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["base", "params", "compat-params"])
+@pytest.mark.parametrize("registered", [False, True])
+async def test_request_validation_keeps_its_original_error_before_conversion(
+    tmp_path, phase, registered,
+):
+    observed = []
+    original_type = {
+        "base": JSONRPCInvalidRequestException,
+        "params": ParseError,
+        "compat-params": ValidationError,
+    }[phase]
+
+    def classify(error):
+        if isinstance(error, original_type):
+            observed.append(error)
+            return registered
+        return False
+
+    host_errors.register_control_error_predicate(classify)
+    handler = RaisingHostHandler(HostControlError("handler must not run"), tmp_path / "forbidden-validation-handler")
+    compatibility = phase == "compat-params"
+    app = Starlette(routes=create_jsonrpc_routes(handler, "/rpc", enable_v0_3_compat=compatibility))
+    body = {
+        "jsonrpc": "2.0", "id": "original-validation",
+        "method": "tasks/get" if compatibility else "GetTask",
+        "params": "invalid base params" if phase == "base" else {"id": {"private invalid input": True}},
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=True),
+        base_url="http://native-host.invalid", trust_env=False,
+    ) as client:
+        async def invoke_original():
+            return await client.post(
+                "/rpc", json=body,
+                headers={"a2a-version": "0.3" if compatibility else "1.0"},
+            )
+        if registered:
+            with pytest.raises(Exception) as captured:
+                await invoke_original()
+            assert observed and captured.value is observed[0]
+            assert all(error is captured.value for error in observed)
+            assert captured.value.__traceback__ is not None
+        else:
+            response = await invoke_original()
+            assert response.status_code == 200
+            assert response.json()["error"]["code"] == (-32600 if phase == "base" else -32602)
+    assert handler.calls == handler.retired == 0
+    assert not handler.witness.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [ValueError, RuntimeError, OSError])
+@pytest.mark.parametrize("registered", [False, True])
+async def test_streaming_request_body_failure_keeps_original_receive_control(
+    tmp_path, error_type, registered,
+):
+    original = error_type("private original receive evidence")
+    if registered:
+        host_errors.register_control_error_predicate(lambda error: error is original)
+    body = OriginalFailingRequestBody(original, tmp_path / "request-body-effect")
+    handler = RaisingHostHandler(HostControlError("handler must not run"), tmp_path / "forbidden-handler-effect")
+    app = Starlette(routes=create_rest_routes(handler))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=True),
+        base_url="http://native-host.invalid", trust_env=False,
+    ) as client:
+        async def receive_original():
+            return await client.request(
+                "GET", "/tasks/original-task:subscribe", content=body,
+                headers={"a2a-version": "1.0"},
+            )
+        if registered:
+            with pytest.raises(error_type) as captured:
+                await receive_original()
+            assert captured.value is original
+        else:
+            response = await receive_original()
+            assert response.status_code == 400
+            assert response.json()["error"]["status"] == "INVALID_ARGUMENT"
+    assert body.entered == body.retired == 1
+    assert body.witness.read_text() == "original request body effect"
+    assert handler.calls == handler.retired == 0
+    assert not handler.witness.exists()
 
 
 @pytest.mark.asyncio

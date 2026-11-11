@@ -4,6 +4,7 @@ import logging
 from collections.abc import AsyncIterable, AsyncIterator
 from typing import TYPE_CHECKING, Any, get_args
 
+from kestrel_sdk.features.host_errors import is_host_control_error
 from sse_starlette.sse import EventSourceResponse
 from starlette.responses import JSONResponse
 
@@ -88,7 +89,13 @@ class JSONRPC03Adapter:
         self,
         request_id: 'str | int | None',
         error: 'Exception | CoreJSONRPCError',
+        *,
+        invalid_params: bool = False,
     ) -> JSONResponse:
+        if isinstance(error, BaseException) and is_host_control_error(error):
+            raise error
+        if invalid_params:
+            error = CoreInvalidParamsError(data=str(error))
         if isinstance(error, CoreJSONRPCError):
             err_dict = error.model_dump(by_alias=True)
             return JSONResponse(
@@ -123,14 +130,14 @@ class JSONRPC03Adapter:
             try:
                 specific_request = model_class.model_validate(body)  # type: ignore[attr-defined]
             except Exception as e:
+                response = self._generate_error_response(
+                    request_id, e, invalid_params=True
+                )
                 logger.exception(
                     'Failed to validate base JSON-RPC request for v0.3'
                 )
 
-                return self._generate_error_response(
-                    request_id,
-                    CoreInvalidParamsError(data=str(e)),
-                )
+                return response
 
             call_context = self._context_builder.build(request)
             call_context.tenant = (
@@ -152,10 +159,9 @@ class JSONRPC03Adapter:
         except A2AError as e:
             return self._generate_error_response(request_id, e)
         except Exception as e:
+            response = self._generate_error_response(request_id, e)
             logger.exception('Unhandled exception in v0.3 JSONRPCAdapter')
-            return self._generate_error_response(
-                request_id, CoreInternalError(message=str(e))
-            )
+            return response
 
     @validate_version(constants.PROTOCOL_VERSION_0_3)
     async def _process_non_streaming_request(
@@ -286,10 +292,10 @@ class JSONRPC03Adapter:
                     )
                 }
             except Exception as e:
+                err = _to_v03_jsonrpc_error(e)
                 logger.exception(
                     'Error during stream generation in v0.3 JSONRPCAdapter'
                 )
-                err = types_v03.InternalError(message=str(e))
                 err_resp = types_v03.SendStreamingMessageResponse(
                     root=types_v03.JSONRPCErrorResponse(
                         id=request_id, error=err
@@ -316,14 +322,22 @@ _V03_ERROR_CODES = frozenset(
 )
 
 
-def _to_v03_jsonrpc_error(error: A2AError) -> types_v03.JSONRPCError:
-    """Maps an A2AError to a v0.3 JSON-RPC error carrying its A2A error code.
+def _to_v03_jsonrpc_error(error: Exception) -> types_v03.JSONRPCError:
+    """Map an original ordinary error to its existing v0.3 JSON-RPC response.
 
     Errors without a v0.3 equivalent are reported as InternalError (-32603).
     """
-    code = JSON_RPC_ERROR_CODE_MAP.get(type(error), -32603)
+    if is_host_control_error(error):
+        raise error
+    code = (
+        JSON_RPC_ERROR_CODE_MAP.get(type(error), -32603)
+        if isinstance(error, A2AError)
+        else -32603
+    )
     if code not in _V03_ERROR_CODES:
         code = -32603
     return types_v03.JSONRPCError(
-        code=code, message=error.message, data=error.data
+        code=code,
+        message=error.message if isinstance(error, A2AError) else str(error),
+        data=error.data if isinstance(error, A2AError) else None,
     )
