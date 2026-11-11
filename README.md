@@ -881,7 +881,9 @@ exception/compound evidence for the embedding's owned caller, not an ordinary
 `InternalError` response. No private host exception object is serialized onto
 the wire, and bare cancellation is not globally reclassified. The host still
 owns its transport, deadlines, original invocation and cleanup; this policy
-alone is not an incremental in-process streaming transport.
+alone is not an incremental in-process streaming transport. The embedding must
+also preserve classified control in its surrounding ASGI exception handlers;
+the SDK does not replace an application's middleware or HTTP error policy.
 
 These bindings are in-process host interfaces, not wire credentials. The
 host implementation is required; the SDK itself does not execute tools.
