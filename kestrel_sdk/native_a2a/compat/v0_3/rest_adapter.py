@@ -5,6 +5,8 @@ import logging
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from kestrel_sdk.features.host_errors import is_host_control_error
+
 
 if TYPE_CHECKING:
     from sse_starlette.sse import EventSourceResponse
@@ -88,6 +90,8 @@ class REST03Adapter:
         try:
             await request.body()
         except (ValueError, RuntimeError, OSError) as e:
+            if is_host_control_error(e):
+                raise
             raise InvalidRequestError(
                 message=f'Failed to pre-consume request body: {e}'
             ) from e

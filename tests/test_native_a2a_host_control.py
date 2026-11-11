@@ -19,7 +19,9 @@ from starlette.middleware.exceptions import ExceptionMiddleware
 from kestrel_sdk.features import host_errors
 from kestrel_sdk.native_a2a.server.routes.jsonrpc_routes import create_jsonrpc_routes
 from kestrel_sdk.native_a2a.server.routes.rest_routes import create_rest_routes
+from kestrel_sdk.native_a2a.server.events.event_queue import EventQueueLegacy
 from kestrel_sdk.native_a2a.types.a2a_pb2 import Task, TaskState, TaskStatus
+from kestrel_sdk.native_a2a.utils._async_queue_compat import QueueShutDown
 from kestrel_sdk.native_a2a.utils.errors import InternalError
 from kestrel_sdk.native_a2a.utils.telemetry import trace_function
 
@@ -274,32 +276,38 @@ async def test_request_validation_keeps_its_original_error_before_conversion(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error_type", [ValueError, RuntimeError, OSError])
 @pytest.mark.parametrize("registered", [False, True])
+@pytest.mark.parametrize("compatibility", [False, True])
+@pytest.mark.parametrize("public", [False, True])
 async def test_streaming_request_body_failure_keeps_original_receive_control(
-    tmp_path, error_type, registered,
+    tmp_path, error_type, registered, compatibility, public,
 ):
     original = error_type("private original receive evidence")
     if registered:
         host_errors.register_control_error_predicate(lambda error: error is original)
     body = OriginalFailingRequestBody(original, tmp_path / "request-body-effect")
     handler = RaisingHostHandler(HostControlError("handler must not run"), tmp_path / "forbidden-handler-effect")
-    app = Starlette(routes=create_rest_routes(handler))
+    app = Starlette(routes=create_rest_routes(handler, enable_v0_3_compat=compatibility))
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app, raise_app_exceptions=True),
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=not public),
         base_url="http://native-host.invalid", trust_env=False,
     ) as client:
         async def receive_original():
             return await client.request(
-                "GET", "/tasks/original-task:subscribe", content=body,
-                headers={"a2a-version": "1.0"},
+                "POST" if compatibility else "GET",
+                "/v1/message:stream" if compatibility else "/tasks/original-task:subscribe",
+                content=body, headers={"a2a-version": "0.3" if compatibility else "1.0"},
             )
-        if registered:
+        if registered and not public:
             with pytest.raises(error_type) as captured:
                 await receive_original()
             assert captured.value is original
         else:
             response = await receive_original()
-            assert response.status_code == 400
-            assert response.json()["error"]["status"] == "INVALID_ARGUMENT"
+            assert response.status_code == (500 if registered else 400)
+            if registered:
+                assert b"private original receive evidence" not in response.content
+            else:
+                assert response.json()["error"]["status"] == "INVALID_ARGUMENT"
     assert body.entered == body.retired == 1
     assert body.witness.read_text() == "original request body effect"
     assert handler.calls == handler.retired == 0
@@ -310,8 +318,9 @@ async def test_streaming_request_body_failure_keeps_original_receive_control(
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("registered", [False, True])
 @pytest.mark.parametrize("public", [False, True])
+@pytest.mark.parametrize("compatibility", [False, True])
 async def test_actual_invalid_utf8_body_keeps_original_decoder_control(
-    tmp_path, streaming, registered, public,
+    tmp_path, streaming, registered, public, compatibility,
 ):
     observed = []
 
@@ -323,9 +332,11 @@ async def test_actual_invalid_utf8_body_keeps_original_decoder_control(
 
     host_errors.register_control_error_predicate(classify)
     handler = RaisingHostHandler(HostControlError("handler must not run"), tmp_path / "forbidden-utf8-handler")
-    app = Starlette(routes=create_rest_routes(handler))
+    app = Starlette(routes=create_rest_routes(handler, enable_v0_3_compat=compatibility))
     payload = b"original-invalid-\xff"
     path = "/message:stream" if streaming else "/message:send"
+    if compatibility:
+        path = "/v1" + path
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=not public),
         base_url="http://native-host.invalid", trust_env=False,
@@ -333,7 +344,7 @@ async def test_actual_invalid_utf8_body_keeps_original_decoder_control(
         async def decode_original():
             return await client.post(
                 path, content=payload,
-                headers={"a2a-version": "1.0", "content-type": "application/json"},
+                headers={"a2a-version": "0.3" if compatibility else "1.0", "content-type": "application/json"},
             )
         if registered and not public:
             with pytest.raises(UnicodeDecodeError) as captured:
@@ -354,6 +365,44 @@ async def test_actual_invalid_utf8_body_keeps_original_decoder_control(
                 assert observed and observed[0].object == payload
                 assert b"original-invalid" not in response.content
                 assert b"UnicodeDecodeError" not in response.content
+            else:
+                assert response.json()["error"]["status"] == "INVALID_ARGUMENT"
+    assert handler.calls == handler.retired == 0
+    assert not handler.witness.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registered", [False, True])
+@pytest.mark.parametrize("public", [False, True])
+async def test_legacy_rest_history_query_preserves_original_integer_parser(tmp_path, registered, public):
+    observed = []
+
+    def classify(error):
+        if isinstance(error, ValueError):
+            observed.append(error)
+            return registered
+        return False
+
+    host_errors.register_control_error_predicate(classify)
+    handler = RaisingHostHandler(HostControlError("handler must not run"), tmp_path / "forbidden-history-handler")
+    app = Starlette(routes=create_rest_routes(handler, enable_v0_3_compat=True))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=not public),
+        base_url="http://native-host.invalid", trust_env=False,
+    ) as client:
+        async def invoke():
+            return await client.get("/v1/tasks/original-task?historyLength=private-invalid-integer", headers={"a2a-version": "0.3"})
+        if registered and not public:
+            with pytest.raises(ValueError) as captured:
+                await invoke()
+            assert observed and all(error is captured.value for error in observed)
+            assert captured.value.__traceback__ is not None
+        else:
+            response = await invoke()
+            assert response.status_code == (500 if registered else 400)
+            if registered:
+                assert observed
+                assert b"private-invalid-integer" not in response.content
             else:
                 assert response.json()["error"]["status"] == "INVALID_ARGUMENT"
     assert handler.calls == handler.retired == 0
@@ -471,6 +520,119 @@ async def test_trace_extractor_keeps_its_original_registered_resource_error(tmp_
     assert observed and all(error is captured.value for error in observed)
     assert captured.value.filename == str(missing)
     assert witness.read_text() == "successful original operation"
+
+
+@pytest.fixture
+def original_trace_exporter(monkeypatch):
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from kestrel_sdk.native_a2a.utils import telemetry
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    # Inject an actual OTel provider, not a mock span/recorder or global provider.
+    monkeypatch.setattr(telemetry, "trace", provider)
+    try:
+        yield exporter
+    finally:
+        provider.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registered", [False, True])
+async def test_real_queue_shutdown_is_classified_before_telemetry(tmp_path, registered, original_trace_exporter):
+    observed = []
+    extractor_witness = tmp_path / "queue-extractor"
+
+    def classify(error):
+        if isinstance(error, QueueShutDown):
+            observed.append(error)
+            return registered
+        return False
+
+    def extractor(span, args, kwargs, result, exception):
+        extractor_witness.write_text("ordinary queue extraction")
+
+    host_errors.register_control_error_predicate(classify)
+    queue = EventQueueLegacy()
+    await queue.close()
+    assert queue.is_closed() and queue.queue.empty()
+    traced = trace_function(attribute_extractor=extractor)(queue.dequeue_event)
+    with pytest.raises(QueueShutDown) as captured:
+        await traced()
+    spans = original_trace_exporter.get_finished_spans()
+    assert spans
+    if registered:
+        assert observed and all(error is captured.value for error in observed)
+        assert all(not span.events for span in spans)
+        assert not extractor_witness.exists()
+    else:
+        assert any(span.events for span in spans)
+        assert extractor_witness.read_text() == "ordinary queue extraction"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("registered", [False, True])
+async def test_trace_compound_cancellation_preserves_original_group(tmp_path, asynchronous, registered, original_trace_exporter):
+    original = BaseExceptionGroup("original control and cancellation", [HostControlError("original host failure"), asyncio.CancelledError()])
+    witness = tmp_path / "compound-source"
+    extractor_witness = tmp_path / "compound-extractor"
+    missing = tmp_path / "unavailable-compound-extractor"
+    host_errors.register_control_error_predicate(lambda error: registered and (_host_control(error) or isinstance(error, FileNotFoundError)))
+
+    def extractor(span, args, kwargs, result, exception):
+        extractor_witness.write_text("ordinary compound extraction")
+        missing.read_text()
+
+    def operation():
+        witness.write_text("original compound source")
+        raise original
+
+    async def async_operation():
+        operation()
+
+    traced = trace_function(attribute_extractor=extractor)(async_operation if asynchronous else operation)
+    with pytest.raises(BaseExceptionGroup) as captured:
+        if asynchronous:
+            await traced()
+        else:
+            traced()
+    assert captured.value is original
+    assert witness.read_text() == "original compound source"
+    assert extractor_witness.exists() is not registered
+    assert all(not span.events for span in original_trace_exporter.get_finished_spans())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_trace_keeps_bare_cancellation_out_of_host_classification(tmp_path, asynchronous):
+    original = asyncio.CancelledError()
+    observed = []
+    witness = tmp_path / "bare-cancel-extractor"
+    host_errors.register_control_error_predicate(lambda error: observed.append(error) or False)
+
+    def extractor(span, args, kwargs, result, exception):
+        assert exception is None
+        witness.write_text("ordinary cancellation diagnostic")
+
+    def operation():
+        raise original
+
+    async def async_operation():
+        operation()
+
+    traced = trace_function(attribute_extractor=extractor)(async_operation if asynchronous else operation)
+    with pytest.raises(asyncio.CancelledError) as captured:
+        if asynchronous:
+            await traced()
+        else:
+            traced()
+    assert captured.value is original
+    assert not observed
+    assert witness.read_text() == "ordinary cancellation diagnostic"
 
 
 def _retains_original(error: BaseException, original: BaseException) -> bool:

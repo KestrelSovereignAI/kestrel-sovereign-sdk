@@ -11,7 +11,10 @@ All notable changes to this project are documented in this file.
   first streamed event, original body-decoding failures, and errors that cannot
   safely be formatted. Native telemetry and error diagnostics classify control
   before recording it; telemetry skips attribute extraction after control and
-  preserves registered errors from the extractor itself. Ordinary protocol errors keep their existing wire
+  preserves registered errors from the extractor itself, queue shutdown, and
+  compound groups containing cancellation. Bare cancellation remains outside
+  host classification. Enabled legacy REST body/query normalization observes
+  the same original-error boundary. Ordinary protocol errors keep their existing wire
   behavior. Classification uses the existing host policy; no Core dependency or
   new wire extension is introduced. Incremental host transport, deadlines and
   caller-withdrawal ownership remain separate host responsibilities.
