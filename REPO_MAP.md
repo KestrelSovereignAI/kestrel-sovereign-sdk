@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 328 tracked files (296 `.py`, 10 `.md`, 22 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 327 tracked files (295 `.py`, 10 `.md`, 22 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -385,8 +385,6 @@ Repo entry points and standard project files.
   - `def trace_function(func)`; `def trace_class(include_list, exclude_list, kind)`
 - **kestrel_sdk/native_a2a/utils/version_validator.py** — General utility functions for the A2A Python SDK.
   - `def validate_version(expected_version)`
-- **kestrel_sdk/native_a2a/utils/versioning.py** — Protocol compatibility is determined by the Major.Minor release.
-  - `def major_minor(version)`
 - **kestrel_sdk/native_a2a_custody.py** — Offline custody verification for the packaged modified A2A SDK.
   - `def verify_vendored_a2a(root)`
 - **kestrel_sdk/operator/__init__.py** — Contracts for feature-owned, authorized operator execution.
