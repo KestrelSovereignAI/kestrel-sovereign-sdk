@@ -105,6 +105,22 @@ commit in `VENDORED.json`, plus Kestrel's patch in `UPSTREAM.patch`:
 - JSON-RPC and REST error handling and telemetry pass registered host-control
   exceptions to the host's classifier before formatting or recording them.
 
+### Shared source body primitives
+
+`kestrel_sdk.native_a2a.utils.source_ownership` supplies the shared one-item
+handoff, callback producer contract, partial-acquisition record and original-task
+source body used by host adapters. Emissions retain their own ACK/Stop and release
+the host writer before waiting for the emission mutex. Factory invocation,
+iterator acquisition, advancement and registered retirement run in one caller
+Task/context; original body, retirement and observer errors stay separate.
+
+These are low-level mechanisms, **not** a Task scheduler, authority boundary or
+physical Task-join receipt. A host must admit its original owner and install
+completion observation before opening the dispatch gate. Calling the body in
+a cancellable request Task does not provide that boundary. Stop only withdraws
+demand; a blocked original owner remains pending until the host actually joins
+it. Native HTTP request/response lifetime integration remains separate work.
+
 ### Maintaining the vendored copy
 
 This copy is Kestrel's maintained fork. Fixes land here and are not held for

@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.52.2
+
+### Added
+
+- Shared native original-source handoff and body primitives for host adapters:
+  per-frame ACK/Stop, writer-safe serialized emissions, original-task factory/
+  iterator acquisition, retained partial resources and original retirement errors.
+  These primitives grant no authority, create no Tasks and do not supply a Task
+  admission or physical-join receipt. Hosts must supply that boundary. Native
+  HTTP request/response lifetime integration remains separate work.
+
 ## 0.52.1
 
 ### Fixed
