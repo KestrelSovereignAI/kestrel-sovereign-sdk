@@ -54,7 +54,7 @@ index 93dc034..c8f0784 100644
              user=self.build_user(request),
              state=state,
 diff --git a/src/a2a/server/routes/jsonrpc_dispatcher.py b/src/a2a/server/routes/jsonrpc_dispatcher.py
-index fb1801b..07296ad 100644
+index fb1801b..90d03a4 100644
 --- a/src/a2a/server/routes/jsonrpc_dispatcher.py
 +++ b/src/a2a/server/routes/jsonrpc_dispatcher.py
 @@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
@@ -65,16 +65,40 @@ index fb1801b..07296ad 100644
  
  from a2a.compat.v0_3.jsonrpc_adapter import JSONRPC03Adapter
  from a2a.server.context import ServerCallContext
-@@ -182,6 +183,8 @@ class JsonRpcDispatcher:
+@@ -182,7 +183,16 @@ class JsonRpcDispatcher:
          Returns:
              A `JSONResponse` object formatted as a JSON-RPC error response.
          """
+-        if not isinstance(error, A2AError | JSONRPCError):
 +        if isinstance(error, BaseException) and is_host_control_error(error):
 +            raise error
-         if not isinstance(error, A2AError | JSONRPCError):
++        if isinstance(error, json.decoder.JSONDecodeError | UnicodeDecodeError):
++            error = JSONParseError(message=str(error))
++        elif (
++            isinstance(error, HTTPException)
++            and error.status_code == HTTP_413_CONTENT_TOO_LARGE
++        ):
++            error = InvalidRequestError(message='Payload too large')
++        elif not isinstance(error, A2AError | JSONRPCError):
              error = InternalError(message=str(error))
  
-@@ -354,10 +357,9 @@ class JsonRpcDispatcher:
+         response_data = build_error_response(request_id, error)
+@@ -341,23 +351,20 @@ class JsonRpcDispatcher:
+                     handler_result = build_error_response(request_id, e)
+             return self._create_response(call_context, handler_result)
+         except (json.decoder.JSONDecodeError, UnicodeDecodeError) as e:
+-            return self._generate_error_response(
+-                None, JSONParseError(message=str(e))
+-            )
++            return self._generate_error_response(None, e)
+         except HTTPException as e:
+             if e.status_code == HTTP_413_CONTENT_TOO_LARGE:
+                 return self._generate_error_response(
+                     request_id,
+-                    InvalidRequestError(message='Payload too large'),
++                    e,
+                 )
+             raise e
          except A2AError as e:
              return self._generate_error_response(request_id, e)
          except Exception as e:
@@ -87,7 +111,7 @@ index fb1801b..07296ad 100644
  
      @validate_version(constants.PROTOCOL_VERSION_1_0)
      async def _process_streaming_request(
-@@ -595,6 +597,8 @@ class JsonRpcDispatcher:
+@@ -595,6 +602,8 @@ class JsonRpcDispatcher:
                              event['event'] = 'error'
                          yield event
                  except Exception as e:

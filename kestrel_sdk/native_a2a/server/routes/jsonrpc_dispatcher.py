@@ -186,7 +186,14 @@ class JsonRpcDispatcher:
         """
         if isinstance(error, BaseException) and is_host_control_error(error):
             raise error
-        if not isinstance(error, A2AError | JSONRPCError):
+        if isinstance(error, json.decoder.JSONDecodeError | UnicodeDecodeError):
+            error = JSONParseError(message=str(error))
+        elif (
+            isinstance(error, HTTPException)
+            and error.status_code == HTTP_413_CONTENT_TOO_LARGE
+        ):
+            error = InvalidRequestError(message='Payload too large')
+        elif not isinstance(error, A2AError | JSONRPCError):
             error = InternalError(message=str(error))
 
         response_data = build_error_response(request_id, error)
@@ -345,14 +352,12 @@ class JsonRpcDispatcher:
                     handler_result = build_error_response(request_id, e)
             return self._create_response(call_context, handler_result)
         except (json.decoder.JSONDecodeError, UnicodeDecodeError) as e:
-            return self._generate_error_response(
-                None, JSONParseError(message=str(e))
-            )
+            return self._generate_error_response(None, e)
         except HTTPException as e:
             if e.status_code == HTTP_413_CONTENT_TOO_LARGE:
                 return self._generate_error_response(
                     request_id,
-                    InvalidRequestError(message='Payload too large'),
+                    e,
                 )
             raise e
         except A2AError as e:
