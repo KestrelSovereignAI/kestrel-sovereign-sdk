@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 327 tracked files (295 `.py`, 10 `.md`, 22 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 334 tracked files (302 `.py`, 10 `.md`, 22 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -379,6 +379,8 @@ Repo entry points and standard project files.
   - `async def validate_push_notification_url(url)`
 - **kestrel_sdk/native_a2a/utils/signing.py** — —
   - `class SignatureVerificationError`; `class NoSignatureError`; `class InvalidSignaturesError`; `class ProtectedHeader`; `def create_agent_card_signer(signing_key, protected_header, header)`; `def create_signature_verifier(key_provider, algorithms)`
+- **kestrel_sdk/native_a2a/utils/source_ownership.py** — The one-item source handoff, independent of scheduling and host authority.
+  - `class SourceHandoff`; `class CallbackSource`; `class SourceAcquisition`; `class SourceBodyOutcome`; `async def run_source_body(acquire, handoff)`
 - **kestrel_sdk/native_a2a/utils/task.py** — Utility functions for creating A2A Task objects.
   - `class HistoryLengthConfig`; `def validate_history_length(config)`; `def apply_history_length(task, config)`; `def validate_page_size(page_size)`; `def encode_page_token(task_id)`; `def decode_page_token(page_token)`; `class ListTasksCursor`; `def encode_list_tasks_cursor(cursor)`; `…`
 - **kestrel_sdk/native_a2a/utils/telemetry.py** — OpenTelemetry Tracing Utilities for A2A Python SDK.
@@ -478,12 +480,18 @@ Repo entry points and standard project files.
 ## `tests/`
 
 - **tests/__init__.py** — —
+- **tests/git_support.py** — One required identity for real, disposable Git fixture commits.
+  - `def commit_fixture(checkout)`
 - **tests/native_a2a/server/routes/test_common.py** — —
   - `class LegacyEventSourceResponse`; `def test_default_grace_period_supports_legacy_sse_starlette()`; `def test_grace_period_constructor_arguments(grace_period)`; `def test_nonzero_grace_period_requires_cooperative_shutdown_support()`; `def test_negative_grace_period_is_rejected(response_class)`; `class TestStarletteUser`; `class TestDefaultContextBuilder`; `class TestBuildServerCallContext`; `…`
 - **tests/native_a2a/server/routes/test_rest_dispatcher.py** — —
   - `def agent_card()`; `def mock_handler(agent_card)`; `def rest_dispatcher_instance(mock_handler)`; `def make_mock_request(method, path_params, query_params, headers, …)`; `class TestRestDispatcherInitialization`; `class TestRestDispatcherContextManagement`; `class TestRestDispatcherEndpoints`; `class TestRestDispatcherStreaming`
 - **tests/native_a2a/utils/test_error_handlers.py** — Tests for kestrel_sdk.native_a2a.utils.error_handlers module.
   - `class MockJSONResponse`; `class MockEventSourceResponse`; `async def test_rest_error_handler_server_error()`; `async def test_rest_error_handler_unknown_exception()`; `async def test_rest_stream_error_handler_server_error()`; `async def test_rest_stream_error_handler_reraises_exception()`; `async def test_rest_error_handler_success()`; `async def test_rest_stream_error_handler_generator_error(caplog)`; `…`
+- **tests/native_a2a/utils/test_source_body.py** — Original source acquisition/retirement using real Tasks, tokens and files.
+  - `def test_acquire_iterate_and_retire_in_the_original_task(backend, tmp_path)`; `def test_partial_acquisition_failures_retain_originals_and_close_the_file(backend, failure_phase, tmp_path)`; `def test_all_close_failures_and_policy_failure_remain_separate(backend)`; `def test_callback_source_joins_its_structured_emitters(backend)`; `def test_parent_scope_cancellation_does_not_abort_original_close(backend, tmp_path)`; `def test_acquisition_contract_refusals_and_one_close_attempt(backend)`; `def test_invalid_callback_return_still_retires_acquisitions(backend)`; `def test_invalid_closing_contracts_fail_without_leaking_a_file(backend, mode, tmp_path)`; `…`
+- **tests/native_a2a/utils/test_source_ownership.py** — Real backend handoffs; no Task, cancellation or completion mocks.
+  - `def test_falsy_items_are_not_terminal_receipts(backend)`; `def test_each_item_requires_its_own_ack(backend)`; `def test_stop_is_not_a_physical_retirement_ack(backend)`; `def test_wait_hooks_restore_original_context(backend)`; `def test_direct_cancel_cannot_transfer_a_frame_ack_to_its_sibling()`; `def test_cancelled_queued_emitter_does_not_publish(backend)`; `def test_stop_before_emission_never_enters_writer_hook(backend)`; `def test_concurrent_reader_refuses_without_replacing_original(backend)`; `…`
 - **tests/native_a2a/utils/test_version_validation.py** — Tests for version validation decorators.
   - `class TestHandler`; `async def test_validate_version_success()`; `async def test_validate_version_case_insensitive()`; `async def test_validate_version_mismatch()`; `async def test_validate_version_missing_defaults_to_0_3()`; `async def test_validate_version_async_gen_success()`; `async def test_validate_version_async_gen_failure()`; `async def test_validate_version_no_context()`; `…`
 - **tests/test_channel_delivery_contracts.py** — —
@@ -505,7 +513,7 @@ Repo entry points and standard project files.
 - **tests/test_docstring_parser.py** — Regression tests for parse_docstring_params wrapped-description truncation.
   - `def test_wrapped_description_not_truncated_at_word_continuation()`; `def test_single_line_params_unchanged()`; `def test_param_with_type_annotation()`
 - **tests/test_dynamic_tool_result.py** — Tests for ``DynamicTool.execute``'s ToolResult-aware pass-through.
-  - `def feature()`; `async def test_unknown_effect_keeps_its_original_exception_after_a_real_file_effect(tmp_path, shape)`; `class TestToolResultPassThrough`; `class TestLegacyShapeDuringMigration`; `def parts_feature()`; `class TestEnvelopeParts`
+  - `def test_sync_runner_retires_original_loop_on_return_or_error(fails)`; `def feature()`; `async def test_unknown_effect_keeps_its_original_exception_after_a_real_file_effect(tmp_path, shape)`; `class TestToolResultPassThrough`; `class TestLegacyShapeDuringMigration`; `def parts_feature()`; `class TestEnvelopeParts`
 - **tests/test_environment_acquisition.py** — Shared records and durable host conformance fixture; no provider/cloud IO.
   - `def originals()`; `def preparation(payload, identity)`; `def lease()`; `class EncryptedRowHost`; `class RetainedAttempt`; `def host(tmp_path)`; `def test_explicit_private_serializer_preserves_exact_original_bytes_and_identities()`; `def test_combined_maximum_preparation_round_trips_inside_storage_bound()`; `…`
 - **tests/test_extension_contracts.py** — Contract tests shared by agent UI and application extensions.
@@ -514,6 +522,8 @@ Repo entry points and standard project files.
   - `class ExternalFixtureFeature`; `def test_external_feature_can_expose_every_row_one_seam_via_sdk()`; `def test_contribution_methods_return_instance_stable_objects()`; `def test_owned_identity_supports_exact_deterministic_teardown()`; `def test_permission_vocabulary_is_closed_conservative_and_immutable()`; `def test_registration_validation_prevents_ambiguous_identity()`; `def test_workflow_registration_supports_empty_and_plural_sources()`; `def test_setup_flow_normalizes_real_non_string_enum()`; `…`
 - **tests/test_frozen_json.py** — The shared bounded JSON freeze used by public SDK contracts.
   - `def test_freeze_copies_deeply_and_is_read_only()`; `def test_self_reference_is_a_cycle_error_not_recursion()`; `def test_shared_but_acyclic_containers_are_not_cycles()`; `def test_non_string_keys_are_rejected_by_default()`; `def test_non_finite_numbers_are_rejected(number)`; `def test_unsupported_types_are_rejected()`; `def test_depth_nodes_and_keys_budgets()`; `def test_measured_size_equals_canonical_encoding(value)`; `…`
+- **tests/test_git_support.py** — Real disposable fixture commits retain required identity and Git failures.
+  - `def test_fixture_commit_failure_is_not_a_false_commit(tmp_path, checked)`
 - **tests/test_governed_operation_contract.py** — The public binding ABI requires an explicit intent key across transports.
   - `def test_operation_id_is_a_required_keyword_in_the_public_binding_contract()`; `def test_transport_identity_cannot_substitute_for_an_operation_id(unrelated_id)`; `def test_published_readme_invoke_examples_bind_the_current_public_contract()`
 - **tests/test_hook_input.py** — SDK 0.9 — HookInput narration-check fields (kestrel-sovereign #1048 Wave 5D).
@@ -548,6 +558,8 @@ Repo entry points and standard project files.
   - `class TestContractVersion`; `class TestToolCall`; `class TestLLMResponse`; `class TestModelCategory`; `class TestModelInfo`; `class TestProviderInfo`; `class TestProviderCapabilities`; `class TestBackendType`; `…`
 - **tests/test_logging_summary.py** — ``content_log_summary`` describes caller text without any of it (#105).
   - `def test_summary_is_length_and_a_short_digest()`; `def test_summary_contains_none_of_the_text()`; `def test_same_text_matches_within_the_process_and_different_text_does_not()`; `def test_digest_is_keyed_not_a_plain_hash()`; `def test_lone_surrogate_and_empty_text_do_not_raise()`
+- **tests/test_native_a2a_host_control.py** — Native HTTP routes must leave host control with its original caller (#117).
+  - `class HostControlError`; `class HostA2AControlError`; `class UnformattableHostControl`; `class RaisingHostHandler`; `def isolate_host_policy(monkeypatch)`; `async def test_native_routes_preserve_original_registered_host_failure(tmp_path, binding, error_type, compound, …)`; `async def test_enabled_compatibility_routes_keep_original_host_control(tmp_path, error_type, compound, phase, …)`; `class OriginalFailingRequestBody`; `…`
 - **tests/test_native_a2a_skills.py** — Features contribute native skills; only the serving agent owns a card.
   - `class SkillFeature`; `def test_skills_are_official_models_with_native_json()`; `def test_skills_follow_current_tool_exposure_and_are_fresh()`; `def test_skill_metadata_comes_from_current_tool_schema()`; `def test_empty_exposure_has_no_skills()`; `def test_invalid_required_skill_fields_fail_with_the_native_error(name, description)`; `def test_features_do_not_publish_fake_agent_cards()`; `def test_draft_wire_models_are_retired(module)`; `…`
 - **tests/test_operator_contracts.py** — Focused tests for feature-owned operator SDK contracts.
@@ -568,6 +580,8 @@ Repo entry points and standard project files.
   - `def test_explicit_cause_and_group_keep_each_original_once_even_with_cycles()`; `def test_incidental_handling_context_does_not_claim_an_unknown_outcome()`; `def test_application_attribute_hooks_cannot_hide_original_group_evidence()`; `def test_application_class_claim_cannot_invent_an_unknown_resource_error()`
 - **tests/test_run_contracts.py** — Focused tests for durable operator run-plane contracts.
   - `def test_launch_contains_only_semantic_input_and_record_owns_runtime_clock()`; `def test_launch_authorization_binds_all_trusted_authority()`; `def test_manual_and_agent_launch_shape_invariants()`; `def test_run_models_are_frozen_and_correlate_attempt_and_external_job()`; `def test_resolved_run_authorization_rechecks_durable_launch_scope()`; `def test_resolved_run_tenant_mismatch_matches_tenant_scoped_absence()`; `def test_terminal_state_and_separate_control_and_artifact_actions()`; `def test_control_expected_sequence_is_validated_and_outside_key_scope()`; `…`
+- **tests/test_sdk_test_driver.py** — Original diagnostic sink survives pytest and retires with its process (#118).
+  - `def test_actual_driver_keeps_diagnostics_through_original_interpreter_exit(tmp_path, test_fails)`
 - **tests/test_security_encryption.py** — Tests for SDK encryption key derivation and migration behavior.
   - `def key_shape(request, monkeypatch, tmp_path)`; `def clear_master_key_cache()`; `def test_passphrase_master_key_uses_salted_pbkdf2_600k(monkeypatch, tmp_path)`; `def test_env_passphrase_without_salt_warns_once_and_uses_legacy(monkeypatch, caplog, tmp_path)`; `def test_same_passphrase_and_env_salt_yield_same_key_across_derivations(monkeypatch)`; `def test_key_file_passphrase_persists_salt_next_to_key(monkeypatch, tmp_path)`; `def test_key_file_salt_is_published_privately_without_temp_files(monkeypatch, tmp_path)`; `def test_concurrent_first_starts_converge_on_one_durable_salt(tmp_path)`; `…`
 - **tests/test_timeline_protocol.py** — Tests for timeline protocols.
