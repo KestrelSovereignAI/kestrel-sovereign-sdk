@@ -9,6 +9,7 @@ import inspect
 import os
 
 from builtins import BaseExceptionGroup, ExceptionGroup
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import anyio
@@ -86,7 +87,7 @@ def test_partial_factory_and_real_late_close_errors_retain_originals(
 
 
 @pytest.mark.parametrize('backend', ['asyncio', 'trio'])
-def test_only_a_body_error_can_be_consumed_after_successful_retirement(
+def test_delivered_body_error_does_not_acknowledge_a_successful_root(
     tmp_path: Path, backend: str
 ) -> None:
     async def run() -> None:
@@ -99,11 +100,47 @@ def test_only_a_body_error_can_be_consumed_after_successful_retirement(
             sources.append(source)
             raise original
 
-        with anyio.fail_after(5):
+        with anyio.fail_after(5), pytest.raises(RuntimeError) as root:
             async with standalone_source_lifetime(acquire) as reader:
                 with pytest.raises(RuntimeError) as demand:
                     await anext(reader)
                 assert demand.value is original
+        assert root.value is original
+        sources[0].assert_original_retired()
+
+    anyio.run(run, backend=backend)
+
+
+@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
+@pytest.mark.parametrize('empty', [False, True])
+def test_natural_generator_finally_error_is_fatal_after_demand_catches_it(
+    tmp_path: Path, backend: str, empty: bool
+) -> None:
+    async def run() -> None:
+        sources: list[_DescriptorSource] = []
+
+        async def generate() -> AsyncIterator[str]:
+            source = _DescriptorSource(
+                tmp_path / 'generator', backend, (), fail_close=True
+            )
+            sources.append(source)
+            try:
+                if not empty:
+                    yield 'original frame'
+            finally:
+                await source.aclose()
+
+        with anyio.fail_after(5), pytest.raises(OSError) as root:
+            async with standalone_source_lifetime(
+                lambda _resources: generate()
+            ) as reader:
+                if not empty:
+                    assert await anext(reader) == 'original frame'
+                with pytest.raises(OSError) as delivered:
+                    await anext(reader)
+                assert delivered.value is sources[0].close_error
+                assert delivered.value.errno == errno.EBADF
+        assert root.value is delivered.value
         sources[0].assert_original_retired()
 
     anyio.run(run, backend=backend)
@@ -130,6 +167,35 @@ def test_reading_a_failed_close_does_not_acknowledge_successful_retirement(
                     await anext(reader)
                 assert demand.value is sources[0].close_error
         assert root.value is sources[0].close_error
+        sources[0].assert_original_retired()
+
+    anyio.run(run, backend=backend)
+
+
+@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
+def test_original_error_already_retained_as_cause_is_not_duplicated(
+    tmp_path: Path, backend: str
+) -> None:
+    async def run() -> None:
+        sources: list[_DescriptorSource] = []
+        observer = RuntimeError('original transport failure with source cause')
+
+        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
+            source = _DescriptorSource(
+                tmp_path / 'source', backend, (), fail_close=True
+            )
+            sources.append(source)
+            return source
+
+        with anyio.fail_after(5), pytest.raises(RuntimeError) as root:
+            async with standalone_source_lifetime(acquire) as reader:
+                try:
+                    await anext(reader)
+                except OSError as original:
+                    assert original is sources[0].close_error
+                    raise observer from original
+        assert root.value is observer
+        assert observer.__cause__ is sources[0].close_error
         sources[0].assert_original_retired()
 
     anyio.run(run, backend=backend)

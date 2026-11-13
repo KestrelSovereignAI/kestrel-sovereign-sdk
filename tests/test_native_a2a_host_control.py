@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import httpx
@@ -24,6 +24,8 @@ from kestrel_sdk.native_a2a.types.a2a_pb2 import Task, TaskState, TaskStatus
 from kestrel_sdk.native_a2a.utils._async_queue_compat import QueueShutDown
 from kestrel_sdk.native_a2a.utils.errors import InternalError
 from kestrel_sdk.native_a2a.utils.telemetry import trace_function
+
+from tests.native_a2a.source_witness import RootFailureProbe
 
 
 class HostControlError(Exception):
@@ -188,8 +190,9 @@ async def test_enabled_compatibility_routes_keep_original_host_control(
         host_errors.register_control_error_predicate(_host_control)
     handler = RaisingHostHandler(original, tmp_path / "compatibility-effect", phase)
     app = Starlette(routes=create_jsonrpc_routes(handler, "/rpc", enable_v0_3_compat=True))
+    root = RootFailureProbe(app)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app, raise_app_exceptions=True),
+        transport=httpx.ASGITransport(app=root, raise_app_exceptions=True),
         base_url="http://native-host.invalid", trust_env=False,
     ) as client:
         if registered:
@@ -197,7 +200,10 @@ async def test_enabled_compatibility_routes_keep_original_host_control(
                 await _invoke(client, "jsonrpc-0.3", streaming=phase != "unary")
             assert _retains_original(captured.value, original)
         else:
-            response = await _invoke(client, "jsonrpc-0.3", streaming=phase != "unary")
+            with root.expect(type(original)) if phase != "unary" else nullcontext():
+                response = await _invoke(client, "jsonrpc-0.3", streaming=phase != "unary")
+            if phase != "unary":
+                assert root.original is original
             assert response.status_code == 200
             if phase == "unary":
                 assert response.json()["error"]["code"] == -32603
@@ -337,8 +343,9 @@ async def test_actual_invalid_utf8_body_keeps_original_decoder_control(
     path = "/message:stream" if streaming else "/message:send"
     if compatibility:
         path = "/v1" + path
+    root = RootFailureProbe(app)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app, raise_app_exceptions=not public),
+        transport=httpx.ASGITransport(app=root, raise_app_exceptions=not public),
         base_url="http://native-host.invalid", trust_env=False,
     ) as client:
         async def decode_original():
@@ -359,7 +366,10 @@ async def test_actual_invalid_utf8_body_keeps_original_decoder_control(
                 traceback = traceback.tb_next
             assert "parse_lenient" in frames
         else:
-            response = await decode_original()
+            with root.expect(ParseError) if streaming and not registered else nullcontext():
+                response = await decode_original()
+            if streaming and not registered:
+                assert any(root.original.__cause__ is error for error in observed)
             assert response.status_code == (500 if registered else 400)
             if registered:
                 assert observed and observed[0].object == payload
@@ -670,8 +680,9 @@ async def test_stream_control_keeps_original_failure_before_or_after_first_event
             await send(message)
         await app(scope, receive, observe_send)
 
+    root = RootFailureProbe(observed_app)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=observed_app, raise_app_exceptions=True),
+        transport=httpx.ASGITransport(app=root, raise_app_exceptions=True),
         base_url="http://native-host.invalid", trust_env=False,
     ) as client:
         if registered:
@@ -680,7 +691,9 @@ async def test_stream_control_keeps_original_failure_before_or_after_first_event
             assert _retains_original(captured.value, original)
             assert not any(b"event: error" in body for body in bodies)
         else:
-            response = await _invoke(client, binding, streaming=True)
+            with root.expect(type(original)):
+                response = await _invoke(client, binding, streaming=True)
+            assert root.original is original
             if phase == "after":
                 assert response.status_code == 200
                 assert b"event: error" in response.content
@@ -716,8 +729,9 @@ async def test_typed_payload_failure_reaches_the_owning_host_boundary(
         routes=[*create_jsonrpc_routes(handler, "/rpc"), *create_rest_routes(handler)],
         exception_handlers={HTTPException: host_http_boundary},
     )
+    root = RootFailureProbe(app)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app, raise_app_exceptions=True),
+        transport=httpx.ASGITransport(app=root, raise_app_exceptions=True),
         base_url="http://native-host.invalid", trust_env=False,
     ) as client:
         if registered:
@@ -737,7 +751,10 @@ async def test_typed_payload_failure_reaches_the_owning_host_boundary(
                 traceback = traceback.tb_next
             assert ("on_get_task" if phase == "unary" else "on_subscribe_to_task") in frames
         else:
-            response = await _invoke(client, binding, streaming=phase != "unary")
+            with root.expect(RuntimeError) if phase != "unary" else nullcontext():
+                response = await _invoke(client, binding, streaming=phase != "unary")
+            if phase != "unary":
+                assert root.original.__cause__ is original
             if phase == "after":
                 assert response.status_code == 200
                 assert b"event: error" in response.content
@@ -776,8 +793,9 @@ async def test_original_decoder_control_precedes_typed_protocol_replacement(
     app = Starlette(routes=[
         *create_jsonrpc_routes(handler, "/rpc"), *create_rest_routes(handler),
     ])
+    root = RootFailureProbe(app)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app, raise_app_exceptions=True),
+        transport=httpx.ASGITransport(app=root, raise_app_exceptions=True),
         base_url="http://native-host.invalid", trust_env=False,
     ) as client:
         if registered:
@@ -785,7 +803,10 @@ async def test_original_decoder_control_precedes_typed_protocol_replacement(
                 await _invoke(client, binding, streaming=phase != "unary")
             assert _retains_original(captured.value, original)
         else:
-            response = await _invoke(client, binding, streaming=phase != "unary")
+            with root.expect(type(original)) if phase != "unary" else nullcontext():
+                response = await _invoke(client, binding, streaming=phase != "unary")
+            if phase != "unary":
+                assert root.original is original
             if phase == "after":
                 assert response.status_code == 200
                 assert b"event: error" in response.content

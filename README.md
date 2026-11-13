@@ -126,6 +126,11 @@ dispatch and ASGI response execution, including prefetch. Their standalone
 policy admits one AnyIO producer and joins its actual Task before successful
 request exit; Stop or caller cancellation is not a retirement receipt. A known
 original close failure cannot be normalized into an ordinary response.
+Every original terminal failure remains fatal at root exit, even when demand
+read it or a transport projected an error payload. Opaque iteration can include
+the generator's own finalizers; a later successful `aclose()` cannot certify
+that an earlier iteration failure was body-only. Protocol delivery and the
+root's lifetime outcome are distinct facts.
 FastAPI registration preserves the actual ASGI wrapper and tenant/0.3 routes
 use the same source mechanism. Compatibility gRPC streams use the coroutine
 writer API, keeping their root around all writes rather than across yields.

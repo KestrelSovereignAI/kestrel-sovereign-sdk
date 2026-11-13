@@ -33,6 +33,8 @@ from kestrel_sdk.native_a2a.utils.source_lifetime import standalone_source_lifet
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from tests.native_a2a.source_witness import RootFailureProbe
+
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +117,13 @@ def test_app(mock_handler, agent_card):
 
 
 @pytest.fixture
-def client(test_app):
-    return TestClient(test_app)
+def root_probe(test_app: Starlette) -> RootFailureProbe:
+    return RootFailureProbe(test_app)
+
+
+@pytest.fixture
+def client(root_probe: RootFailureProbe):
+    return TestClient(root_probe)
 
 
 def test_send_message_v03_compat(
@@ -263,12 +270,14 @@ def test_cancel_task_v03_compat_maps_a2a_error_codes(
 
 
 def test_message_stream_v03_compat_maps_a2a_error_code(
-    client: TestClient, mock_handler: AsyncMock
+    client: TestClient, mock_handler: AsyncMock, root_probe: RootFailureProbe
 ) -> None:
+    original = TaskNotFoundError()
+
     async def failing_stream(
         *args: object, **kwargs: object
     ) -> AsyncIterator[MagicMock]:
-        raise TaskNotFoundError
+        raise original
         yield MagicMock()
 
     mock_handler.on_message_send_stream = failing_stream
@@ -285,7 +294,9 @@ def test_message_stream_v03_compat_maps_a2a_error_code(
         },
     }
 
-    response = client.post('/', json=request_payload)
+    with root_probe.expect(TaskNotFoundError):
+        response = client.post('/', json=request_payload)
+    assert root_probe.original is original
     assert response.status_code == 200
     events = [
         json.loads(line.removeprefix('data:'))

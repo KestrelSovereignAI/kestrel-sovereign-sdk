@@ -23,13 +23,12 @@ from kestrel_sdk.native_a2a.types.a2a_pb2 import (
 )
 from kestrel_sdk.native_a2a.utils.errors import TaskNotFoundError
 from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
-from fastapi import FastAPI
 from google.protobuf import json_format
 from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.requests import Request
 
-from tests.native_a2a.source_witness import make_request, source_request
+from tests.native_a2a.source_witness import RootFailureProbe, make_request, source_request
 
 
 logger = logging.getLogger(__name__)
@@ -97,9 +96,14 @@ async def app(
 
 
 @pytest.fixture
-async def client(app: FastAPI) -> AsyncClient:
+async def root_probe(app: Starlette) -> RootFailureProbe:
+    return RootFailureProbe(app)
+
+
+@pytest.fixture
+async def client(root_probe: RootFailureProbe) -> AsyncClient:
     return AsyncClient(
-        transport=ASGITransport(app=app), base_url='http://testapp'
+        transport=ASGITransport(app=root_probe), base_url='http://testapp'
     )
 
 
@@ -299,13 +303,16 @@ async def test_v03_streaming_does_not_ascii_escape_non_ascii(
 
 @pytest.mark.anyio
 async def test_v03_message_stream_malformed_json_returns_400(
-    client: AsyncClient, request_handler: MagicMock
+    client: AsyncClient,
+    request_handler: MagicMock,
+    root_probe: RootFailureProbe,
 ) -> None:
-    response = await client.post(
-        '/v1/message:stream',
-        content=b'{bad',
-        headers={'Content-Type': 'application/json'},
-    )
+    with root_probe.expect(json_format.ParseError):
+        response = await client.post(
+            '/v1/message:stream',
+            content=b'{bad',
+            headers={'Content-Type': 'application/json'},
+        )
 
     assert response.status_code == 400
     assert response.headers['content-type'].startswith('application/json')
@@ -315,15 +322,21 @@ async def test_v03_message_stream_malformed_json_returns_400(
 
 @pytest.mark.anyio
 async def test_v03_subscribe_unknown_task_returns_404(
-    client: AsyncClient, request_handler: MagicMock
+    client: AsyncClient,
+    request_handler: MagicMock,
+    root_probe: RootFailureProbe,
 ) -> None:
+    original = TaskNotFoundError()
+
     async def not_found(*args: object, **kwargs: object) -> AsyncIterator[None]:
-        raise TaskNotFoundError
+        raise original
         yield
 
     request_handler.on_subscribe_to_task.side_effect = not_found
 
-    response = await client.post('/v1/tasks/unknown:subscribe')
+    with root_probe.expect(TaskNotFoundError):
+        response = await client.post('/v1/tasks/unknown:subscribe')
+    assert root_probe.original is original
 
     assert response.status_code == 404
     assert response.json()['error']['status'] == 'NOT_FOUND'

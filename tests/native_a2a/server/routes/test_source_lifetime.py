@@ -16,7 +16,9 @@ import anyio
 import httpx
 import pytest
 
+from kestrel_sdk.native_a2a.server.context import ServerCallContext
 from kestrel_sdk.native_a2a.server.events import Event
+from kestrel_sdk.native_a2a.server.request_handlers.request_handler import RequestHandler
 from kestrel_sdk.native_a2a.server.routes import create_jsonrpc_routes, create_rest_routes
 from kestrel_sdk.native_a2a.server.routes.common import create_event_source_response
 from kestrel_sdk.native_a2a.server.routes.fastapi_routes import add_a2a_routes_to_fastapi
@@ -27,7 +29,12 @@ from kestrel_sdk.native_a2a.server.routes.source_lifetime import (
     source_request_response,
     source_root_for,
 )
-from kestrel_sdk.native_a2a.types.a2a_pb2 import Message as AgentMessage, Part, Role
+from kestrel_sdk.native_a2a.types.a2a_pb2 import (
+    Message as AgentMessage,
+    Part,
+    Role,
+    SendMessageRequest,
+)
 from kestrel_sdk.native_a2a.utils.source_lifetime import (
     SourceDemand,
     SourceFactory,
@@ -40,10 +47,11 @@ from starlette.applications import Starlette
 from starlette.datastructures import FormData, UploadFile
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import Message, Scope
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from tests.native_a2a.source_witness import (
     DescriptorSource,
+    RootFailureProbe,
     StreamRequestHandler,
     assert_closed,
     original_owner,
@@ -70,6 +78,115 @@ def _scope() -> Scope:
 async def _receive() -> Message:
     await anyio.Event().wait()
     raise AssertionError('A completed response must retire its receive waiter')
+
+
+@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
+def test_root_probe_requires_an_actual_matching_original_failure(
+    backend: str,
+) -> None:
+    async def run() -> None:
+        original = LookupError('actual original ASGI failure')
+        sent: list[Message] = []
+
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
+            await Response('already sent')(scope, receive, send)
+            raise original
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        probe = RootFailureProbe(app)
+        # No explicit expectation may turn a failed root into a normal return.
+        with pytest.raises(LookupError) as uncaught:
+            await probe(_scope(), _receive, send)
+        assert uncaught.value is original
+        assert probe.error is None
+        with probe.expect(LookupError):
+            await probe(_scope(), _receive, send)
+        assert probe.error is probe.original is original
+        assert sent[-1]['body'] == b'already sent'
+        with pytest.raises(LookupError) as wrong, probe.expect(OSError):
+            await probe(_scope(), _receive, send)
+        assert wrong.value is original
+
+        normal = RootFailureProbe(
+            Response('a successful root is not expected failure')
+        )
+        with (
+            pytest.raises(AssertionError, match='original ASGI root must fail'),
+            normal.expect(LookupError),
+        ):
+            await normal(_scope(), _receive, send)
+
+    anyio.run(run, backend=backend)
+
+
+def _stream_application(
+    handler: RequestHandler,
+    frontend: str,
+    binding: str,
+    *,
+    subscribe: bool = False,
+) -> tuple[ASGIApp, str, dict, dict[str, str]]:
+    compat = binding.endswith('03')
+    headers = {'a2a-version': '0.3' if compat else '1.0'}
+    if binding.startswith('rest'):
+        routes = create_rest_routes(handler, enable_v0_3_compat=compat)
+        route_groups = {'rest_routes': routes}
+        prefix = (
+            '/v1'
+            if compat
+            else '/tenant-one'
+            if binding == 'rest-tenant'
+            else ''
+        )
+        path = prefix + (
+            '/tasks/task-one:subscribe' if subscribe else '/message:stream'
+        )
+        body = (
+            {}
+            if subscribe
+            else {
+                'message': {
+                    'messageId': 'input',
+                    'role': 'ROLE_USER',
+                    'parts': [{'text': 'hi'}],
+                }
+            }
+        )
+    else:
+        routes = create_jsonrpc_routes(handler, '/', enable_v0_3_compat=compat)
+        route_groups = {'jsonrpc_routes': routes}
+        path = '/'
+        method = (
+            ('tasks/resubscribe' if compat else 'SubscribeToTask')
+            if subscribe
+            else ('message/stream' if compat else 'SendStreamingMessage')
+        )
+        params = (
+            {'id': 'task-one'}
+            if subscribe
+            else {
+                'message': {
+                    'messageId': 'input',
+                    'role': 'user' if compat else 'ROLE_USER',
+                    'parts': [{'text': 'hi'}],
+                }
+            }
+        )
+        body = {
+            'jsonrpc': '2.0',
+            'id': 'one',
+            'method': method,
+            'params': params,
+        }
+    if frontend == 'fastapi':
+        app = FastAPI()
+        add_a2a_routes_to_fastapi(app, **route_groups)
+        # Internal policy injection must not become an HTTP query parameter.
+        assert 'source_root' not in str(app.openapi())
+        return app, path, body, headers
+    return Starlette(routes=routes), path, body, headers
 
 
 @pytest.mark.parametrize('backend', ['asyncio', 'trio'])
@@ -247,67 +364,9 @@ def test_real_dispatchers_preserve_original_source_through_all_frontends(
             return source
 
         handler = StreamRequestHandler(acquire)
-        compat = binding.endswith('03')
-        headers = {'a2a-version': '0.3' if compat else '1.0'}
-        if binding.startswith('rest'):
-            routes = create_rest_routes(handler, enable_v0_3_compat=compat)
-            route_groups = {'rest_routes': routes}
-            prefix = (
-                '/v1'
-                if compat
-                else '/tenant-one'
-                if binding == 'rest-tenant'
-                else ''
-            )
-            path = prefix + (
-                '/tasks/task-one:subscribe' if subscribe else '/message:stream'
-            )
-            body = (
-                {}
-                if subscribe
-                else {
-                    'message': {
-                        'messageId': 'input',
-                        'role': 'ROLE_USER',
-                        'parts': [{'text': 'hi'}],
-                    }
-                }
-            )
-        else:
-            routes = create_jsonrpc_routes(
-                handler, '/', enable_v0_3_compat=compat
-            )
-            route_groups = {'jsonrpc_routes': routes}
-            path = '/'
-            method = (
-                ('tasks/resubscribe' if compat else 'SubscribeToTask')
-                if subscribe
-                else ('message/stream' if compat else 'SendStreamingMessage')
-            )
-            params = (
-                {'id': 'task-one'}
-                if subscribe
-                else {
-                    'message': {
-                        'messageId': 'input',
-                        'role': 'user' if compat else 'ROLE_USER',
-                        'parts': [{'text': 'hi'}],
-                    }
-                }
-            )
-            body = {
-                'jsonrpc': '2.0',
-                'id': 'one',
-                'method': method,
-                'params': params,
-            }
-        if frontend == 'fastapi':
-            app = FastAPI()
-            add_a2a_routes_to_fastapi(app, **route_groups)
-            # Internal policy injection must not become an HTTP query parameter.
-            assert 'source_root' not in str(app.openapi())
-        else:
-            app = Starlette(routes=routes)
+        app, path, body, headers = _stream_application(
+            handler, frontend, binding, subscribe=subscribe
+        )
         with anyio.fail_after(5):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -318,6 +377,62 @@ def test_real_dispatchers_preserve_original_source_through_all_frontends(
         assert response.headers['content-type'].startswith('text/event-stream')
         assert 'first' in response.text and 'second' in response.text
         assert len(sources) == 1
+        sources[0].assert_original_retired()
+
+    anyio.run(run, backend=backend)
+
+
+@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
+@pytest.mark.parametrize('frontend', ['starlette', 'fastapi'])
+@pytest.mark.parametrize(
+    'binding', ['rest', 'rest-tenant', 'rest03', 'jsonrpc', 'jsonrpc03']
+)
+@pytest.mark.parametrize('empty', [False, True])
+def test_natural_generator_finally_failure_cannot_be_a_successful_http_root(
+    tmp_path: Path, backend: str, frontend: str, binding: str, empty: bool
+) -> None:
+    async def run() -> None:
+        sources: list[DescriptorSource[Event]] = []
+
+        class Handler(StreamRequestHandler):
+            async def on_message_send_stream(
+                self,
+                params: SendMessageRequest,
+                context: ServerCallContext | None = None,
+            ) -> AsyncIterator[Event]:
+                source = DescriptorSource[Event](
+                    tmp_path / 'generator', backend, (), fail_close=True
+                )
+                sources.append(source)
+                try:
+                    if not empty:
+                        yield AgentMessage(
+                            message_id='original', role=Role.ROLE_AGENT
+                        )
+                finally:
+                    await source.aclose()
+
+        def unused() -> DescriptorSource[Event]:
+            pytest.fail(
+                'The actual handler owns acquisition inside its generator'
+            )
+
+        app, path, body, headers = _stream_application(
+            Handler(unused), frontend, binding
+        )
+        with anyio.fail_after(5), pytest.raises(BaseException) as root:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url='http://testserver',
+            ) as client:
+                await client.post(path, json=body, headers=headers)
+        assert len(sources) == 1
+        error = root.value
+        while isinstance(error, BaseExceptionGroup):
+            assert len(error.exceptions) == 1
+            error = error.exceptions[0]
+        assert error is sources[0].close_error
+        assert error.errno == errno.EBADF
         sources[0].assert_original_retired()
 
     anyio.run(run, backend=backend)

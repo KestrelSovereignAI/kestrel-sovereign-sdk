@@ -9,8 +9,8 @@ import errno
 import inspect
 import os
 
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -26,10 +26,60 @@ from kestrel_sdk.native_a2a.utils.errors import UnsupportedOperationError
 from kestrel_sdk.native_a2a.utils.source_lifetime import standalone_source_lifetime
 from starlette.datastructures import Headers, QueryParams
 from starlette.requests import Request
-from starlette.types import Message
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
 T = TypeVar('T')
+
+
+class RootFailureProbe:
+    """Observe an expected failed real root separately from HTTPX's buffer.
+
+    HTTPX otherwise discards all buffered frames when an in-process ASGI app
+    raises. This test-only host catches ONLY an explicitly expected original
+    failure, and the expectation itself fails if the real root returns normally.
+    It is not a runtime adapter, source owner or successful-retirement receipt.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+        self.error: BaseException | None = None
+        self.original: BaseException | None = None
+        self._expected: type[BaseException] | None = None
+
+    @contextmanager
+    def expect(
+        self, error_type: type[BaseException]
+    ) -> Iterator[RootFailureProbe]:
+        assert self._expected is None
+        self.error = self.original = None
+        self._expected = error_type
+        try:
+            yield self
+            assert self.error is not None, 'The original ASGI root must fail'
+        finally:
+            self._expected = None
+
+    async def __call__(
+        self, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        try:
+            await self.app(scope, receive, send)
+        except BaseException as error:
+            if self._expected is None:
+                raise
+            original = error
+            while (
+                isinstance(original, BaseExceptionGroup)
+                and len(original.exceptions) == 1
+            ):
+                original = original.exceptions[0]
+            if type(original) is not self._expected:
+                raise
+            assert self.error is None, (
+                'Expected exactly one original failed root'
+            )
+            self.error, self.original = error, original
 
 
 def make_request(

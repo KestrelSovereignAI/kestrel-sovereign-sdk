@@ -3,7 +3,7 @@
   "protocol": "1.0.1",
   "base_release": "1.3.0-21-g2cc1dd5",
   "base_commit": "2cc1dd5020874376ed293ef87089e5df9d205571",
-  "reviewed_source_tree": "6bf3946a8604b82c04347d95c3e6085842667dc4",
+  "reviewed_source_tree": "3a6dfceb82f96698cee9d65e00e02b82f4bb4775",
   "namespace": "kestrel_sdk.native_a2a",
   "modifications": "Reviewed signing, HTTP authorization and version negotiation, client ownership, discovery/response decoding, native-only client selection, HTTP error media types, original host-control errors, shared original-source handoff/retirement body, explicit complete HTTP/ASGI request roots and compatibility gRPC coroutine writers in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
   "files": {
@@ -713,8 +713,8 @@
       "namespace_modified": true
     },
     "utils/source_lifetime.py": {
-      "upstream_sha256": "f321acebf6fa0660cc3dd62ed638879fd1dc212418183c796200017f0953288e",
-      "vendored_sha256": "7e204ec5e9fd9ab9b6f7e48ecaeba30f378e0845d165b695bdf957fab9869e46",
+      "upstream_sha256": "b36a33508f76fe31874e7a028c2e68df817833dd2439bacf3ec3858caa2a3945",
+      "vendored_sha256": "06f9e43f7fa28b0fede91738b7713cfedbae98e601fe31b68ac284f4129129c1",
       "namespace_modified": true
     },
     "utils/source_ownership.py": {
@@ -741,7 +741,7 @@
   "provenance_sha256": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
     "UPSTREAM-PYPROJECT.toml": "b375174ec5b36ba37d8b68b30f836587389e880813b58a675b3d8c901f3adfe9",
-    "UPSTREAM.patch": "e1f38ba0ba19bbe85fb680dc7583890f9b5c791f2d9c95011e75d30c9aa862bd",
+    "UPSTREAM.patch": "7109f13803fdd08b0ae042113af44ecd17a52c45ba2a391d2528ed484a6cf3d1",
     "NOTICE": "4924afe3dab57b45b0ae6ed34529d8231904adf8d7eeb35be6b12546be7cd8c0"
   }
 }
