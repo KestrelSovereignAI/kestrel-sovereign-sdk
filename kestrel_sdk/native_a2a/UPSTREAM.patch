@@ -2271,10 +2271,10 @@ index 0000000..e3983e3
 +    )
 diff --git a/src/a2a/utils/stream_refusal.py b/src/a2a/utils/stream_refusal.py
 new file mode 100644
-index 0000000..3668652
+index 0000000..411fdd1
 --- /dev/null
 +++ b/src/a2a/utils/stream_refusal.py
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,128 @@
 +"""Explicit logical stream outcomes, never source-retirement acknowledgements."""
 +
 +from __future__ import annotations
@@ -2291,6 +2291,8 @@ index 0000000..3668652
 +if TYPE_CHECKING:
 +    from collections.abc import Callable
 +
++    from starlette.exceptions import HTTPException
++
 +    from a2a.utils.source_lifetime import SourceDemand
 +
 +
@@ -2300,7 +2302,7 @@ index 0000000..3668652
 +
 +@dataclass(frozen=True, slots=True)
 +class StreamRefusal:
-+    """A terminal business-protocol result, not a failed source or close receipt.
++    """A terminal protocol/HTTP refusal, not a failed source or close receipt.
 +
 +    A handler emits this at its logical decision branch after its own resource
 +    lifetimes have settled. It must not convert an arbitrary body/finalizer
@@ -2308,12 +2310,24 @@ index 0000000..3668652
 +    original retirement before projecting the enclosed ordinary protocol error.
 +    """
 +
-+    error: A2AError
++    error: A2AError | HTTPException
 +
 +    def __post_init__(self) -> None:
-+        """Reject values that are not actual A2A protocol errors."""
-+        if not issubclass(type(self.error), A2AError):
-+            raise TypeError('A stream refusal requires an A2A protocol error')
++        """Accept explicit protocol or HTTP decisions, never arbitrary failures."""
++        if issubclass(type(self.error), A2AError):
++            return
++        # HTTP is optional. Ordinary protocol values must not import a server
++        # framework; an explicit HTTP refusal requires its actual installed type.
++        try:
++            from starlette.exceptions import HTTPException  # noqa: PLC0415
++        except ImportError as error:
++            raise TypeError(
++                'An HTTP stream refusal requires the HTTP server extra'
++            ) from error
++        if not issubclass(type(self.error), HTTPException):
++            raise TypeError(
++                'A stream refusal requires an A2A protocol or HTTP error'
++            )
 +
 +
 +def map_stream_item(
@@ -2327,7 +2341,7 @@ index 0000000..3668652
 +
 +async def drain_stream_refusal(
 +    stream: SourceDemand[object], refusal: StreamRefusal
-+) -> A2AError:
++) -> A2AError | HTTPException:
 +    """Return protocol data only after actual terminal-source EOF/join.
 +
 +    The lifetime policy owns the original source and its close. This consumer
@@ -3881,10 +3895,10 @@ index a0450b2..0b8d1a0 100644
  
 diff --git a/tests/server/routes/test_source_lifetime.py b/tests/server/routes/test_source_lifetime.py
 new file mode 100644
-index 0000000..5f2d9d0
+index 0000000..1c9a857
 --- /dev/null
 +++ b/tests/server/routes/test_source_lifetime.py
-@@ -0,0 +1,783 @@
+@@ -0,0 +1,812 @@
 +"""Real response execution, original OS failures and request-root retirement."""
 +
 +from __future__ import annotations
@@ -4080,6 +4094,7 @@ index 0000000..5f2d9d0
 +@pytest.mark.parametrize('binding', ['rest', 'rest-tenant', 'jsonrpc'])
 +@pytest.mark.parametrize('subscribe', [False, True])
 +@pytest.mark.parametrize('fail_close', [False, True])
++@pytest.mark.parametrize('refusal_status', [None, 401, 403])
 +def test_terminal_refusal_is_normalized_only_after_real_source_retirement(
 +    tmp_path: Path,
 +    backend: str,
@@ -4087,6 +4102,7 @@ index 0000000..5f2d9d0
 +    binding: str,
 +    subscribe: bool,
 +    fail_close: bool,
++    refusal_status: int | None,
 +) -> None:
 +    from a2a.server.request_handlers.response_helpers import (
 +        build_error_response,
@@ -4096,7 +4112,21 @@ index 0000000..5f2d9d0
 +    from a2a.utils.stream_refusal import StreamRefusal
 +
 +    async def run() -> None:
-+        error = UnsupportedOperationError('Expected terminal refusal')
++        from starlette.exceptions import HTTPException
++
++        error = (
++            UnsupportedOperationError('Expected terminal refusal')
++            if refusal_status is None
++            else HTTPException(
++                refusal_status,
++                detail='Expected terminal refusal',
++                headers={
++                    'WWW-Authenticate': 'Kestrel-A2A-Sender-Proof realm="a2a"'
++                }
++                if refusal_status == 401
++                else None,
++            )
++        )
 +        refusal = StreamRefusal(error)
 +        sources: list[DescriptorSource] = []
 +
@@ -4143,6 +4173,19 @@ index 0000000..5f2d9d0
 +            else:
 +                response = await invoke()
 +                assert probe.error is None
++                if refusal_status is not None:
++                    assert response.status_code == refusal_status
++                    if refusal_status == 401:
++                        assert response.headers['www-authenticate'] == (
++                            'Kestrel-A2A-Sender-Proof realm="a2a"'
++                        )
++                    if frontend == 'fastapi':
++                        assert response.json() == {
++                            'detail': 'Expected terminal refusal'
++                        }
++                    else:
++                        assert response.text == 'Expected terminal refusal'
++                    return
 +                assert response.status_code == (
 +                    200 if binding == 'jsonrpc' else 400
 +                )
@@ -6537,10 +6580,10 @@ index 0000000..484ca0a
 +    anyio.run(run, backend=backend)
 diff --git a/tests/utils/test_stream_refusal.py b/tests/utils/test_stream_refusal.py
 new file mode 100644
-index 0000000..d81303a
+index 0000000..ce4d543
 --- /dev/null
 +++ b/tests/utils/test_stream_refusal.py
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,222 @@
 +"""A logical refusal is data; only original-source EOF/join permits projection."""
 +
 +from __future__ import annotations
@@ -6631,6 +6674,22 @@ index 0000000..d81303a
 +    assert error.__cause__ is None
 +    with pytest.raises(TypeError):
 +        StreamRefusal(cast(A2AError, object()))
++
++
++def test_http_refusal_retains_the_actual_status_and_challenge() -> None:
++    from a2a.utils.stream_refusal import StreamRefusal
++    from starlette.exceptions import HTTPException
++
++    error = HTTPException(
++        401, detail='proof refused', headers={'WWW-Authenticate': 'original'}
++    )
++    refusal = StreamRefusal(error)
++    assert refusal.error is error
++    assert error.status_code == 401
++    assert error.headers == {'WWW-Authenticate': 'original'}
++    assert error.__cause__ is None
++    with pytest.raises(TypeError):
++        StreamRefusal(cast(A2AError, OSError('not a logical refusal')))
 +
 +
 +@pytest.mark.parametrize('backend', ['asyncio', 'trio'])

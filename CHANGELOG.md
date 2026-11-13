@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 0.53.1
+
+### Fixed
+
+- Explicit terminal `StreamRefusal` values can retain an actual optional HTTP
+  authentication/authorization exception, including its original status and
+  challenge. Projection still requires real original source EOF/retirement;
+  late body or closer failures remain fatal. Ordinary A2A protocol values do
+  not eagerly import the optional HTTP framework. Arbitrary failures are not
+  accepted as refusal values.
+
 ## 0.53.0
 
 ### Added

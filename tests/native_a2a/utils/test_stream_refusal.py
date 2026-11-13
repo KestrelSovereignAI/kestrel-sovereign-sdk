@@ -91,6 +91,22 @@ def test_refusal_is_an_explicit_value_and_does_not_map_or_format_its_error() -> 
         StreamRefusal(cast(A2AError, object()))
 
 
+def test_http_refusal_retains_the_actual_status_and_challenge() -> None:
+    from kestrel_sdk.native_a2a.utils.stream_refusal import StreamRefusal
+    from starlette.exceptions import HTTPException
+
+    error = HTTPException(
+        401, detail='proof refused', headers={'WWW-Authenticate': 'original'}
+    )
+    refusal = StreamRefusal(error)
+    assert refusal.error is error
+    assert error.status_code == 401
+    assert error.headers == {'WWW-Authenticate': 'original'}
+    assert error.__cause__ is None
+    with pytest.raises(TypeError):
+        StreamRefusal(cast(A2AError, OSError('not a logical refusal')))
+
+
 @pytest.mark.parametrize('backend', ['asyncio', 'trio'])
 @pytest.mark.parametrize('fail_close', [False, True])
 def test_refusal_projection_waits_for_original_retirement_and_preserves_late_failure(
