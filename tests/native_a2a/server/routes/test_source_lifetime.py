@@ -190,6 +190,54 @@ def _stream_application(
 
 
 @pytest.mark.parametrize('backend', ['asyncio', 'trio'])
+def test_explicit_source_request_preserves_original_send_capability(
+    backend: str,
+) -> None:
+    async def run() -> None:
+        sent: list[Message] = []
+        scope = _scope()
+        scope['extensions'] = {'http.response.push': {}}
+        scope['headers'] = [(b'accept', b'text/css')]
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        original = Request(scope, receive=_receive, send=send)
+        async with SourceRequestRoot(standalone_source_lifetime) as root:
+            wrapped = SourceRequest(original, root)
+            await wrapped.send_push_promise('/original.css')
+        assert len(sent) == 1
+        assert sent[0]['type'] == 'http.response.push'
+        assert sent[0]['path'] == '/original.css'
+        assert (b'accept', b'text/css') in sent[0]['headers']
+
+    anyio.run(run, backend=backend)
+
+
+@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
+def test_explicit_source_request_preserves_original_cached_disconnect(
+    backend: str,
+) -> None:
+    async def run() -> None:
+        received = False
+
+        async def receive() -> Message:
+            nonlocal received
+            assert not received, (
+                'Cached disconnect must not consume the transport again'
+            )
+            received = True
+            return {'type': 'http.disconnect'}
+
+        original = Request(_scope(), receive=receive)
+        assert await original.is_disconnected()
+        async with SourceRequestRoot(standalone_source_lifetime) as root:
+            assert await SourceRequest(original, root).is_disconnected()
+
+    anyio.run(run, backend=backend)
+
+
+@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
 def test_explicit_source_request_preserves_the_original_cached_body(
     backend: str,
 ) -> None:
