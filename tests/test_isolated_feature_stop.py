@@ -3302,6 +3302,81 @@ async def test_spawn_deadline_fences_replacement_and_reaps_late_process(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_late_real_spawn_retries_after_inflight_incomplete_retirement(monkeypatch):
+    """Actual spawn completion must outlive an older incomplete observation."""
+    monkeypatch.setattr(client_module, "_SUBPROCESS_STOP_TIMEOUT", 0.03)
+    real_spawn = asyncio.create_subprocess_exec
+    original_startup = SubprocessIsolatedFeatureClient._retire_startup_tasks
+    original_completion = SubprocessIsolatedFeatureClient._complete_late_spawn_retirement
+    spawned, release_spawn = asyncio.Event(), asyncio.Event()
+    sampled, release_retirement = asyncio.Event(), asyncio.Event()
+    completion_entered = asyncio.Event()
+    processes, completions = [], []
+    wrapper = SubprocessIsolatedFeatureClient(command=["unused"], ready_timeout=0.03)
+
+    async def late_api(*args, **kwargs):
+        process = await real_spawn(
+            sys.executable, "-I", "-B", "-c", "import time; time.sleep(30)",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        processes.append(process)
+        spawned.set()
+        while not release_spawn.is_set():
+            try:
+                await release_spawn.wait()
+            except asyncio.CancelledError:
+                asyncio.current_task().uncancel()
+        return process
+
+    async def pause_after_snapshot(self, retirement):
+        if (self is wrapper and retirement.spawn_task is not None
+                and not retirement.spawn_task.done() and not sampled.is_set()):
+            # The actual preceding spawn observer already returned False.
+            # Pause only scheduling, never fabricate its completion/result.
+            sampled.set()
+            await release_retirement.wait()
+        return await original_startup(self, retirement)
+
+    async def observe_completion(self, retirement, spawn_task):
+        if self is wrapper:
+            completions.append(asyncio.current_task())
+            completion_entered.set()
+        return await original_completion(self, retirement, spawn_task)
+
+    monkeypatch.setattr(client_module.asyncio, "create_subprocess_exec", late_api)
+    monkeypatch.setattr(SubprocessIsolatedFeatureClient, "_retire_startup_tasks", pause_after_snapshot)
+    monkeypatch.setattr(SubprocessIsolatedFeatureClient, "_complete_late_spawn_retirement", observe_completion)
+    start = asyncio.create_task(wrapper.start())
+    try:
+        async with asyncio.timeout(5):
+            await spawned.wait()
+            await sampled.wait()
+            release_spawn.set()
+            await completion_entered.wait()
+            release_retirement.set()
+            with pytest.raises(TimeoutError):
+                await start
+            assert len(completions) == 1
+            await asyncio.shield(completions[0])
+        assert wrapper._retirements == []
+        assert len(processes) == 1 and processes[0].returncode is not None
+        assert completions[0].get_coro().cr_frame is None
+    finally:
+        release_spawn.set()
+        release_retirement.set()
+        if not start.done():
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(start, 5)
+        async with asyncio.timeout(5):
+            await wrapper.stop()
+            for process in processes:
+                if process.returncode is None:
+                    process.terminate()
+                await process.wait()
+
+
+@pytest.mark.asyncio
 async def test_stop_accepts_legacy_close_completion_returning_none():
     """The public close()->None contract is a successful retirement outcome."""
 

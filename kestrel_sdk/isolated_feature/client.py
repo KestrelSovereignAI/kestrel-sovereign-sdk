@@ -2379,6 +2379,19 @@ class SubprocessIsolatedFeatureClient:
                 or retirement.spawn_task is not spawn_task
             ):
                 return
+            previous = retirement.task
+        if previous is not None and not previous.done():
+            # Its spawn snapshot can predate this completion notification.
+            # Join that exact attempt without cancelling it, then re-evaluate
+            # the still-retained original spawn. Reusing its False result
+            # would lose the only autonomous late-completion wakeup.
+            await asyncio.wait((previous,))
+        async with self._state_lock:
+            if (
+                retirement not in self._retirements
+                or retirement.spawn_task is not spawn_task
+            ):
+                return
             task = retirement.task
             if task is None or task.done():
                 task = asyncio.create_task(self._retire_child(retirement))
