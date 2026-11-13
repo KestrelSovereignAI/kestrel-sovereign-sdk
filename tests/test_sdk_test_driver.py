@@ -10,6 +10,119 @@ import sys
 import pytest
 
 
+def _run_diagnostic_child(tmp_path: Path, source: str, *driver_arguments: str):
+    """Exercise the actual driver/native watchdog in a minimal real pytest child."""
+    driver = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "run_sdk_tests.py"
+    invocation = tmp_path / "test_diagnostic_invocation.py"
+    invocation.write_text(source)
+    environment = dict(os.environ)
+    environment.pop("PYTEST_ADDOPTS", None)
+    environment.pop("PYTEST_CURRENT_TEST", None)
+    # This child tests the driver, not arbitrary installed third-party plugins.
+    environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    return subprocess.run(
+        [sys.executable, "-B", "-W", "error::ResourceWarning", str(driver),
+         *driver_arguments, str(invocation), "-q", "-s", "-o", "addopts=",
+         "-p", "no:cacheprovider", f"--rootdir={tmp_path}", f"--confcutdir={tmp_path}"],
+        cwd=tmp_path, env=environment, capture_output=True, text=True,
+        timeout=30, check=False,
+    )
+
+
+@pytest.mark.parametrize("test_fails", [False, True])
+def test_progress_longer_than_diagnostic_interval_does_not_dump_healthy_frames(
+    tmp_path: Path, test_fails: bool,
+) -> None:
+    finalized = tmp_path / "healthy-original-finalized"
+    original = _run_diagnostic_child(tmp_path, f'''
+import atexit
+import os
+from pathlib import Path
+import sys
+import time
+import pytest
+
+atexit.register(lambda: Path({str(finalized)!r}).write_text("original exited"))
+
+@pytest.mark.parametrize("case", range(8))
+def test_healthy_original_progress(case):
+    descriptor = vars(sys.modules["__main__"])["_stderr"]
+    if case == 0:
+        os.write(descriptor, b"HEALTHY_BEGIN\\n")
+    time.sleep(0.15)
+    if case == 7:
+        os.write(descriptor, b"HEALTHY_END\\n")
+        assert not {test_fails!r}
+''', "--diagnostic-interval", "0.5")
+    assert original.returncode == int(test_fails), (original.stdout, original.stderr)
+    assert finalized.read_text() == "original exited"
+    healthy = original.stderr.split("HEALTHY_BEGIN\n", 1)[1].split("HEALTHY_END\n", 1)[0]
+    assert "Timeout (" not in healthy, "The watchdog dumped frames despite actual test progress"
+    assert f"SDK pytest.main returned exit code {int(test_fails)}" in original.stdout
+
+
+@pytest.mark.parametrize("phase", ["body", "teardown", "thread-join", "shutdown"])
+def test_inactivity_diagnostics_survive_test_teardown_and_original_shutdown(
+    tmp_path: Path, phase: str,
+) -> None:
+    finalized = tmp_path / "stalled-original-finalized"
+    original = _run_diagnostic_child(tmp_path, f'''
+import atexit
+import os
+from pathlib import Path
+import sys
+import threading
+import time
+import pytest
+
+started = threading.Event()
+
+def stall_original_phase():
+    descriptor = vars(sys.modules["__main__"])["_stderr"]
+    os.write(descriptor, b"ORIGINAL_STALL_BEGIN\\n")
+    started.set()
+    time.sleep(1.1)
+    os.write(descriptor, b"ORIGINAL_STALL_END\\n")
+
+def finalize_original():
+    if {phase!r} == "shutdown":
+        stall_original_phase()
+    Path({str(finalized)!r}).write_text("original finalized")
+
+atexit.register(finalize_original)
+
+@pytest.fixture
+def original_fixture():
+    yield
+    if {phase!r} == "teardown":
+        stall_original_phase()
+
+def test_original(original_fixture):
+    if {phase!r} == "body":
+        stall_original_phase()
+    elif {phase!r} == "thread-join":
+        threading.Thread(target=stall_original_phase).start()
+        assert started.wait(5)
+''', "--diagnostic-interval", "0.5")
+    assert original.returncode == 0, (original.stdout, original.stderr)
+    assert finalized.read_text() == "original finalized"
+    stalled = original.stderr.split("ORIGINAL_STALL_BEGIN\n", 1)[1].split("ORIGINAL_STALL_END\n", 1)[0]
+    assert "Timeout (" in stalled and "stall_original_phase" in stalled
+    assert "SDK pytest.main returned exit code 0" in original.stdout
+    assert "ResourceWarning" not in original.stderr and "Exception ignored" not in original.stderr
+
+
+@pytest.mark.parametrize("interval", ["0", "-1", "nan", "inf", "not-a-number"])
+def test_invalid_diagnostic_interval_refuses_before_pytest(tmp_path: Path, interval: str) -> None:
+    original = _run_diagnostic_child(
+        tmp_path, 'raise AssertionError("Invalid diagnostic interval dispatched pytest")',
+        "--diagnostic-interval", interval,
+    )
+    assert original.returncode == 2
+    assert "diagnostic interval must be finite and positive" in original.stderr
+    assert "SDK pytest.main returned" not in original.stdout
+
+
 @pytest.mark.parametrize("test_fails", [False, True])
 def test_actual_driver_keeps_diagnostics_through_original_interpreter_exit(
     tmp_path: Path, test_fails: bool,
