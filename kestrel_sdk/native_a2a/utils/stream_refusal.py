@@ -15,6 +15,8 @@ from kestrel_sdk.native_a2a.utils.errors import A2AError
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from starlette.exceptions import HTTPException
+
     from kestrel_sdk.native_a2a.utils.source_lifetime import SourceDemand
 
 
@@ -24,7 +26,7 @@ R = TypeVar('R')
 
 @dataclass(frozen=True, slots=True)
 class StreamRefusal:
-    """A terminal business-protocol result, not a failed source or close receipt.
+    """A terminal protocol/HTTP refusal, not a failed source or close receipt.
 
     A handler emits this at its logical decision branch after its own resource
     lifetimes have settled. It must not convert an arbitrary body/finalizer
@@ -32,12 +34,24 @@ class StreamRefusal:
     original retirement before projecting the enclosed ordinary protocol error.
     """
 
-    error: A2AError
+    error: A2AError | HTTPException
 
     def __post_init__(self) -> None:
-        """Reject values that are not actual A2A protocol errors."""
-        if not issubclass(type(self.error), A2AError):
-            raise TypeError('A stream refusal requires an A2A protocol error')
+        """Accept explicit protocol or HTTP decisions, never arbitrary failures."""
+        if issubclass(type(self.error), A2AError):
+            return
+        # HTTP is optional. Ordinary protocol values must not import a server
+        # framework; an explicit HTTP refusal requires its actual installed type.
+        try:
+            from starlette.exceptions import HTTPException  # noqa: PLC0415
+        except ImportError as error:
+            raise TypeError(
+                'An HTTP stream refusal requires the HTTP server extra'
+            ) from error
+        if not issubclass(type(self.error), HTTPException):
+            raise TypeError(
+                'A stream refusal requires an A2A protocol or HTTP error'
+            )
 
 
 def map_stream_item(
@@ -51,7 +65,7 @@ def map_stream_item(
 
 async def drain_stream_refusal(
     stream: SourceDemand[object], refusal: StreamRefusal
-) -> A2AError:
+) -> A2AError | HTTPException:
     """Return protocol data only after actual terminal-source EOF/join.
 
     The lifetime policy owns the original source and its close. This consumer

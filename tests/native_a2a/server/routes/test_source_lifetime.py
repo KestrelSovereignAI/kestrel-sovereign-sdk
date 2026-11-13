@@ -194,6 +194,7 @@ def _stream_application(
 @pytest.mark.parametrize('binding', ['rest', 'rest-tenant', 'jsonrpc'])
 @pytest.mark.parametrize('subscribe', [False, True])
 @pytest.mark.parametrize('fail_close', [False, True])
+@pytest.mark.parametrize('refusal_status', [None, 401, 403])
 def test_terminal_refusal_is_normalized_only_after_real_source_retirement(
     tmp_path: Path,
     backend: str,
@@ -201,6 +202,7 @@ def test_terminal_refusal_is_normalized_only_after_real_source_retirement(
     binding: str,
     subscribe: bool,
     fail_close: bool,
+    refusal_status: int | None,
 ) -> None:
     from kestrel_sdk.native_a2a.server.request_handlers.response_helpers import (
         build_error_response,
@@ -210,7 +212,21 @@ def test_terminal_refusal_is_normalized_only_after_real_source_retirement(
     from kestrel_sdk.native_a2a.utils.stream_refusal import StreamRefusal
 
     async def run() -> None:
-        error = UnsupportedOperationError('Expected terminal refusal')
+        from starlette.exceptions import HTTPException
+
+        error = (
+            UnsupportedOperationError('Expected terminal refusal')
+            if refusal_status is None
+            else HTTPException(
+                refusal_status,
+                detail='Expected terminal refusal',
+                headers={
+                    'WWW-Authenticate': 'Kestrel-A2A-Sender-Proof realm="a2a"'
+                }
+                if refusal_status == 401
+                else None,
+            )
+        )
         refusal = StreamRefusal(error)
         sources: list[DescriptorSource] = []
 
@@ -257,6 +273,19 @@ def test_terminal_refusal_is_normalized_only_after_real_source_retirement(
             else:
                 response = await invoke()
                 assert probe.error is None
+                if refusal_status is not None:
+                    assert response.status_code == refusal_status
+                    if refusal_status == 401:
+                        assert response.headers['www-authenticate'] == (
+                            'Kestrel-A2A-Sender-Proof realm="a2a"'
+                        )
+                    if frontend == 'fastapi':
+                        assert response.json() == {
+                            'detail': 'Expected terminal refusal'
+                        }
+                    else:
+                        assert response.text == 'Expected terminal refusal'
+                    return
                 assert response.status_code == (
                     200 if binding == 'jsonrpc' else 400
                 )
