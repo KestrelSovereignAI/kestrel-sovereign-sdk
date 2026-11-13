@@ -1,0 +1,192 @@
+# Modified by Kestrel: isolated SDK namespace; see kestrel_sdk/native_a2a/VENDORED.json.
+from contextlib import nullcontext
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from kestrel_sdk.native_a2a.server.request_handlers.request_handler import RequestHandler
+from kestrel_sdk.native_a2a.server.routes.rest_routes import create_rest_routes
+from kestrel_sdk.native_a2a.types.a2a_pb2 import AgentCard, ListTasksResponse, Task
+from google.protobuf.json_format import ParseError
+from starlette.applications import Starlette
+from starlette.routing import BaseRoute
+from starlette.testclient import TestClient
+
+from tests.native_a2a.source_witness import RootFailureProbe
+
+
+@pytest.fixture
+def agent_card():
+    return AgentCard()
+
+
+@pytest.fixture
+def mock_handler():
+    return AsyncMock(spec=RequestHandler)
+
+
+def test_routes_creation(agent_card, mock_handler):
+    """Tests that create_rest_routes creates Route objects list."""
+    routes = create_rest_routes(request_handler=mock_handler)
+
+    assert isinstance(routes, list)
+    assert len(routes) > 0
+    assert all((isinstance(r, BaseRoute) for r in routes))
+
+
+def test_routes_creation_v03_compat(agent_card, mock_handler):
+    """Tests that create_rest_routes creates more routes with enable_v0_3_compat."""
+    mock_handler._agent_card = agent_card
+    routes_without_compat = create_rest_routes(
+        request_handler=mock_handler, enable_v0_3_compat=False
+    )
+    routes_with_compat = create_rest_routes(
+        request_handler=mock_handler, enable_v0_3_compat=True
+    )
+
+    assert len(routes_with_compat) > len(routes_without_compat)
+
+
+def test_rest_endpoints_routing(agent_card, mock_handler):
+    """Tests that mounted routes route to the handler endpoints."""
+    mock_handler.on_message_send.return_value = Task(id='123')
+
+    routes = create_rest_routes(request_handler=mock_handler)
+    app = Starlette(routes=routes)
+    client = TestClient(app)
+
+    # Test POST /message:send
+    response = client.post(
+        '/message:send', json={}, headers={'A2A-Version': '1.0'}
+    )
+    assert response.status_code == 200
+    assert response.json()['task']['id'] == '123'
+    assert mock_handler.on_message_send.called
+
+
+@pytest.mark.parametrize(
+    'path',
+    ['/message:send', '/message:stream', '/tasks/t1/pushNotificationConfigs'],
+)
+def test_rest_invalid_utf8_body_is_bad_request(mock_handler, path):
+    """A body that is not UTF-8 is malformed JSON, so 400 rather than 500."""
+    app = Starlette(routes=create_rest_routes(request_handler=mock_handler))
+    root = RootFailureProbe(app)
+    client = TestClient(root)
+
+    with (
+        root.expect(ParseError) if path == '/message:stream' else nullcontext()
+    ):
+        response = client.post(
+            path,
+            content=b'{"message": {"messageId": "\xff"}}',
+            headers={'A2A-Version': '1.0'},
+        )
+
+    if path == '/message:stream':
+        assert isinstance(root.original.__cause__, UnicodeDecodeError)
+    assert response.status_code == 400
+    assert response.json()['error']['status'] == 'INVALID_ARGUMENT'
+
+
+def test_rest_endpoints_routing_tenant(agent_card, mock_handler):
+    """Tests that mounted routes with {tenant} route to the handler endpoints."""
+    mock_handler.on_message_send.return_value = Task(id='123')
+
+    routes = create_rest_routes(request_handler=mock_handler)
+    app = Starlette(routes=routes)
+    client = TestClient(app)
+
+    # Test POST /{tenant}/message:send
+    response = client.post(
+        '/my-tenant/message:send', json={}, headers={'A2A-Version': '1.0'}
+    )
+    assert response.status_code == 200
+
+    # Verify that tenant was set in call context
+    call_args = mock_handler.on_message_send.call_args
+    assert call_args is not None
+    # call_args[0] is positional args. In on_message_send(params, context):
+    context = call_args[0][1]
+    assert context.tenant == 'my-tenant'
+
+
+def test_rest_list_tasks(agent_card, mock_handler):
+    """Tests that list tasks endpoint is routed to the handler."""
+    mock_handler.on_list_tasks.return_value = ListTasksResponse()
+
+    routes = create_rest_routes(request_handler=mock_handler)
+    app = Starlette(routes=routes)
+    client = TestClient(app)
+
+    response = client.get('/tasks', headers={'A2A-Version': '1.0'})
+    assert response.status_code == 200
+    assert mock_handler.on_list_tasks.called
+
+
+def test_shutdown_grace_period_is_forwarded_to_dispatcher(mock_handler) -> None:
+    """Tests that the route factory configures SSE cooperative shutdown."""
+    with patch(
+        'kestrel_sdk.native_a2a.server.routes.rest_routes.RestDispatcher'
+    ) as dispatcher_class:
+        create_rest_routes(request_handler=mock_handler)
+        dispatcher_class.assert_called_once_with(
+            request_handler=mock_handler,
+            context_builder=None,
+            shutdown_grace_period=0,
+        )
+
+        dispatcher_class.reset_mock()
+        create_rest_routes(
+            request_handler=mock_handler,
+            shutdown_grace_period=30.0,
+        )
+
+        dispatcher_class.assert_called_once_with(
+            request_handler=mock_handler,
+            context_builder=None,
+            shutdown_grace_period=30.0,
+        )
+
+
+def test_shutdown_grace_period_is_forwarded_to_v03_adapter(
+    mock_handler,
+) -> None:
+    """Tests that v0.3 compatibility routes share the shutdown grace period."""
+    with patch('kestrel_sdk.native_a2a.server.routes.rest_routes.REST03Adapter') as adapter_class:
+        adapter_class.return_value.routes.return_value = {}
+        create_rest_routes(
+            request_handler=mock_handler,
+            enable_v0_3_compat=True,
+            shutdown_grace_period=30.0,
+        )
+
+    adapter_class.assert_called_once_with(
+        http_handler=mock_handler,
+        context_builder=None,
+        shutdown_grace_period=30.0,
+    )
+
+
+def test_send_message_response_uses_the_a2a_media_type(
+    agent_card, mock_handler
+):
+    """HTTP+JSON responses are labelled application/a2a+json."""
+    mock_handler.on_message_send.return_value = Task(id='123')
+    client = TestClient(Starlette(routes=create_rest_routes(mock_handler)))
+
+    response = client.post(
+        '/message:send', json={}, headers={'A2A-Version': '1.0'}
+    )
+
+    assert response.headers['content-type'].startswith('application/a2a+json')
+
+
+def test_list_tasks_response_uses_the_a2a_media_type(agent_card, mock_handler):
+    """The list path serializes separately, so it is asserted separately."""
+    mock_handler.on_list_tasks.return_value = ListTasksResponse()
+    client = TestClient(Starlette(routes=create_rest_routes(mock_handler)))
+
+    response = client.get('/tasks', headers={'A2A-Version': '1.0'})
+
+    assert response.headers['content-type'].startswith('application/a2a+json')

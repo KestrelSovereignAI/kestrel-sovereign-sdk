@@ -10,6 +10,9 @@ All notable changes to this project are documented in this file.
   including prefetch, response execution, original source retirement and
   explicit host-policy injection. FastAPI preserves the actual ASGI root;
   tenant and compatibility routes use the same acquisition mechanism.
+- Request roots retain delivered original failures, including generator-finally
+  failures during natural exhaustion; protocol projection is not a successful
+  source-lifetime receipt even if a subsequent `aclose()` succeeds.
 - Compatibility gRPC coroutine writers retain their original source through
   all writes; cancellation or an observed close failure is not successful
   retirement. Native host adapters and consumer acceptance remain release gates.

@@ -435,15 +435,16 @@ class TestRestDispatcherStreaming:
         assert 'chunk2' in chunks[1].data
 
     async def test_on_message_send_stream_handler_error(self, mock_handler):
-        mock_handler.on_message_send_stream.side_effect = (
-            UnsupportedOperationError('Mocked error')
-        )
+        original = UnsupportedOperationError('Mocked error')
+        mock_handler.on_message_send_stream.side_effect = original
 
         dispatcher = RestDispatcher(request_handler=mock_handler)
         req = make_request(method='POST')
 
-        async with source_request(req) as owned:
-            response = await dispatcher.on_message_send_stream(owned)
+        with pytest.raises(UnsupportedOperationError) as root:
+            async with source_request(req) as owned:
+                response = await dispatcher.on_message_send_stream(owned)
+        assert root.value is original
         assert response.status_code == 400
 
     async def test_streaming_does_not_ascii_escape_non_ascii(

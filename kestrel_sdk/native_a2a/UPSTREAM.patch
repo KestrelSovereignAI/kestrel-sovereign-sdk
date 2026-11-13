@@ -1478,10 +1478,10 @@ index 9eb6d02..f72c020 100644
          return Parse(data, message, ignore_unknown_fields=True)
 diff --git a/src/a2a/utils/source_lifetime.py b/src/a2a/utils/source_lifetime.py
 new file mode 100644
-index 0000000..7842efb
+index 0000000..9a6a089
 --- /dev/null
 +++ b/src/a2a/utils/source_lifetime.py
-@@ -0,0 +1,265 @@
+@@ -0,0 +1,281 @@
 +"""Standalone backend ownership for the shared original-source body.
 +
 +The enclosing context belongs to the request's complete ASGI lifetime, not
@@ -1548,9 +1548,28 @@ index 0000000..7842efb
 +
 +def _original_errors(errors: list[BaseException]) -> BaseException | None:
 +    """Retain original graphs without mutating their causes or tracebacks."""
++
++    def contains_original(graph: BaseException, target: BaseException) -> bool:
++        pending = [graph]
++        visited: set[int] = set()
++        while pending:
++            current = pending.pop()
++            if current is target:
++                return True
++            if id(current) in visited:
++                continue
++            visited.add(id(current))
++            if isinstance(current, BaseExceptionGroup):
++                pending.extend(current.exceptions)
++            if current.__cause__ is not None:
++                pending.append(current.__cause__)
++        return False
++
 +    originals: list[BaseException] = []
 +    for error in errors:
-+        if not any(error is original for original in originals):
++        if not any(
++            contains_original(original, error) for original in originals
++        ):
 +            originals.append(error)
 +    if not originals:
 +        return None
@@ -1571,7 +1590,6 @@ index 0000000..7842efb
 +        self.joined = anyio.Event()
 +        self.outcome: SourceBodyOutcome | None = None
 +        self.backend_errors: list[BaseException] = []
-+        self.error_observed = False
 +        self._terminal_error: BaseException | None = None
 +
 +    async def run(self, *, task_status: TaskStatus[None]) -> None:
@@ -1670,9 +1688,6 @@ index 0000000..7842efb
 +        if self._runtime.joined.is_set():
 +            error = self._runtime.terminal_error()
 +            if error is not None:
-+                # This records delivery of the actual original failure, not
-+                # physical completion. That was already established by join.
-+                self._runtime.error_observed = True
 +                raise error
 +        raise StopAsyncIteration
 +
@@ -1704,6 +1719,9 @@ index 0000000..7842efb
 +    factory, iterator operations and registered retirement run in the one
 +    original producer, using the shared body mechanism. A blocked original
 +    body/close keeps this context pending; caller cancellation is not an ACK.
++    Reading or projecting an original error cannot acknowledge a successful
++    lifetime: opaque iteration/callback code can contain its own finalizers,
++    whose failures are not distinguished by a later successful aclose.
 +    """
 +    import anyio  # noqa: PLC0415 -- optional backend
 +
@@ -1738,9 +1756,7 @@ index 0000000..7842efb
 +                                observations.append(observation)
 +    except BaseException as error:  # noqa: BLE001 -- backend/scope exit is evidence
 +        observations.append(error)
-+    if runtime.joined.is_set() and (
-+        not runtime.error_observed or runtime.retirement_failed()
-+    ):
++    if runtime.joined.is_set():
 +        error = runtime.terminal_error()
 +        if error is not None:
 +            observations.append(error)
@@ -2427,7 +2443,7 @@ index 0000000..c49fe7f
 +        release.set()
 +        await server.stop(0)
 diff --git a/tests/compat/v0_3/test_jsonrpc_app_compat.py b/tests/compat/v0_3/test_jsonrpc_app_compat.py
-index 5a9227d..99fe5cd 100644
+index 5a9227d..f866a0c 100644
 --- a/tests/compat/v0_3/test_jsonrpc_app_compat.py
 +++ b/tests/compat/v0_3/test_jsonrpc_app_compat.py
 @@ -11,6 +11,7 @@ from a2a.compat.v0_3.jsonrpc_adapter import JSONRPC03Adapter
@@ -2438,7 +2454,7 @@ index 5a9227d..99fe5cd 100644
  from a2a.types.a2a_pb2 import (
      AgentCapabilities,
      AgentCard,
-@@ -27,6 +28,7 @@ from a2a.utils.errors import (
+@@ -27,9 +28,12 @@ from a2a.utils.errors import (
      TaskNotFoundError,
      UnsupportedOperationError,
  )
@@ -2446,7 +2462,12 @@ index 5a9227d..99fe5cd 100644
  from starlette.applications import Starlette
  from starlette.testclient import TestClient
  
-@@ -50,14 +52,16 @@ async def test_shutdown_grace_period_is_passed_to_event_source_response(
++from tests.source_witness import RootFailureProbe
++
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -50,14 +54,16 @@ async def test_shutdown_grace_period_is_passed_to_event_source_response(
      )
      request_obj = MagicMock(method='message/stream')
  
@@ -2471,6 +2492,50 @@ index 5a9227d..99fe5cd 100644
  
      response_class.assert_called_once()
      assert response_class.call_args.kwargs['shutdown_grace_period'] == 30.0
+@@ -110,8 +116,13 @@ def test_app(mock_handler, agent_card):
+ 
+ 
+ @pytest.fixture
+-def client(test_app):
+-    return TestClient(test_app)
++def root_probe(test_app: Starlette) -> RootFailureProbe:
++    return RootFailureProbe(test_app)
++
++
++@pytest.fixture
++def client(root_probe: RootFailureProbe):
++    return TestClient(root_probe)
+ 
+ 
+ def test_send_message_v03_compat(
+@@ -258,12 +269,14 @@ def test_cancel_task_v03_compat_maps_a2a_error_codes(
+ 
+ 
+ def test_message_stream_v03_compat_maps_a2a_error_code(
+-    client: TestClient, mock_handler: AsyncMock
++    client: TestClient, mock_handler: AsyncMock, root_probe: RootFailureProbe
+ ) -> None:
++    original = TaskNotFoundError()
++
+     async def failing_stream(
+         *args: object, **kwargs: object
+     ) -> AsyncIterator[MagicMock]:
+-        raise TaskNotFoundError
++        raise original
+         yield MagicMock()
+ 
+     mock_handler.on_message_send_stream = failing_stream
+@@ -280,7 +293,9 @@ def test_message_stream_v03_compat_maps_a2a_error_code(
+         },
+     }
+ 
+-    response = client.post('/', json=request_payload)
++    with root_probe.expect(TaskNotFoundError):
++        response = client.post('/', json=request_payload)
++    assert root_probe.original is original
+     assert response.status_code == 200
+     events = [
+         json.loads(line.removeprefix('data:'))
 diff --git a/tests/compat/v0_3/test_request_handler.py b/tests/compat/v0_3/test_request_handler.py
 index 0027973..30454cb 100644
 --- a/tests/compat/v0_3/test_request_handler.py
@@ -2586,7 +2651,7 @@ index 9359301..0f0a34c 100644
      assert len(results) == 1
      rest_handler.handler03.on_subscribe_to_task.assert_called_once()
 diff --git a/tests/compat/v0_3/test_rest_routes_compat.py b/tests/compat/v0_3/test_rest_routes_compat.py
-index d7edda4..15697aa 100644
+index d7edda4..cbd7d5a 100644
 --- a/tests/compat/v0_3/test_rest_routes_compat.py
 +++ b/tests/compat/v0_3/test_rest_routes_compat.py
 @@ -2,7 +2,7 @@ import json
@@ -2598,24 +2663,24 @@ index d7edda4..15697aa 100644
  
  import pytest
  
-@@ -21,13 +21,15 @@ from a2a.types.a2a_pb2 import (
+@@ -21,13 +21,14 @@ from a2a.types.a2a_pb2 import (
      TaskStatus as TaskStatus10,
  )
  from a2a.utils.errors import TaskNotFoundError
+-from fastapi import FastAPI
 +from a2a.utils.source_ownership import SourceAcquisition
- from fastapi import FastAPI
  from google.protobuf import json_format
  from httpx import ASGITransport, AsyncClient
  from starlette.applications import Starlette
 -from starlette.datastructures import Headers
  from starlette.requests import Request
  
-+from tests.source_witness import make_request, source_request
++from tests.source_witness import RootFailureProbe, make_request, source_request
 +
  
  logger = logging.getLogger(__name__)
  
-@@ -37,7 +39,7 @@ async def test_shutdown_grace_period_is_passed_to_event_source_response(
+@@ -37,7 +38,7 @@ async def test_shutdown_grace_period_is_passed_to_event_source_response(
      request_handler: RequestHandler,
  ) -> None:
      async def stream(
@@ -2624,7 +2689,7 @@ index d7edda4..15697aa 100644
      ) -> AsyncIterator[dict[str, str]]:
          yield {'result': 'value'}
  
-@@ -45,17 +47,13 @@ async def test_shutdown_grace_period_is_passed_to_event_source_response(
+@@ -45,17 +46,13 @@ async def test_shutdown_grace_period_is_passed_to_event_source_response(
          http_handler=request_handler,
          shutdown_grace_period=30.0,
      )
@@ -2649,7 +2714,24 @@ index d7edda4..15697aa 100644
  
      response_class.assert_called_once()
      assert response_class.call_args.kwargs['shutdown_grace_period'] == 30.0
-@@ -275,23 +273,19 @@ async def test_v03_streaming_does_not_ascii_escape_non_ascii(
+@@ -98,9 +95,14 @@ async def app(
+ 
+ 
+ @pytest.fixture
+-async def client(app: FastAPI) -> AsyncClient:
++async def root_probe(app: Starlette) -> RootFailureProbe:
++    return RootFailureProbe(app)
++
++
++@pytest.fixture
++async def client(root_probe: RootFailureProbe) -> AsyncClient:
+     return AsyncClient(
+-        transport=ASGITransport(app=app), base_url='http://testapp'
++        transport=ASGITransport(app=root_probe), base_url='http://testapp'
+     )
+ 
+ 
+@@ -275,23 +277,19 @@ async def test_v03_streaming_does_not_ascii_escape_non_ascii(
      non_ascii_text = '你好'
  
      async def stream_with_non_ascii(
@@ -2683,7 +2765,55 @@ index d7edda4..15697aa 100644
  
      assert len(chunks) == 1
      chunk = chunks[0]
-@@ -341,20 +335,16 @@ async def test_v03_streaming_yields_all_events_in_order(
+@@ -304,13 +302,16 @@ async def test_v03_streaming_does_not_ascii_escape_non_ascii(
+ 
+ @pytest.mark.anyio
+ async def test_v03_message_stream_malformed_json_returns_400(
+-    client: AsyncClient, request_handler: MagicMock
++    client: AsyncClient,
++    request_handler: MagicMock,
++    root_probe: RootFailureProbe,
+ ) -> None:
+-    response = await client.post(
+-        '/v1/message:stream',
+-        content=b'{bad',
+-        headers={'Content-Type': 'application/json'},
+-    )
++    with root_probe.expect(json_format.ParseError):
++        response = await client.post(
++            '/v1/message:stream',
++            content=b'{bad',
++            headers={'Content-Type': 'application/json'},
++        )
+ 
+     assert response.status_code == 400
+     assert response.headers['content-type'].startswith('application/json')
+@@ -320,15 +321,21 @@ async def test_v03_message_stream_malformed_json_returns_400(
+ 
+ @pytest.mark.anyio
+ async def test_v03_subscribe_unknown_task_returns_404(
+-    client: AsyncClient, request_handler: MagicMock
++    client: AsyncClient,
++    request_handler: MagicMock,
++    root_probe: RootFailureProbe,
+ ) -> None:
++    original = TaskNotFoundError()
++
+     async def not_found(*args: object, **kwargs: object) -> AsyncIterator[None]:
+-        raise TaskNotFoundError
++        raise original
+         yield
+ 
+     request_handler.on_subscribe_to_task.side_effect = not_found
+ 
+-    response = await client.post('/v1/tasks/unknown:subscribe')
++    with root_probe.expect(TaskNotFoundError):
++        response = await client.post('/v1/tasks/unknown:subscribe')
++    assert root_probe.original is original
+ 
+     assert response.status_code == 404
+     assert response.json()['error']['status'] == 'NOT_FOUND'
+@@ -341,20 +348,16 @@ async def test_v03_streaming_yields_all_events_in_order(
      adapter = REST03Adapter(http_handler=request_handler)
  
      async def stream(
@@ -2944,6 +3074,109 @@ index eb7928b..17dccb6 100644
              supported_protocol_bindings=[TransportProtocol.HTTP_JSON],
          )
      ).create(minimal_agent_card(agent_server, [TransportProtocol.HTTP_JSON]))
+diff --git a/tests/integration/test_client_server_integration.py b/tests/integration/test_client_server_integration.py
+index ea093aa..6a1cb90 100644
+--- a/tests/integration/test_client_server_integration.py
++++ b/tests/integration/test_client_server_integration.py
+@@ -1,6 +1,7 @@
+ import asyncio
+ 
+ from collections.abc import AsyncGenerator
++from contextlib import nullcontext
+ from typing import Any, NamedTuple
+ from unittest.mock import ANY, AsyncMock, patch
+ 
+@@ -82,6 +83,8 @@ from google.protobuf.json_format import MessageToDict
+ from google.protobuf.timestamp_pb2 import Timestamp
+ from starlette.applications import Starlette
+ 
++from tests.source_witness import RootFailureProbe
++
+ 
+ # --- Test Constants ---
+ 
+@@ -220,6 +223,7 @@ class TransportSetup(NamedTuple):
+ 
+     client: Client
+     handler: RequestHandler | AsyncMock
++    root: RootFailureProbe | None = None
+ 
+ 
+ # --- HTTP/JSON-RPC/REST Setup ---
+@@ -245,7 +249,8 @@ def jsonrpc_setup(http_base_setup) -> TransportSetup:
+         request_handler=mock_request_handler, rpc_url='/'
+     )
+     app = Starlette(routes=[*agent_card_routes, *jsonrpc_routes])
+-    httpx_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app))
++    root = RootFailureProbe(app)
++    httpx_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=root))
+     factory = ClientFactory(
+         config=ClientConfig(
+             httpx_client=httpx_client,
+@@ -253,7 +258,9 @@ def jsonrpc_setup(http_base_setup) -> TransportSetup:
+         )
+     )
+     client = factory.create(agent_card)
+-    return TransportSetup(client=client, handler=mock_request_handler)
++    return TransportSetup(
++        client=client, handler=mock_request_handler, root=root
++    )
+ 
+ 
+ @pytest.fixture
+@@ -265,7 +272,8 @@ def rest_setup(http_base_setup) -> TransportSetup:
+         agent_card=agent_card, card_url='/'
+     )
+     app = Starlette(routes=[*rest_routes, *agent_card_routes])
+-    httpx_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app))
++    root = RootFailureProbe(app)
++    httpx_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=root))
+     factory = ClientFactory(
+         config=ClientConfig(
+             httpx_client=httpx_client,
+@@ -273,7 +281,9 @@ def rest_setup(http_base_setup) -> TransportSetup:
+         )
+     )
+     client = factory.create(agent_card)
+-    return TransportSetup(client=client, handler=mock_request_handler)
++    return TransportSetup(
++        client=client, handler=mock_request_handler, root=root
++    )
+ 
+ 
+ @pytest_asyncio.fixture
+@@ -1320,14 +1330,20 @@ async def test_client_handles_mid_stream_a2a_errors(
+     client = transport_setups.client
+     handler = transport_setups.handler
+ 
++    original = error_cls('Mid-stream error')
++
+     async def mock_generator(*args, **kwargs):
+         yield TASK_FROM_STREAM
+-        raise error_cls('Mid-stream error')
++        raise original
+ 
+     getattr(handler, handler_attr).side_effect = mock_generator
+ 
+     received_events = []
+-    with pytest.raises(error_cls) as exc_info:
++    root = transport_setups.root
++    with (
++        root.expect(error_cls) if root is not None else nullcontext(),
++        pytest.raises(error_cls) as exc_info,
++    ):
+         async for event in getattr(client, client_method)(
+             request=request_params
+         ):
+@@ -1335,6 +1351,8 @@ async def test_client_handles_mid_stream_a2a_errors(
+ 
+     assert 'Mid-stream error' in str(exc_info.value)
+     assert len(received_events) == 1
++    if root is not None:
++        assert root.original is original
+ 
+     getattr(handler, handler_attr).side_effect = None
+ 
 diff --git a/tests/server/__init__.py b/tests/server/__init__.py
 new file mode 100644
 index 0000000..a03ebdc
@@ -2980,7 +3213,7 @@ index 9d285ca..5b7b7b8 100644
 +    ctx = DefaultServerCallContextBuilder().build(request)
 +    assert ctx.state['a2a_versions'] == ['1.0', '0.3', '1.0.1', '0.3']
 diff --git a/tests/server/routes/test_rest_dispatcher.py b/tests/server/routes/test_rest_dispatcher.py
-index 3d7bb39..74621f7 100644
+index 3d7bb39..9d695ca 100644
 --- a/tests/server/routes/test_rest_dispatcher.py
 +++ b/tests/server/routes/test_rest_dispatcher.py
 @@ -27,10 +27,12 @@ from a2a.types.a2a_pb2 import (
@@ -3218,7 +3451,7 @@ index 3d7bb39..74621f7 100644
  
          assert getattr(response, '_shutdown_grace_period') == 30.0
          assert getattr(empty_response, '_shutdown_grace_period') == 30.0
-@@ -412,28 +400,34 @@ class TestRestDispatcherStreaming:
+@@ -412,42 +400,50 @@ class TestRestDispatcherStreaming:
      async def test_on_message_send_stream_success(
          self, rest_dispatcher_instance
      ):
@@ -3265,20 +3498,28 @@ index 3d7bb39..74621f7 100644
  
          assert len(chunks) == 2
          assert 'chunk1' in chunks[0].data
-@@ -445,9 +439,10 @@ class TestRestDispatcherStreaming:
-         )
+         assert 'chunk2' in chunks[1].data
+ 
+     async def test_on_message_send_stream_handler_error(self, mock_handler):
+-        mock_handler.on_message_send_stream.side_effect = (
+-            UnsupportedOperationError('Mocked error')
+-        )
++        original = UnsupportedOperationError('Mocked error')
++        mock_handler.on_message_send_stream.side_effect = original
  
          dispatcher = RestDispatcher(request_handler=mock_handler)
 -        req = make_mock_request(method='POST')
 +        req = make_request(method='POST')
  
 -        response = await dispatcher.on_message_send_stream(req)
-+        async with source_request(req) as owned:
-+            response = await dispatcher.on_message_send_stream(owned)
++        with pytest.raises(UnsupportedOperationError) as root:
++            async with source_request(req) as owned:
++                response = await dispatcher.on_message_send_stream(owned)
++        assert root.value is original
          assert response.status_code == 400
  
      async def test_streaming_does_not_ascii_escape_non_ascii(
-@@ -461,21 +456,23 @@ class TestRestDispatcherStreaming:
+@@ -461,21 +457,23 @@ class TestRestDispatcherStreaming:
  
          async def stream_with_non_ascii(
              context: ServerCallContext,
@@ -3310,12 +3551,63 @@ index 3d7bb39..74621f7 100644
  
          assert len(chunks) == 2
          for chunk in chunks:
+diff --git a/tests/server/routes/test_rest_routes.py b/tests/server/routes/test_rest_routes.py
+index a0450b2..0b8d1a0 100644
+--- a/tests/server/routes/test_rest_routes.py
++++ b/tests/server/routes/test_rest_routes.py
+@@ -1,3 +1,4 @@
++from contextlib import nullcontext
+ from unittest.mock import AsyncMock, patch
+ 
+ import pytest
+@@ -5,10 +6,13 @@ import pytest
+ from a2a.server.request_handlers.request_handler import RequestHandler
+ from a2a.server.routes.rest_routes import create_rest_routes
+ from a2a.types.a2a_pb2 import AgentCard, ListTasksResponse, Task
++from google.protobuf.json_format import ParseError
+ from starlette.applications import Starlette
+ from starlette.routing import BaseRoute
+ from starlette.testclient import TestClient
+ 
++from tests.source_witness import RootFailureProbe
++
+ 
+ @pytest.fixture
+ def agent_card():
+@@ -66,14 +70,20 @@ def test_rest_endpoints_routing(agent_card, mock_handler):
+ def test_rest_invalid_utf8_body_is_bad_request(mock_handler, path):
+     """A body that is not UTF-8 is malformed JSON, so 400 rather than 500."""
+     app = Starlette(routes=create_rest_routes(request_handler=mock_handler))
+-    client = TestClient(app)
+-
+-    response = client.post(
+-        path,
+-        content=b'{"message": {"messageId": "\xff"}}',
+-        headers={'A2A-Version': '1.0'},
+-    )
++    root = RootFailureProbe(app)
++    client = TestClient(root)
++
++    with (
++        root.expect(ParseError) if path == '/message:stream' else nullcontext()
++    ):
++        response = client.post(
++            path,
++            content=b'{"message": {"messageId": "\xff"}}',
++            headers={'A2A-Version': '1.0'},
++        )
+ 
++    if path == '/message:stream':
++        assert isinstance(root.original.__cause__, UnicodeDecodeError)
+     assert response.status_code == 400
+     assert response.json()['error']['status'] == 'INVALID_ARGUMENT'
+ 
 diff --git a/tests/server/routes/test_source_lifetime.py b/tests/server/routes/test_source_lifetime.py
 new file mode 100644
-index 0000000..88738ce
+index 0000000..515c920
 --- /dev/null
 +++ b/tests/server/routes/test_source_lifetime.py
-@@ -0,0 +1,534 @@
+@@ -0,0 +1,649 @@
 +"""Real response execution, original OS failures and request-root retirement."""
 +
 +from __future__ import annotations
@@ -3333,7 +3625,9 @@ index 0000000..88738ce
 +import httpx
 +import pytest
 +
++from a2a.server.context import ServerCallContext
 +from a2a.server.events import Event
++from a2a.server.request_handlers.request_handler import RequestHandler
 +from a2a.server.routes import create_jsonrpc_routes, create_rest_routes
 +from a2a.server.routes.common import create_event_source_response
 +from a2a.server.routes.fastapi_routes import add_a2a_routes_to_fastapi
@@ -3344,7 +3638,12 @@ index 0000000..88738ce
 +    source_request_response,
 +    source_root_for,
 +)
-+from a2a.types.a2a_pb2 import Message as AgentMessage, Part, Role
++from a2a.types.a2a_pb2 import (
++    Message as AgentMessage,
++    Part,
++    Role,
++    SendMessageRequest,
++)
 +from a2a.utils.source_lifetime import (
 +    SourceDemand,
 +    SourceFactory,
@@ -3357,10 +3656,11 @@ index 0000000..88738ce
 +from starlette.datastructures import FormData, UploadFile
 +from starlette.requests import Request
 +from starlette.responses import JSONResponse, Response
-+from starlette.types import Message, Scope
++from starlette.types import ASGIApp, Message, Receive, Scope, Send
 +
 +from tests.source_witness import (
 +    DescriptorSource,
++    RootFailureProbe,
 +    StreamRequestHandler,
 +    assert_closed,
 +    original_owner,
@@ -3387,6 +3687,115 @@ index 0000000..88738ce
 +async def _receive() -> Message:
 +    await anyio.Event().wait()
 +    raise AssertionError('A completed response must retire its receive waiter')
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_root_probe_requires_an_actual_matching_original_failure(
++    backend: str,
++) -> None:
++    async def run() -> None:
++        original = LookupError('actual original ASGI failure')
++        sent: list[Message] = []
++
++        async def app(scope: Scope, receive: Receive, send: Send) -> None:
++            await Response('already sent')(scope, receive, send)
++            raise original
++
++        async def send(message: Message) -> None:
++            sent.append(message)
++
++        probe = RootFailureProbe(app)
++        # No explicit expectation may turn a failed root into a normal return.
++        with pytest.raises(LookupError) as uncaught:
++            await probe(_scope(), _receive, send)
++        assert uncaught.value is original
++        assert probe.error is None
++        with probe.expect(LookupError):
++            await probe(_scope(), _receive, send)
++        assert probe.error is probe.original is original
++        assert sent[-1]['body'] == b'already sent'
++        with pytest.raises(LookupError) as wrong, probe.expect(OSError):
++            await probe(_scope(), _receive, send)
++        assert wrong.value is original
++
++        normal = RootFailureProbe(
++            Response('a successful root is not expected failure')
++        )
++        with (
++            pytest.raises(AssertionError, match='original ASGI root must fail'),
++            normal.expect(LookupError),
++        ):
++            await normal(_scope(), _receive, send)
++
++    anyio.run(run, backend=backend)
++
++
++def _stream_application(
++    handler: RequestHandler,
++    frontend: str,
++    binding: str,
++    *,
++    subscribe: bool = False,
++) -> tuple[ASGIApp, str, dict, dict[str, str]]:
++    compat = binding.endswith('03')
++    headers = {'a2a-version': '0.3' if compat else '1.0'}
++    if binding.startswith('rest'):
++        routes = create_rest_routes(handler, enable_v0_3_compat=compat)
++        route_groups = {'rest_routes': routes}
++        prefix = (
++            '/v1'
++            if compat
++            else '/tenant-one'
++            if binding == 'rest-tenant'
++            else ''
++        )
++        path = prefix + (
++            '/tasks/task-one:subscribe' if subscribe else '/message:stream'
++        )
++        body = (
++            {}
++            if subscribe
++            else {
++                'message': {
++                    'messageId': 'input',
++                    'role': 'ROLE_USER',
++                    'parts': [{'text': 'hi'}],
++                }
++            }
++        )
++    else:
++        routes = create_jsonrpc_routes(handler, '/', enable_v0_3_compat=compat)
++        route_groups = {'jsonrpc_routes': routes}
++        path = '/'
++        method = (
++            ('tasks/resubscribe' if compat else 'SubscribeToTask')
++            if subscribe
++            else ('message/stream' if compat else 'SendStreamingMessage')
++        )
++        params = (
++            {'id': 'task-one'}
++            if subscribe
++            else {
++                'message': {
++                    'messageId': 'input',
++                    'role': 'user' if compat else 'ROLE_USER',
++                    'parts': [{'text': 'hi'}],
++                }
++            }
++        )
++        body = {
++            'jsonrpc': '2.0',
++            'id': 'one',
++            'method': method,
++            'params': params,
++        }
++    if frontend == 'fastapi':
++        app = FastAPI()
++        add_a2a_routes_to_fastapi(app, **route_groups)
++        # Internal policy injection must not become an HTTP query parameter.
++        assert 'source_root' not in str(app.openapi())
++        return app, path, body, headers
++    return Starlette(routes=routes), path, body, headers
 +
 +
 +@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
@@ -3564,67 +3973,9 @@ index 0000000..88738ce
 +            return source
 +
 +        handler = StreamRequestHandler(acquire)
-+        compat = binding.endswith('03')
-+        headers = {'a2a-version': '0.3' if compat else '1.0'}
-+        if binding.startswith('rest'):
-+            routes = create_rest_routes(handler, enable_v0_3_compat=compat)
-+            route_groups = {'rest_routes': routes}
-+            prefix = (
-+                '/v1'
-+                if compat
-+                else '/tenant-one'
-+                if binding == 'rest-tenant'
-+                else ''
-+            )
-+            path = prefix + (
-+                '/tasks/task-one:subscribe' if subscribe else '/message:stream'
-+            )
-+            body = (
-+                {}
-+                if subscribe
-+                else {
-+                    'message': {
-+                        'messageId': 'input',
-+                        'role': 'ROLE_USER',
-+                        'parts': [{'text': 'hi'}],
-+                    }
-+                }
-+            )
-+        else:
-+            routes = create_jsonrpc_routes(
-+                handler, '/', enable_v0_3_compat=compat
-+            )
-+            route_groups = {'jsonrpc_routes': routes}
-+            path = '/'
-+            method = (
-+                ('tasks/resubscribe' if compat else 'SubscribeToTask')
-+                if subscribe
-+                else ('message/stream' if compat else 'SendStreamingMessage')
-+            )
-+            params = (
-+                {'id': 'task-one'}
-+                if subscribe
-+                else {
-+                    'message': {
-+                        'messageId': 'input',
-+                        'role': 'user' if compat else 'ROLE_USER',
-+                        'parts': [{'text': 'hi'}],
-+                    }
-+                }
-+            )
-+            body = {
-+                'jsonrpc': '2.0',
-+                'id': 'one',
-+                'method': method,
-+                'params': params,
-+            }
-+        if frontend == 'fastapi':
-+            app = FastAPI()
-+            add_a2a_routes_to_fastapi(app, **route_groups)
-+            # Internal policy injection must not become an HTTP query parameter.
-+            assert 'source_root' not in str(app.openapi())
-+        else:
-+            app = Starlette(routes=routes)
++        app, path, body, headers = _stream_application(
++            handler, frontend, binding, subscribe=subscribe
++        )
 +        with anyio.fail_after(5):
 +            async with httpx.AsyncClient(
 +                transport=httpx.ASGITransport(app=app),
@@ -3635,6 +3986,62 @@ index 0000000..88738ce
 +        assert response.headers['content-type'].startswith('text/event-stream')
 +        assert 'first' in response.text and 'second' in response.text
 +        assert len(sources) == 1
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++@pytest.mark.parametrize('frontend', ['starlette', 'fastapi'])
++@pytest.mark.parametrize(
++    'binding', ['rest', 'rest-tenant', 'rest03', 'jsonrpc', 'jsonrpc03']
++)
++@pytest.mark.parametrize('empty', [False, True])
++def test_natural_generator_finally_failure_cannot_be_a_successful_http_root(
++    tmp_path: Path, backend: str, frontend: str, binding: str, empty: bool
++) -> None:
++    async def run() -> None:
++        sources: list[DescriptorSource[Event]] = []
++
++        class Handler(StreamRequestHandler):
++            async def on_message_send_stream(
++                self,
++                params: SendMessageRequest,
++                context: ServerCallContext | None = None,
++            ) -> AsyncIterator[Event]:
++                source = DescriptorSource[Event](
++                    tmp_path / 'generator', backend, (), fail_close=True
++                )
++                sources.append(source)
++                try:
++                    if not empty:
++                        yield AgentMessage(
++                            message_id='original', role=Role.ROLE_AGENT
++                        )
++                finally:
++                    await source.aclose()
++
++        def unused() -> DescriptorSource[Event]:
++            pytest.fail(
++                'The actual handler owns acquisition inside its generator'
++            )
++
++        app, path, body, headers = _stream_application(
++            Handler(unused), frontend, binding
++        )
++        with anyio.fail_after(5), pytest.raises(BaseException) as root:
++            async with httpx.AsyncClient(
++                transport=httpx.ASGITransport(app=app),
++                base_url='http://testserver',
++            ) as client:
++                await client.post(path, json=body, headers=headers)
++        assert len(sources) == 1
++        error = root.value
++        while isinstance(error, BaseExceptionGroup):
++            assert len(error.exceptions) == 1
++            error = error.exceptions[0]
++        assert error is sources[0].close_error
++        assert error.errno == errno.EBADF
 +        sources[0].assert_original_retired()
 +
 +    anyio.run(run, backend=backend)
@@ -3962,10 +4369,10 @@ index edbac80..c8b46cc 100644
  @pytest.fixture
 diff --git a/tests/source_witness.py b/tests/source_witness.py
 new file mode 100644
-index 0000000..c007401
+index 0000000..566becf
 --- /dev/null
 +++ b/tests/source_witness.py
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,232 @@
 +"""Shared real original-Task/FD/context witnesses for source lifetime tests."""
 +
 +from __future__ import annotations
@@ -3976,8 +4383,8 @@ index 0000000..c007401
 +import inspect
 +import os
 +
-+from collections.abc import AsyncGenerator, AsyncIterator, Callable
-+from contextlib import asynccontextmanager
++from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
++from contextlib import asynccontextmanager, contextmanager
 +from pathlib import Path
 +from typing import Any, TypeVar
 +
@@ -3993,10 +4400,60 @@ index 0000000..c007401
 +from a2a.utils.source_lifetime import standalone_source_lifetime
 +from starlette.datastructures import Headers, QueryParams
 +from starlette.requests import Request
-+from starlette.types import Message
++from starlette.types import ASGIApp, Message, Receive, Scope, Send
 +
 +
 +T = TypeVar('T')
++
++
++class RootFailureProbe:
++    """Observe an expected failed real root separately from HTTPX's buffer.
++
++    HTTPX otherwise discards all buffered frames when an in-process ASGI app
++    raises. This test-only host catches ONLY an explicitly expected original
++    failure, and the expectation itself fails if the real root returns normally.
++    It is not a runtime adapter, source owner or successful-retirement receipt.
++    """
++
++    def __init__(self, app: ASGIApp) -> None:
++        self.app = app
++        self.error: BaseException | None = None
++        self.original: BaseException | None = None
++        self._expected: type[BaseException] | None = None
++
++    @contextmanager
++    def expect(
++        self, error_type: type[BaseException]
++    ) -> Iterator[RootFailureProbe]:
++        assert self._expected is None
++        self.error = self.original = None
++        self._expected = error_type
++        try:
++            yield self
++            assert self.error is not None, 'The original ASGI root must fail'
++        finally:
++            self._expected = None
++
++    async def __call__(
++        self, scope: Scope, receive: Receive, send: Send
++    ) -> None:
++        try:
++            await self.app(scope, receive, send)
++        except BaseException as error:
++            if self._expected is None:
++                raise
++            original = error
++            while (
++                isinstance(original, BaseExceptionGroup)
++                and len(original.exceptions) == 1
++            ):
++                original = original.exceptions[0]
++            if type(original) is not self._expected:
++                raise
++            assert self.error is None, (
++                'Expected exactly one original failed root'
++            )
++            self.error, self.original = error, original
 +
 +
 +def make_request(
@@ -4656,10 +5113,10 @@ index 0000000..5c9fb99
 +    assert 'Exception ignored' not in result.stderr
 diff --git a/tests/utils/test_source_lifetime.py b/tests/utils/test_source_lifetime.py
 new file mode 100644
-index 0000000..23a052d
+index 0000000..5fedcd2
 --- /dev/null
 +++ b/tests/utils/test_source_lifetime.py
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,550 @@
 +"""Real original Tasks, file descriptors, context tokens and caller withdrawal."""
 +
 +from __future__ import annotations
@@ -4670,6 +5127,7 @@ index 0000000..23a052d
 +import os
 +
 +from builtins import BaseExceptionGroup, ExceptionGroup
++from collections.abc import AsyncIterator
 +from pathlib import Path
 +
 +import anyio
@@ -4747,7 +5205,7 @@ index 0000000..23a052d
 +
 +
 +@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
-+def test_only_a_body_error_can_be_consumed_after_successful_retirement(
++def test_delivered_body_error_does_not_acknowledge_a_successful_root(
 +    tmp_path: Path, backend: str
 +) -> None:
 +    async def run() -> None:
@@ -4760,11 +5218,47 @@ index 0000000..23a052d
 +            sources.append(source)
 +            raise original
 +
-+        with anyio.fail_after(5):
++        with anyio.fail_after(5), pytest.raises(RuntimeError) as root:
 +            async with standalone_source_lifetime(acquire) as reader:
 +                with pytest.raises(RuntimeError) as demand:
 +                    await anext(reader)
 +                assert demand.value is original
++        assert root.value is original
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++@pytest.mark.parametrize('empty', [False, True])
++def test_natural_generator_finally_error_is_fatal_after_demand_catches_it(
++    tmp_path: Path, backend: str, empty: bool
++) -> None:
++    async def run() -> None:
++        sources: list[_DescriptorSource] = []
++
++        async def generate() -> AsyncIterator[str]:
++            source = _DescriptorSource(
++                tmp_path / 'generator', backend, (), fail_close=True
++            )
++            sources.append(source)
++            try:
++                if not empty:
++                    yield 'original frame'
++            finally:
++                await source.aclose()
++
++        with anyio.fail_after(5), pytest.raises(OSError) as root:
++            async with standalone_source_lifetime(
++                lambda _resources: generate()
++            ) as reader:
++                if not empty:
++                    assert await anext(reader) == 'original frame'
++                with pytest.raises(OSError) as delivered:
++                    await anext(reader)
++                assert delivered.value is sources[0].close_error
++                assert delivered.value.errno == errno.EBADF
++        assert root.value is delivered.value
 +        sources[0].assert_original_retired()
 +
 +    anyio.run(run, backend=backend)
@@ -4791,6 +5285,35 @@ index 0000000..23a052d
 +                    await anext(reader)
 +                assert demand.value is sources[0].close_error
 +        assert root.value is sources[0].close_error
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_original_error_already_retained_as_cause_is_not_duplicated(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        sources: list[_DescriptorSource] = []
++        observer = RuntimeError('original transport failure with source cause')
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
++            source = _DescriptorSource(
++                tmp_path / 'source', backend, (), fail_close=True
++            )
++            sources.append(source)
++            return source
++
++        with anyio.fail_after(5), pytest.raises(RuntimeError) as root:
++            async with standalone_source_lifetime(acquire) as reader:
++                try:
++                    await anext(reader)
++                except OSError as original:
++                    assert original is sources[0].close_error
++                    raise observer from original
++        assert root.value is observer
++        assert observer.__cause__ is sources[0].close_error
 +        sources[0].assert_original_retired()
 +
 +    anyio.run(run, backend=backend)

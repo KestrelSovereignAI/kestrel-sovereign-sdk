@@ -65,9 +65,28 @@ class SourceLifetimeFactory(Protocol):
 
 def _original_errors(errors: list[BaseException]) -> BaseException | None:
     """Retain original graphs without mutating their causes or tracebacks."""
+
+    def contains_original(graph: BaseException, target: BaseException) -> bool:
+        pending = [graph]
+        visited: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if current is target:
+                return True
+            if id(current) in visited:
+                continue
+            visited.add(id(current))
+            if isinstance(current, BaseExceptionGroup):
+                pending.extend(current.exceptions)
+            if current.__cause__ is not None:
+                pending.append(current.__cause__)
+        return False
+
     originals: list[BaseException] = []
     for error in errors:
-        if not any(error is original for original in originals):
+        if not any(
+            contains_original(original, error) for original in originals
+        ):
             originals.append(error)
     if not originals:
         return None
@@ -88,7 +107,6 @@ class _SourceRuntime(Generic[T]):
         self.joined = anyio.Event()
         self.outcome: SourceBodyOutcome | None = None
         self.backend_errors: list[BaseException] = []
-        self.error_observed = False
         self._terminal_error: BaseException | None = None
 
     async def run(self, *, task_status: TaskStatus[None]) -> None:
@@ -187,9 +205,6 @@ class SourceReader(AsyncIterator[T]):
         if self._runtime.joined.is_set():
             error = self._runtime.terminal_error()
             if error is not None:
-                # This records delivery of the actual original failure, not
-                # physical completion. That was already established by join.
-                self._runtime.error_observed = True
                 raise error
         raise StopAsyncIteration
 
@@ -221,6 +236,9 @@ async def standalone_source_lifetime(
     factory, iterator operations and registered retirement run in the one
     original producer, using the shared body mechanism. A blocked original
     body/close keeps this context pending; caller cancellation is not an ACK.
+    Reading or projecting an original error cannot acknowledge a successful
+    lifetime: opaque iteration/callback code can contain its own finalizers,
+    whose failures are not distinguished by a later successful aclose.
     """
     import anyio  # noqa: PLC0415 -- optional backend
 
@@ -255,9 +273,7 @@ async def standalone_source_lifetime(
                                 observations.append(observation)
     except BaseException as error:  # noqa: BLE001 -- backend/scope exit is evidence
         observations.append(error)
-    if runtime.joined.is_set() and (
-        not runtime.error_observed or runtime.retirement_failed()
-    ):
+    if runtime.joined.is_set():
         error = runtime.terminal_error()
         if error is not None:
             observations.append(error)
