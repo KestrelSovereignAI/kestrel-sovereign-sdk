@@ -254,6 +254,13 @@ class SourceAcquisition:
             raise TypeError('An exposed aclose capability must be callable')
         self.retain(iterator, close)
 
+    def retain_iterable(self, source: AsyncIterable[T]) -> AsyncIterator[T]:
+        """Retain source BEFORE aiter, then retain the actual iterator too."""
+        self.retain_iterator(source)
+        iterator = aiter(source)
+        self.retain_iterator(iterator)
+        return iterator
+
     async def retire(self) -> tuple[BaseException, ...]:
         """Attempt all original closers once, LIFO, retaining every failure."""
         if self._closed:
@@ -311,9 +318,7 @@ async def run_source_body(
                     result = await source.producer(handoff.publish)
                     _require_none(result, 'callback producer')
                 else:
-                    resources.retain_iterator(source)
-                    iterator = aiter(source)
-                    resources.retain_iterator(iterator)
+                    iterator = resources.retain_iterable(source)
                     while True:
                         try:
                             item = await anext(iterator)

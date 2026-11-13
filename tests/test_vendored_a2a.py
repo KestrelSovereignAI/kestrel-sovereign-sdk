@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from packaging.requirements import Requirement
 
-from scripts.vendor_a2a import check_vendor, import_vendor, relocate
+from scripts.vendor_a2a import check_vendor, import_test_delta, import_vendor, relocate, relocate_test
 from tests.git_support import commit_fixture
 
 
@@ -54,6 +54,54 @@ def test_relocation_changes_modules_but_preserves_protocol_identifiers():
     assert relocate("from a2a import types\n") == "from kestrel_sdk.native_a2a import types\n"
     assert relocate("from a2a.plugins import manager\n") == "from kestrel_sdk.native_a2a.plugins import manager\n"
     assert relocate("files('a2a').joinpath('alembic.ini')") == "files('kestrel_sdk.native_a2a').joinpath('alembic.ini')"
+
+
+def test_relocated_test_witness_uses_the_sdk_test_namespace():
+    original = 'from a2a.utils.source_lifetime import SourceFactory\nfrom tests.source_witness import DescriptorSource\n"lf.a2a.v1.Task"\n'
+    relocated = relocate_test(original)
+    assert 'from kestrel_sdk.native_a2a.utils.source_lifetime import SourceFactory\n' in relocated
+    assert 'from tests.native_a2a.source_witness import DescriptorSource\n' in relocated
+    assert '"lf.a2a.v1.Task"\n' in relocated
+
+
+def test_producer_test_delta_uses_exact_tree_and_only_required_package_support(tmp_path):
+    source = tmp_path / "producer"
+    source.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+    tests = source / "tests"
+    tests.mkdir()
+    (tests / "__init__.py").write_text('"""Producer tests."""\n')
+    (tests / "test_unrelated.py").write_text('def test_unrelated(): pass\n')
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+    commit_fixture(source, "--quiet", "-m", "prior producer")
+    base = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    child = tests / "child"
+    child.mkdir()
+    (child / "__init__.py").write_text('"""Required package."""\n')
+    (child / "test_original.py").write_text('from tests.source_witness import DescriptorSource\n')
+    (tests / "source_witness.py").write_text('class DescriptorSource: pass\n')
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+    commit_fixture(source, "--quiet", "-m", "producer delta")
+    revision = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    (child / "test_original.py").write_text('raise RuntimeError("dirty test must not be imported")\n')
+    root = tmp_path / "generated"
+    import_test_delta(root, source, base, revision)
+    output = root / "tests" / "native_a2a"
+    assert {path.relative_to(output).as_posix() for path in output.rglob("*.py")} == {
+        "__init__.py", "child/__init__.py", "child/test_original.py", "source_witness.py"
+    }
+    assert (output / "child" / "test_original.py").read_text() == relocate_test(
+        'from tests.source_witness import DescriptorSource\n'
+    )
+    with pytest.raises(FileExistsError, match="Refusing to overwrite"):
+        import_test_delta(root, source, base, revision)
+    subprocess.run(["git", "-C", str(source), "rm", "tests/test_unrelated.py"], check=True, capture_output=True)
+    commit_fixture(source, "--quiet", "-m", "deletion requires explicit disposition")
+    deleted = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    refused = tmp_path / "refused-test-delta"
+    with pytest.raises(ValueError, match="explicit disposition: D tests/test_unrelated.py"):
+        import_test_delta(refused, source, revision, deleted)
+    assert not refused.exists()
 
 
 def test_checked_in_sdk_reproduces_reviewed_source_and_license():

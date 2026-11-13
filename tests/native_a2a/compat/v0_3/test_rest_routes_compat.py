@@ -1,0 +1,354 @@
+# Modified by Kestrel: isolated SDK namespace; see kestrel_sdk/native_a2a/VENDORED.json.
+import json
+import logging
+
+from collections.abc import AsyncIterator
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from kestrel_sdk.native_a2a.compat.v0_3 import a2a_v0_3_pb2, rest_adapter
+from kestrel_sdk.native_a2a.compat.v0_3.rest_adapter import REST03Adapter
+from kestrel_sdk.native_a2a.server.request_handlers.request_handler import RequestHandler
+from kestrel_sdk.native_a2a.server.routes import create_agent_card_routes
+from kestrel_sdk.native_a2a.server.routes.rest_routes import create_rest_routes
+from kestrel_sdk.native_a2a.types.a2a_pb2 import (
+    AgentCard,
+    Message as Message10,
+    Part as Part10,
+    Role as Role10,
+    Task as Task10,
+    TaskState as TaskState10,
+    TaskStatus as TaskStatus10,
+)
+from kestrel_sdk.native_a2a.utils.errors import TaskNotFoundError
+from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
+from fastapi import FastAPI
+from google.protobuf import json_format
+from httpx import ASGITransport, AsyncClient
+from starlette.applications import Starlette
+from starlette.requests import Request
+
+from tests.native_a2a.source_witness import make_request, source_request
+
+
+logger = logging.getLogger(__name__)
+
+
+@pytest.mark.anyio
+async def test_shutdown_grace_period_is_passed_to_event_source_response(
+    request_handler: RequestHandler,
+) -> None:
+    async def stream(
+        request: Request, context: object, *, resources: SourceAcquisition
+    ) -> AsyncIterator[dict[str, str]]:
+        yield {'result': 'value'}
+
+    adapter = REST03Adapter(
+        http_handler=request_handler,
+        shutdown_grace_period=30.0,
+    )
+    async with source_request(
+        make_request(headers={'a2a-version': '0.3'})
+    ) as owned:
+        with patch.object(
+            rest_adapter, 'create_event_source_response'
+        ) as response_class:
+            await adapter._handle_streaming_request(stream, owned)
+
+    response_class.assert_called_once()
+    assert response_class.call_args.kwargs['shutdown_grace_period'] == 30.0
+
+
+@pytest.fixture
+async def agent_card() -> AgentCard:
+    mock_agent_card = MagicMock(spec=AgentCard)
+    mock_agent_card.url = 'http://mockurl.com'
+
+    # Mock the capabilities object with streaming disabled
+    mock_capabilities = MagicMock()
+    mock_capabilities.streaming = False
+    mock_capabilities.push_notifications = True
+    mock_capabilities.extended_agent_card = True
+    mock_agent_card.capabilities = mock_capabilities
+
+    return mock_agent_card
+
+
+@pytest.fixture
+async def request_handler() -> RequestHandler:
+    return MagicMock(spec=RequestHandler)
+
+
+@pytest.fixture
+async def app(
+    agent_card: AgentCard,
+    request_handler: RequestHandler,
+) -> Starlette:
+    """Builds the Starlette application for testing."""
+    request_handler._agent_card = agent_card
+    rest_routes = create_rest_routes(
+        request_handler=request_handler, enable_v0_3_compat=True
+    )
+    agent_card_routes = create_agent_card_routes(
+        agent_card=agent_card, card_url='/well-known/agent.json'
+    )
+    return Starlette(routes=rest_routes + agent_card_routes)
+
+
+@pytest.fixture
+async def client(app: FastAPI) -> AsyncClient:
+    return AsyncClient(
+        transport=ASGITransport(app=app), base_url='http://testapp'
+    )
+
+
+@pytest.mark.anyio
+async def test_send_message_success_message_v03(
+    client: AsyncClient, request_handler: MagicMock
+) -> None:
+    expected_response = a2a_v0_3_pb2.SendMessageResponse(
+        msg=a2a_v0_3_pb2.Message(
+            message_id='test',
+            role=a2a_v0_3_pb2.Role.ROLE_AGENT,
+            content=[a2a_v0_3_pb2.Part(text='response message')],
+        ),
+    )
+    request_handler.on_message_send.return_value = Message10(
+        message_id='test',
+        role=Role10.ROLE_AGENT,
+        parts=[Part10(text='response message')],
+    )
+
+    request = a2a_v0_3_pb2.SendMessageRequest(
+        request=a2a_v0_3_pb2.Message(
+            message_id='req',
+            role=a2a_v0_3_pb2.Role.ROLE_USER,
+            content=[a2a_v0_3_pb2.Part(text='hello')],
+        ),
+    )
+
+    response = await client.post(
+        '/v1/message:send', json=json_format.MessageToDict(request)
+    )
+    response.raise_for_status()
+
+    actual_response = a2a_v0_3_pb2.SendMessageResponse()
+    json_format.Parse(response.text, actual_response)
+    assert expected_response == actual_response
+
+
+@pytest.mark.anyio
+async def test_send_message_success_task_v03(
+    client: AsyncClient, request_handler: MagicMock
+) -> None:
+    expected_response = a2a_v0_3_pb2.SendMessageResponse(
+        task=a2a_v0_3_pb2.Task(
+            id='test_task_id',
+            context_id='test_context_id',
+            status=a2a_v0_3_pb2.TaskStatus(
+                state=a2a_v0_3_pb2.TaskState.TASK_STATE_COMPLETED,
+            ),
+        ),
+    )
+    request_handler.on_message_send.return_value = Task10(
+        id='test_task_id',
+        context_id='test_context_id',
+        status=TaskStatus10(
+            state=TaskState10.TASK_STATE_COMPLETED,
+        ),
+    )
+
+    request = a2a_v0_3_pb2.SendMessageRequest(
+        request=a2a_v0_3_pb2.Message(),
+    )
+
+    response = await client.post(
+        '/v1/message:send', json=json_format.MessageToDict(request)
+    )
+    response.raise_for_status()
+
+    actual_response = a2a_v0_3_pb2.SendMessageResponse()
+    json_format.Parse(response.text, actual_response)
+    assert expected_response == actual_response
+
+
+@pytest.mark.anyio
+async def test_get_task_v03(
+    client: AsyncClient, request_handler: MagicMock
+) -> None:
+    expected_response = a2a_v0_3_pb2.Task(
+        id='test_task_id',
+        context_id='test_context_id',
+        status=a2a_v0_3_pb2.TaskStatus(
+            state=a2a_v0_3_pb2.TaskState.TASK_STATE_COMPLETED,
+        ),
+    )
+    request_handler.on_get_task.return_value = Task10(
+        id='test_task_id',
+        context_id='test_context_id',
+        status=TaskStatus10(
+            state=TaskState10.TASK_STATE_COMPLETED,
+        ),
+    )
+
+    response = await client.get('/v1/tasks/test_task_id')
+    response.raise_for_status()
+
+    actual_response = a2a_v0_3_pb2.Task()
+    json_format.Parse(response.text, actual_response)
+    assert expected_response == actual_response
+
+
+@pytest.mark.anyio
+async def test_get_task_v03_non_integer_history_length(
+    client: AsyncClient, request_handler: MagicMock
+) -> None:
+    response = await client.get('/v1/tasks/test_task_id?historyLength=abc')
+
+    assert response.status_code == 400
+    assert response.json()['error']['status'] == 'INVALID_ARGUMENT'
+    request_handler.on_get_task.assert_not_called()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    'path',
+    ['/v1/message:send', '/v1/tasks/test_task_id/pushNotificationConfigs'],
+)
+async def test_invalid_utf8_body_v03_is_bad_request(
+    client: AsyncClient, path: str
+) -> None:
+    response = await client.post(
+        path, content=b'{"message": {"messageId": "\xff"}}'
+    )
+
+    assert response.status_code == 400
+    assert response.json()['error']['status'] == 'INVALID_ARGUMENT'
+
+
+@pytest.mark.anyio
+async def test_list_tasks_not_in_v03_adapter_routes(
+    request_handler: RequestHandler,
+) -> None:
+    adapter = REST03Adapter(http_handler=request_handler)
+    assert ('/v1/tasks', 'GET') not in adapter.routes()
+
+
+@pytest.mark.anyio
+async def test_cancel_task_v03(
+    client: AsyncClient, request_handler: MagicMock
+) -> None:
+    expected_response = a2a_v0_3_pb2.Task(
+        id='test_task_id',
+        context_id='test_context_id',
+        status=a2a_v0_3_pb2.TaskStatus(
+            state=a2a_v0_3_pb2.TaskState.TASK_STATE_CANCELLED,
+        ),
+    )
+    request_handler.on_cancel_task.return_value = Task10(
+        id='test_task_id',
+        context_id='test_context_id',
+        status=TaskStatus10(
+            state=TaskState10.TASK_STATE_CANCELED,
+        ),
+    )
+
+    response = await client.post('/v1/tasks/test_task_id:cancel')
+    response.raise_for_status()
+
+    actual_response = a2a_v0_3_pb2.Task()
+    json_format.Parse(response.text, actual_response)
+    assert expected_response == actual_response
+
+
+@pytest.mark.anyio
+async def test_v03_streaming_does_not_ascii_escape_non_ascii(
+    request_handler: RequestHandler,
+) -> None:
+    """v0.3 REST streaming must emit raw UTF-8 for non-ASCII characters.
+
+    Regression test for https://github.com/a2aproject/a2a-python/issues/1078.
+    """
+    adapter = REST03Adapter(http_handler=request_handler)
+    non_ascii_text = '你好'
+
+    async def stream_with_non_ascii(
+        request: Request, context: object, *, resources: SourceAcquisition
+    ) -> AsyncIterator[dict]:
+        yield {'msg': {'text': non_ascii_text}}
+
+    async with source_request(
+        make_request(headers={'a2a-version': '0.3'})
+    ) as owned:
+        response = await adapter._handle_streaming_request(
+            stream_with_non_ascii, owned
+        )
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk)
+
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    payload = getattr(chunk, 'data', chunk)
+    if isinstance(payload, bytes):
+        payload = payload.decode('utf-8')
+    assert non_ascii_text in payload
+    assert '\\u4f60\\u597d' not in payload
+
+
+@pytest.mark.anyio
+async def test_v03_message_stream_malformed_json_returns_400(
+    client: AsyncClient, request_handler: MagicMock
+) -> None:
+    response = await client.post(
+        '/v1/message:stream',
+        content=b'{bad',
+        headers={'Content-Type': 'application/json'},
+    )
+
+    assert response.status_code == 400
+    assert response.headers['content-type'].startswith('application/json')
+    assert response.json()['error']['status'] == 'INVALID_ARGUMENT'
+    request_handler.on_message_send_stream.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_v03_subscribe_unknown_task_returns_404(
+    client: AsyncClient, request_handler: MagicMock
+) -> None:
+    async def not_found(*args: object, **kwargs: object) -> AsyncIterator[None]:
+        raise TaskNotFoundError
+        yield
+
+    request_handler.on_subscribe_to_task.side_effect = not_found
+
+    response = await client.post('/v1/tasks/unknown:subscribe')
+
+    assert response.status_code == 404
+    assert response.json()['error']['status'] == 'NOT_FOUND'
+
+
+@pytest.mark.anyio
+async def test_v03_streaming_yields_all_events_in_order(
+    request_handler: RequestHandler,
+) -> None:
+    adapter = REST03Adapter(http_handler=request_handler)
+
+    async def stream(
+        request: Request, context: object, *, resources: SourceAcquisition
+    ) -> AsyncIterator[dict[str, int]]:
+        for i in range(3):
+            yield {'n': i}
+
+    async with source_request(
+        make_request(headers={'a2a-version': '0.3'})
+    ) as owned:
+        response = await adapter._handle_streaming_request(stream, owned)
+        chunks = [chunk async for chunk in response.body_iterator]
+
+    assert [json.loads(chunk) for chunk in chunks] == [
+        {'n': 0},
+        {'n': 1},
+        {'n': 2},
+    ]

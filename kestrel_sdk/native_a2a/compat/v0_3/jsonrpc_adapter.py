@@ -43,8 +43,10 @@ from kestrel_sdk.native_a2a.server.routes.common import (
     ServerCallContextBuilder,
     create_event_source_response,
 )
+from kestrel_sdk.native_a2a.server.routes.source_lifetime import SourceRequestRoot
 from kestrel_sdk.native_a2a.utils import constants
 from kestrel_sdk.native_a2a.utils.errors import JSON_RPC_ERROR_CODE_MAP, A2AError
+from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
 from kestrel_sdk.native_a2a.utils.version_validator import validate_version
 
 
@@ -123,6 +125,8 @@ class JSONRPC03Adapter:
         method: str,
         body: dict,
         request: Request,
+        *,
+        source_root: SourceRequestRoot,
     ) -> 'JSONResponse | EventSourceResponse':
         """Handles v0.3 specific JSON-RPC requests."""
         try:
@@ -150,7 +154,10 @@ class JSONRPC03Adapter:
 
             if method in ('message/stream', 'tasks/resubscribe'):
                 return await self._process_streaming_request(
-                    request_id, specific_request, call_context
+                    request_id,
+                    specific_request,
+                    call_context,
+                    source_root=source_root,
                 )
 
             return await self._process_non_streaming_request(
@@ -259,16 +266,23 @@ class JSONRPC03Adapter:
         request_id: 'str | int | None',
         request_obj: Any,
         context: ServerCallContext,
+        *,
+        source_root: SourceRequestRoot,
     ) -> EventSourceResponse:
         method = request_obj.method
-        if method == 'message/stream':
-            stream_gen = self.handler.on_message_send_stream(
-                request_obj, context
-            )
-        elif method == 'tasks/resubscribe':
-            stream_gen = self.handler.on_subscribe_to_task(request_obj, context)
-        else:
+
+        def acquire(resources: SourceAcquisition) -> AsyncIterable[Any]:
+            if method == 'message/stream':
+                return self.handler.on_message_send_stream(
+                    request_obj, context, resources=resources
+                )
+            if method == 'tasks/resubscribe':
+                return self.handler.on_subscribe_to_task(
+                    request_obj, context, resources=resources
+                )
             raise ValueError(f'Unsupported streaming method {method}')
+
+        stream_gen = await source_root.open(acquire)
 
         async def event_generator(
             stream: AsyncIterable[Any],
@@ -281,6 +295,7 @@ class JSONRPC03Adapter:
                         )
                     }
             except A2AError as e:
+                stream_gen.raise_if_retirement_failed()
                 err_resp = types_v03.SendStreamingMessageResponse(
                     root=types_v03.JSONRPCErrorResponse(
                         id=request_id, error=_to_v03_jsonrpc_error(e)
@@ -292,6 +307,7 @@ class JSONRPC03Adapter:
                     )
                 }
             except Exception as e:
+                stream_gen.raise_if_retirement_failed()
                 err = _to_v03_jsonrpc_error(e)
                 logger.exception(
                     'Error during stream generation in v0.3 JSONRPCAdapter'

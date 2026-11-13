@@ -98,15 +98,17 @@ def _attach_route(
         extra = dict(openapi_extra or {})
         extra.setdefault('parameters', [_A2A_VERSION_HEADER])
         openapi_extra = extra
-    app.routes.append(
-        _A2ARoute(
-            path=route.path,
-            endpoint=route.endpoint,
-            methods=methods,
-            tags=[tag],
-            openapi_extra=openapi_extra,
-        )
+    api_route = _A2ARoute(
+        path=route.path,
+        endpoint=route.endpoint,
+        methods=methods,
+        tags=[tag],
+        openapi_extra=openapi_extra,
     )
+    # Preserve the actual ASGI lifetime, not just its bare endpoint metadata.
+    # Rebuilding request_response(endpoint) discards an admitted source root.
+    api_route.app = route.app
+    app.routes.append(api_route)
 
 
 def add_a2a_routes_to_fastapi(

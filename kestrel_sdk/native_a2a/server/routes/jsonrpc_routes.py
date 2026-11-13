@@ -21,17 +21,24 @@ else:
 from kestrel_sdk.native_a2a.server.request_handlers.request_handler import RequestHandler
 from kestrel_sdk.native_a2a.server.routes.common import ServerCallContextBuilder
 from kestrel_sdk.native_a2a.server.routes.jsonrpc_dispatcher import JsonRpcDispatcher
+from kestrel_sdk.native_a2a.server.routes.source_lifetime import create_source_route
+from kestrel_sdk.native_a2a.utils.source_lifetime import (
+    SourceLifetimeFactory,
+    standalone_source_lifetime,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
-def create_jsonrpc_routes(
+def create_jsonrpc_routes(  # noqa: PLR0913 -- preserve the existing positional API
     request_handler: RequestHandler,
     rpc_url: str,
     context_builder: ServerCallContextBuilder | None = None,
     enable_v0_3_compat: bool = False,
     shutdown_grace_period: float = 0,
+    *,
+    source_lifetime_factory: SourceLifetimeFactory = standalone_source_lifetime,
 ) -> list['Route']:
     """Creates the Starlette Route for the A2A protocol JSON-RPC endpoint.
 
@@ -51,6 +58,8 @@ def create_jsonrpc_routes(
           before force-cancellation during shutdown. This value should be less
           than the ASGI server's graceful shutdown timeout. Defaults to 0,
           matching the ``sse-starlette`` default behavior.
+        source_lifetime_factory: Explicit source admission/retirement policy.
+          Native hosts must pass their policy; standalone apps use AnyIO.
     """
     if not _package_starlette_installed:
         raise ImportError(
@@ -67,9 +76,10 @@ def create_jsonrpc_routes(
     )
 
     return [
-        Route(
+        create_source_route(
             path=rpc_url,
             endpoint=dispatcher.handle_requests,
             methods=['POST'],
+            factory=source_lifetime_factory,
         )
     ]

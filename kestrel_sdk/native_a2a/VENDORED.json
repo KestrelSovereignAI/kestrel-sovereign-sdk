@@ -3,9 +3,9 @@
   "protocol": "1.0.1",
   "base_release": "1.3.0-21-g2cc1dd5",
   "base_commit": "2cc1dd5020874376ed293ef87089e5df9d205571",
-  "reviewed_source_tree": "2561d4e502b114d8ba54b57bd8bd032defc49116",
+  "reviewed_source_tree": "6bf3946a8604b82c04347d95c3e6085842667dc4",
   "namespace": "kestrel_sdk.native_a2a",
-  "modifications": "Reviewed signing, HTTP authorization and version negotiation, client ownership, discovery/response decoding, native-only client selection, HTTP error media types, original host-control errors and shared original-source handoff/retirement body in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
+  "modifications": "Reviewed signing, HTTP authorization and version negotiation, client ownership, discovery/response decoding, native-only client selection, HTTP error media types, original host-control errors, shared original-source handoff/retirement body, explicit complete HTTP/ASGI request roots and compatibility gRPC coroutine writers in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
   "files": {
     "__init__.py": {
       "upstream_sha256": "071fb0057bdade6df2df0a6ee1c09348dc1f6f54defcba348fe7774b2ef09834",
@@ -193,8 +193,8 @@
       "namespace_modified": true
     },
     "compat/v0_3/grpc_handler.py": {
-      "upstream_sha256": "a2b888ecde2c47195f235e7329c06f0d3375e194d061d944557be2c0b0e5ff43",
-      "vendored_sha256": "5bd85aa3ec0e1ddee0a699f8b4345ac099f7138d4a1f9eed10bd4c6baa83f114",
+      "upstream_sha256": "7df68230ce2d620701be9a6c58a888b1aef25100c155622e76fa471f23f286d6",
+      "vendored_sha256": "070c34ecf7b52ecedf458c7c58c17c8bd60dd9a6b8a8fe1bd5f453852a5c21fb",
       "namespace_modified": true
     },
     "compat/v0_3/grpc_transport.py": {
@@ -203,8 +203,8 @@
       "namespace_modified": true
     },
     "compat/v0_3/jsonrpc_adapter.py": {
-      "upstream_sha256": "42389be9c2d8dcc40bdfa2ae1f6ed382eb1e2cbb582ae99297cf5d9c00f391e5",
-      "vendored_sha256": "71565ab53ef1ea7e710d5179874c8df3b0c0afc3949880a4d06aa1b2d774ba80",
+      "upstream_sha256": "647a47c329d12c9c1410b57411a9a8bc28c0d620a4205a3a892c9cd82470a913",
+      "vendored_sha256": "bb4985227e956a1849385f3e60367badd16485423acf490f7bf464713edb0e31",
       "namespace_modified": true
     },
     "compat/v0_3/jsonrpc_transport.py": {
@@ -223,18 +223,18 @@
       "namespace_modified": true
     },
     "compat/v0_3/request_handler.py": {
-      "upstream_sha256": "57bf4763a8bafa55ea6ea0f0576b09b70b9967be14b0935c435807bcecc16f5d",
-      "vendored_sha256": "04e5517d4b10b0a241d6a049b4afbc6032886139d814925483c364f94f419e09",
+      "upstream_sha256": "3a6c366a6ac2fabab5a2c74e26c2535bd2c8438a6d2eca33a8ac38a17febd375",
+      "vendored_sha256": "a801dfd10c2a3b3129cc38a2e9945a6bbcc7f1279e97ed9003c216bf5370c494",
       "namespace_modified": true
     },
     "compat/v0_3/rest_adapter.py": {
-      "upstream_sha256": "78d9998873e5b8e802f9e52fe9e7650c48011264fe1ee53cf960b0276944a76b",
-      "vendored_sha256": "a2af7f45d25ee0a814f6bf9f32fe0babfd3a217114abd12458325d143a96fc0f",
+      "upstream_sha256": "6fdafed6a243408d33eb803c3a66ea3fca0fcd1ad55f397ba866e91701f44f34",
+      "vendored_sha256": "c1184f2ab63902280795661a6be36a2f75fc5846d1259df7a296706e56b9baab",
       "namespace_modified": true
     },
     "compat/v0_3/rest_handler.py": {
-      "upstream_sha256": "4fef84c19b7821b6cd5a7ec42b1791bb3c3576ad15c080d528f9c6f0c0d662d2",
-      "vendored_sha256": "9fff371929ea3c71a6af2d2e4f94b5244479ebf208ab8fea748f00dbfa6fc333",
+      "upstream_sha256": "7dec32914c8d4bcd101553b40372b41c3ff5be3c4e6fb45e3b25b569313d2172",
+      "vendored_sha256": "8c5cfef1eeeeb9567aa3480d2ea3af22e1039d52e9bc1c72320a35086f567104",
       "namespace_modified": true
     },
     "compat/v0_3/rest_transport.py": {
@@ -538,28 +538,33 @@
       "namespace_modified": true
     },
     "server/routes/fastapi_routes.py": {
-      "upstream_sha256": "e514306bce24024a31d26798981933be84a6dae3262bd503cf31450412e815d2",
-      "vendored_sha256": "cc8428e9dd6495b80e2d5aa1f81b4ec1617d928b1b95480c4609832cd3ad3aa8",
+      "upstream_sha256": "54251f09fdf943df8659a0ed9a7eb68943af6a23e8143039de1f7fe609174bf0",
+      "vendored_sha256": "a27e7ab3f17cc8e307deb340890164eb63246e615f025279f69686c669816ce0",
       "namespace_modified": true
     },
     "server/routes/jsonrpc_dispatcher.py": {
-      "upstream_sha256": "fc48c1b19b5df24520cefb9acc95333475de699267fed9dbab908d0bc45cb365",
-      "vendored_sha256": "4c229d4a5585cf53094c77adbb1dcee2b162d2d355af1972396f2eb39372ed3e",
+      "upstream_sha256": "d0c5732ed76091a5b1b554b352997d7bc2edfe55cc6c7e22d2db2b8565073d89",
+      "vendored_sha256": "a921890c6fb5f4a68ddea734645d2c5af68ce72db4b313b413a7525a1c2aab95",
       "namespace_modified": true
     },
     "server/routes/jsonrpc_routes.py": {
-      "upstream_sha256": "6de8528c98b49e5ea81a2037c055491d9c040678e97405ad3f335823f0a6c00f",
-      "vendored_sha256": "1f6feba4abdca1e1a1dff104137f9400fab3bb9fdf28c1bd2b37dde05e354464",
+      "upstream_sha256": "3d96de2f94a07c76a9770909fe905742bccd90c64b5d5ac4400b87fe1251ccec",
+      "vendored_sha256": "c6c442ede1b2cf661851929c6b110c7bb83331dc01056a887749e5144906eed7",
       "namespace_modified": true
     },
     "server/routes/rest_dispatcher.py": {
-      "upstream_sha256": "c2ca9b2aa7958976346a5f3562a273d366458ab7ea8d7188d33eb3e8445bdd90",
-      "vendored_sha256": "7635693bc5533d3a6f3b10af41cfa7c5c34b0c51421f0e3c1ddef17098cad478",
+      "upstream_sha256": "59853af937dcc4f42f74c1ab6f72026cd6f586c8c822fd0d94349c6ed3b9302e",
+      "vendored_sha256": "403210600e9f7ab84568ab0cb70c178a085e71e5f6cdd845db9beb5e18fb7bc7",
       "namespace_modified": true
     },
     "server/routes/rest_routes.py": {
-      "upstream_sha256": "2c42c9512a69dc227632edf4d08d5b40233a6ed7363b409c5f96a1258b33e9fa",
-      "vendored_sha256": "e76f2eb5378ae290cbb9f4a73ea1bb659db9faf8170163239ebdd8c26629db70",
+      "upstream_sha256": "9120f750e075aa180b20e0f24c85e92ea47c91c46fdadc400781dbc84ce118b5",
+      "vendored_sha256": "c8f9f18e505a466d2cc66e8f4668593f6de3ba6d94d979c55aaf078ace220576",
+      "namespace_modified": true
+    },
+    "server/routes/source_lifetime.py": {
+      "upstream_sha256": "5381c8524cfda55e30448efd8e96964ab9183eaaeac1e16b45bf55b72f8ff80f",
+      "vendored_sha256": "f3dd3f539c2b175f7ae3da2d16fcc8e801fcec64c0893a7533884112ee931cce",
       "namespace_modified": true
     },
     "server/tasks/__init__.py": {
@@ -707,9 +712,14 @@
       "vendored_sha256": "c130e48fad7fe3b22e65d8beb334c53f1d8dd65f90bb7425cc65a89a8d3cf8fd",
       "namespace_modified": true
     },
+    "utils/source_lifetime.py": {
+      "upstream_sha256": "f321acebf6fa0660cc3dd62ed638879fd1dc212418183c796200017f0953288e",
+      "vendored_sha256": "7e204ec5e9fd9ab9b6f7e48ecaeba30f378e0845d165b695bdf957fab9869e46",
+      "namespace_modified": true
+    },
     "utils/source_ownership.py": {
-      "upstream_sha256": "4c2f67a8c4bb64a660b19708e6b4784e7c94d80ef48a2c65d1fab8c0bba6ccbc",
-      "vendored_sha256": "456fe3a80611b1341b6cf876943f0e3639867a73469d124985b4feb27531f0ee",
+      "upstream_sha256": "7f0b73a390812458af41abe4a4c50463f0f10668f469d4a093c5112c89a6eb9d",
+      "vendored_sha256": "38b618918a63ef031c208d616bc2ec3d0842035c45b2ac454441714f882dd514",
       "namespace_modified": false
     },
     "utils/task.py": {
@@ -731,7 +741,7 @@
   "provenance_sha256": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
     "UPSTREAM-PYPROJECT.toml": "b375174ec5b36ba37d8b68b30f836587389e880813b58a675b3d8c901f3adfe9",
-    "UPSTREAM.patch": "0415b243b35bb61cf98542ed1d85e4605a0ed998c7f7c7dae5f53279a0bd3d16",
+    "UPSTREAM.patch": "e1f38ba0ba19bbe85fb680dc7583890f9b5c791f2d9c95011e75d30c9aa862bd",
     "NOTICE": "4924afe3dab57b45b0ae6ed34529d8231904adf8d7eeb35be6b12546be7cd8c0"
   }
 }

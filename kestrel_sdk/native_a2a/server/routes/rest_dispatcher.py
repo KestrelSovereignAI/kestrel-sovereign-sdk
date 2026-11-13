@@ -16,6 +16,7 @@ from kestrel_sdk.native_a2a.server.routes.common import (
     create_event_source_response,
     serialize_list_tasks_response,
 )
+from kestrel_sdk.native_a2a.server.routes.source_lifetime import source_root_for
 from kestrel_sdk.native_a2a.types import a2a_pb2
 from kestrel_sdk.native_a2a.types.a2a_pb2 import (
     CancelTaskRequest,
@@ -28,6 +29,7 @@ from kestrel_sdk.native_a2a.utils.errors import (
     InvalidRequestError,
     TaskNotFoundError,
 )
+from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
 from kestrel_sdk.native_a2a.utils.telemetry import SpanKind, trace_class
 from kestrel_sdk.native_a2a.utils.version_validator import validate_version
 
@@ -131,7 +133,9 @@ class RestDispatcher:
     async def _handle_streaming(
         self,
         request: Request,
-        handler_func: Callable[[ServerCallContext], AsyncIterator[Any]],
+        handler_func: Callable[
+            [ServerCallContext, SourceAcquisition], AsyncIterator[Any]
+        ],
     ) -> EventSourceResponse:
         """Centralized error handling and context management for streaming calls."""
         # Pre-consume and cache the request body to prevent deadlock in streaming context
@@ -155,7 +159,10 @@ class RestDispatcher:
         # the correct HTTP status code instead of starting an SSE stream.
         # Without this, the error would be raised after SSE headers are
         # already sent, and the client would see a broken stream instead
-        stream = aiter(handler_func(context))
+        def acquire(resources: SourceAcquisition) -> AsyncIterator[Any]:
+            return handler_func(context, resources)
+
+        stream = await source_root_for(request).open(acquire)
         try:
             first_item = await anext(stream)
         except StopAsyncIteration:
@@ -170,6 +177,7 @@ class RestDispatcher:
                 async for item in stream:
                     yield ServerSentEvent(data=json_utils.dumps(item))
             except Exception as e:
+                stream.raise_if_retirement_failed()
                 payload = build_rest_error_payload(e)
                 logger.exception('Error during REST SSE stream')
                 yield ServerSentEvent(
@@ -212,13 +220,15 @@ class RestDispatcher:
         @validate_version(constants.PROTOCOL_VERSION_1_0)
         async def _handler(
             context: ServerCallContext,
+            resources: SourceAcquisition,
         ) -> AsyncIterator[dict[str, Any]]:
             body = await request.body()
             params = a2a_pb2.SendMessageRequest()
             proto_utils.parse_lenient(body, params)
-            async for event in self.request_handler.on_message_send_stream(
-                params, context
-            ):
+            stream = resources.retain_iterable(
+                self.request_handler.on_message_send_stream(params, context)
+            )
+            async for event in stream:
                 response = proto_utils.to_stream_response(event)
                 yield MessageToDict(response)
 
@@ -253,10 +263,14 @@ class RestDispatcher:
         @validate_version(constants.PROTOCOL_VERSION_1_0)
         async def _handler(
             context: ServerCallContext,
+            resources: SourceAcquisition,
         ) -> AsyncIterator[dict[str, Any]]:
-            async for event in self.request_handler.on_subscribe_to_task(
-                SubscribeToTaskRequest(id=task_id), context
-            ):
+            stream = resources.retain_iterable(
+                self.request_handler.on_subscribe_to_task(
+                    SubscribeToTaskRequest(id=task_id), context
+                )
+            )
+            async for event in stream:
                 response = proto_utils.to_stream_response(event)
                 yield MessageToDict(response)
 

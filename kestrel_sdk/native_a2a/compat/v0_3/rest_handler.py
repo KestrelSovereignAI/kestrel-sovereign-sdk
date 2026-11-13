@@ -32,6 +32,7 @@ from kestrel_sdk.native_a2a.server.context import ServerCallContext
 from kestrel_sdk.native_a2a.utils import constants
 from kestrel_sdk.native_a2a.utils.errors import InvalidParamsError
 from kestrel_sdk.native_a2a.utils.proto_utils import parse_lenient
+from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
 from kestrel_sdk.native_a2a.utils.telemetry import SpanKind, trace_class
 from kestrel_sdk.native_a2a.utils.version_validator import validate_version
 
@@ -85,12 +86,15 @@ class REST03Handler:
         self,
         request: Request,
         context: ServerCallContext,
+        *,
+        resources: SourceAcquisition,
     ) -> AsyncIterator[dict[str, Any]]:
         """Handles the 'message/stream' REST method.
 
         Args:
             request: The incoming `Request` object.
             context: Context provided by the server.
+            resources: Original producer's acquisition/retirement record.
 
         Yields:
             JSON serialized objects containing streaming events in v0.3 format.
@@ -101,9 +105,12 @@ class REST03Handler:
         v03_params_msg = proto_utils.FromProto.message_send_params(v03_pb_msg)
         rpc_req = types_v03.SendMessageRequest(id='', params=v03_params_msg)
 
-        async for v03_stream_resp in self.handler03.on_message_send_stream(
-            rpc_req, context
-        ):
+        stream = resources.retain_iterable(
+            self.handler03.on_message_send_stream(
+                rpc_req, context, resources=resources
+            )
+        )
+        async for v03_stream_resp in stream:
             v03_pb_resp = proto_utils.ToProto.stream_response(
                 v03_stream_resp.result
             )
@@ -139,12 +146,15 @@ class REST03Handler:
         self,
         request: Request,
         context: ServerCallContext,
+        *,
+        resources: SourceAcquisition,
     ) -> AsyncIterator[dict[str, Any]]:
         """Handles the 'tasks/{id}:subscribe' REST method.
 
         Args:
             request: The incoming `Request` object.
             context: Context provided by the server.
+            resources: Original producer's acquisition/retirement record.
 
         Yields:
             JSON serialized objects containing streaming events in v0.3 format.
@@ -155,9 +165,12 @@ class REST03Handler:
             params=types_v03.TaskIdParams(id=task_id),
         )
 
-        async for v03_stream_resp in self.handler03.on_subscribe_to_task(
-            rpc_req, context
-        ):
+        stream = resources.retain_iterable(
+            self.handler03.on_subscribe_to_task(
+                rpc_req, context, resources=resources
+            )
+        )
+        async for v03_stream_resp in stream:
             v03_pb_resp = proto_utils.ToProto.stream_response(
                 v03_stream_resp.result
             )

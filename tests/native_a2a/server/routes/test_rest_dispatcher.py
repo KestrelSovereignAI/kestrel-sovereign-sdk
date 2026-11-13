@@ -28,9 +28,11 @@ from kestrel_sdk.native_a2a.types.a2a_pb2 import (
 from kestrel_sdk.native_a2a.utils.errors import (
     UnsupportedOperationError,
 )
+from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
 from starlette.applications import Starlette
-from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+from tests.native_a2a.source_witness import make_request, source_request
 
 
 @pytest.fixture
@@ -79,34 +81,7 @@ def rest_dispatcher_instance(mock_handler):
     return RestDispatcher(request_handler=mock_handler)
 
 
-from starlette.datastructures import Headers, QueryParams
-
-
-def make_mock_request(
-    method: str = 'GET',
-    path_params: dict | None = None,
-    query_params: dict | None = None,
-    headers: dict | None = None,
-    body: bytes = b'{}',
-) -> Request:
-    mock_req = MagicMock(spec=Request)
-    mock_req.method = method
-    mock_req.path_params = path_params or {}
-    mock_req.query_params = query_params or {}
-
-    # Default valid headers for A2A
-    default_headers = {'a2a-version': '1.0'}
-    if headers:
-        default_headers.update(headers)
-
-    mock_req.headers = Headers(default_headers)
-    mock_req.body = AsyncMock(return_value=body)
-
-    # Needs to be able to build ServerCallContext, so provide .user and .auth etc. if needed
-    mock_req.user = MagicMock(is_authenticated=False)
-    mock_req.auth = None
-    mock_req.scope = {}
-    return mock_req
+from starlette.datastructures import QueryParams
 
 
 class TestRestDispatcherInitialization:
@@ -134,7 +109,7 @@ class TestRestDispatcherInitialization:
 @pytest.mark.asyncio
 class TestRestDispatcherContextManagement:
     async def test_build_call_context(self, rest_dispatcher_instance):
-        req = make_mock_request(path_params={'tenant': 'my-tenant'})
+        req = make_request(path_params={'tenant': 'my-tenant'})
         context = rest_dispatcher_instance._build_call_context(req)
 
         assert isinstance(context, ServerCallContext)
@@ -148,7 +123,7 @@ class TestRestDispatcherEndpoints:
         self, rest_dispatcher_instance, mock_handler
     ):
         # 0.3 is currently not supported for direct message sending on RestDispatcher
-        req = make_mock_request(method='POST', headers={'a2a-version': '0.3.0'})
+        req = make_request(method='POST', headers={'a2a-version': '0.3.0'})
         response = await rest_dispatcher_instance.on_message_send(req)
 
         # VersionNotSupportedError maps to 400 Bad Request
@@ -157,7 +132,7 @@ class TestRestDispatcherEndpoints:
     async def test_on_message_send_returns_message(
         self, rest_dispatcher_instance, mock_handler
     ):
-        req = make_mock_request(method='POST')
+        req = make_request(method='POST')
         response = await rest_dispatcher_instance.on_message_send(req)
 
         assert isinstance(response, JSONResponse)
@@ -169,7 +144,7 @@ class TestRestDispatcherEndpoints:
         self, rest_dispatcher_instance, mock_handler
     ):
         mock_handler.on_message_send.return_value = Task(id='new_task')
-        req = make_mock_request(method='POST')
+        req = make_request(method='POST')
 
         response = await rest_dispatcher_instance.on_message_send(req)
         assert response.status_code == 200
@@ -180,7 +155,7 @@ class TestRestDispatcherEndpoints:
     async def test_on_cancel_task_success(
         self, rest_dispatcher_instance, mock_handler
     ):
-        req = make_mock_request(method='POST', path_params={'id': 'test_task'})
+        req = make_request(method='POST', path_params={'id': 'test_task'})
         response = await rest_dispatcher_instance.on_cancel_task(req)
 
         assert response.status_code == 200
@@ -191,7 +166,7 @@ class TestRestDispatcherEndpoints:
         self, rest_dispatcher_instance, mock_handler
     ):
         mock_handler.on_cancel_task.return_value = None
-        req = make_mock_request(method='POST', path_params={'id': 'test_task'})
+        req = make_request(method='POST', path_params={'id': 'test_task'})
 
         response = await rest_dispatcher_instance.on_cancel_task(req)
         assert response.status_code == 404  # TaskNotFoundError maps to 404
@@ -207,7 +182,7 @@ class TestRestDispatcherEndpoints:
                 'metadata': {'reason': 'user_aborted', 'nested': {'step': 3}},
             }
         ).encode('utf-8')
-        req = make_mock_request(
+        req = make_request(
             method='POST', path_params={'id': 'test_task'}, body=body
         )
 
@@ -227,7 +202,7 @@ class TestRestDispatcherEndpoints:
         mock_handler: AsyncMock,
         body: bytes,
     ) -> None:
-        req = make_mock_request(
+        req = make_request(
             method='POST', path_params={'id': 'test_task'}, body=body
         )
 
@@ -243,7 +218,7 @@ class TestRestDispatcherEndpoints:
         rest_dispatcher_instance: RestDispatcher,
         mock_handler: AsyncMock,
     ) -> None:
-        req = make_mock_request(
+        req = make_request(
             method='POST', path_params={'id': 'test_task'}, body=b'{not-json'
         )
 
@@ -254,7 +229,7 @@ class TestRestDispatcherEndpoints:
     async def test_on_get_task_success(
         self, rest_dispatcher_instance, mock_handler
     ):
-        req = make_mock_request(method='GET', path_params={'id': 'test_task'})
+        req = make_request(method='GET', path_params={'id': 'test_task'})
         response = await rest_dispatcher_instance.on_get_task(req)
 
         assert response.status_code == 200
@@ -265,9 +240,7 @@ class TestRestDispatcherEndpoints:
         self, rest_dispatcher_instance, mock_handler
     ):
         mock_handler.on_get_task.return_value = None
-        req = make_mock_request(
-            method='GET', path_params={'id': 'missing_task'}
-        )
+        req = make_request(method='GET', path_params={'id': 'missing_task'})
 
         response = await rest_dispatcher_instance.on_get_task(req)
         assert response.status_code == 404
@@ -276,15 +249,13 @@ class TestRestDispatcherEndpoints:
         self, rest_dispatcher_instance, mock_handler
     ):
         mock_handler.on_get_task.return_value = None
-        req = make_mock_request(
-            method='GET', path_params={'id': 'missing_task'}
-        )
+        req = make_request(method='GET', path_params={'id': 'missing_task'})
 
         response = await rest_dispatcher_instance.on_get_task(req)
         assert response.media_type == 'application/a2a+json'
 
     async def test_list_tasks(self, rest_dispatcher_instance, mock_handler):
-        req = make_mock_request(method='GET')
+        req = make_request(method='GET')
         response = await rest_dispatcher_instance.list_tasks(req)
         assert response.status_code == 200
 
@@ -329,7 +300,7 @@ class TestRestDispatcherEndpoints:
                 )
             ]
         )
-        req = make_mock_request(method='GET', query_params=query_params)
+        req = make_request(method='GET', query_params=query_params)
 
         response = await rest_dispatcher_instance.list_tasks(req)
 
@@ -366,7 +337,7 @@ class TestRestDispatcherEndpoints:
     async def test_get_push_notification(
         self, rest_dispatcher_instance, mock_handler
     ):
-        req = make_mock_request(
+        req = make_request(
             method='GET', path_params={'id': 'task1', 'push_id': 'push1'}
         )
         response = await rest_dispatcher_instance.get_push_notification(req)
@@ -377,7 +348,7 @@ class TestRestDispatcherEndpoints:
     async def test_delete_push_notification(
         self, rest_dispatcher_instance, mock_handler
     ):
-        req = make_mock_request(
+        req = make_request(
             method='DELETE', path_params={'id': 'task1', 'push_id': 'push1'}
         )
         response = await rest_dispatcher_instance.delete_push_notification(req)
@@ -386,7 +357,7 @@ class TestRestDispatcherEndpoints:
     async def test_handle_authenticated_agent_card(
         self, rest_dispatcher_instance
     ):
-        req = make_mock_request()
+        req = make_request()
         response = (
             await rest_dispatcher_instance.handle_authenticated_agent_card(req)
         )
@@ -400,11 +371,13 @@ class TestRestDispatcherStreaming:
     ) -> None:
         async def stream(
             context: ServerCallContext,
+            resources: SourceAcquisition,
         ) -> AsyncIterator[dict[str, str]]:
             yield {'result': 'value'}
 
         async def empty_stream(
             context: ServerCallContext,
+            resources: SourceAcquisition,
         ) -> AsyncIterator[dict[str, str]]:
             for item in []:
                 yield item
@@ -413,10 +386,14 @@ class TestRestDispatcherStreaming:
             request_handler=mock_handler,
             shutdown_grace_period=30.0,
         )
-        req = make_mock_request(method='POST')
+        req = make_request(method='POST')
 
-        response = await dispatcher._handle_streaming(req, stream)
-        empty_response = await dispatcher._handle_streaming(req, empty_stream)
+        async with source_request(req) as owned:
+            response = await dispatcher._handle_streaming(owned, stream)
+        async with source_request(make_request(method='POST')) as owned:
+            empty_response = await dispatcher._handle_streaming(
+                owned, empty_stream
+            )
 
         assert getattr(response, '_shutdown_grace_period') == 30.0
         assert getattr(empty_response, '_shutdown_grace_period') == 30.0
@@ -424,28 +401,34 @@ class TestRestDispatcherStreaming:
     async def test_on_message_send_stream_success(
         self, rest_dispatcher_instance
     ):
-        req = make_mock_request(method='POST')
-        response = await rest_dispatcher_instance.on_message_send_stream(req)
+        req = make_request(method='POST')
+        async with source_request(req) as owned:
+            response = await rest_dispatcher_instance.on_message_send_stream(
+                owned
+            )
 
-        assert response.status_code == 200
+            assert response.status_code == 200
 
-        chunks = []
-        async for chunk in response.body_iterator:
-            chunks.append(chunk)
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
 
         assert len(chunks) == 2
         assert 'chunk1' in chunks[0].data
         assert 'chunk2' in chunks[1].data
 
     async def test_on_subscribe_to_task_success(self, rest_dispatcher_instance):
-        req = make_mock_request(method='GET', path_params={'id': 'test_task'})
-        response = await rest_dispatcher_instance.on_subscribe_to_task(req)
+        req = make_request(method='GET', path_params={'id': 'test_task'})
+        async with source_request(req) as owned:
+            response = await rest_dispatcher_instance.on_subscribe_to_task(
+                owned
+            )
 
-        assert response.status_code == 200
+            assert response.status_code == 200
 
-        chunks = []
-        async for chunk in response.body_iterator:
-            chunks.append(chunk)
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
 
         assert len(chunks) == 2
         assert 'chunk1' in chunks[0].data
@@ -457,9 +440,10 @@ class TestRestDispatcherStreaming:
         )
 
         dispatcher = RestDispatcher(request_handler=mock_handler)
-        req = make_mock_request(method='POST')
+        req = make_request(method='POST')
 
-        response = await dispatcher.on_message_send_stream(req)
+        async with source_request(req) as owned:
+            response = await dispatcher.on_message_send_stream(owned)
         assert response.status_code == 400
 
     async def test_streaming_does_not_ascii_escape_non_ascii(
@@ -473,21 +457,23 @@ class TestRestDispatcherStreaming:
 
         async def stream_with_non_ascii(
             context: ServerCallContext,
+            resources: SourceAcquisition,
         ) -> AsyncIterator[dict]:
             yield {'msg': {'text': non_ascii_text}}
             yield {'msg': {'text': f'echo: {non_ascii_text}'}}
 
         # Drive _handle_streaming directly to assert on the serialized bytes
         # produced by json.dumps, independent of protobuf encoding details.
-        req = make_mock_request(method='POST')
-        response = await rest_dispatcher_instance._handle_streaming(
-            req, stream_with_non_ascii
-        )
-        assert response.status_code == 200
+        req = make_request(method='POST')
+        async with source_request(req) as owned:
+            response = await rest_dispatcher_instance._handle_streaming(
+                owned, stream_with_non_ascii
+            )
+            assert response.status_code == 200
 
-        chunks = []
-        async for chunk in response.body_iterator:
-            chunks.append(chunk)
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
 
         assert len(chunks) == 2
         for chunk in chunks:
