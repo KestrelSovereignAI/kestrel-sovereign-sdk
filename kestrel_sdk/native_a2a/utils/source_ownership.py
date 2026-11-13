@@ -16,7 +16,7 @@ from collections import deque
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, Protocol, TypeVar, cast
 
 
 T = TypeVar('T')
@@ -314,11 +314,17 @@ async def run_source_body(
         with anyio.CancelScope(shield=True):
             try:
                 source = acquire(resources)
-                if isinstance(source, CallbackSource):
-                    result = await source.producer(handoff.publish)
+                # isinstance may honor a spoofed __class__. Ownership follows
+                # the actual callback tag; casts only narrow that union branch.
+                if issubclass(type(source), CallbackSource):
+                    result = await cast('CallbackSource[T]', source).producer(
+                        handoff.publish
+                    )
                     _require_none(result, 'callback producer')
                 else:
-                    iterator = resources.retain_iterable(source)
+                    iterator = resources.retain_iterable(
+                        cast('AsyncIterable[T]', source)
+                    )
                     while True:
                         try:
                             item = await anext(iterator)

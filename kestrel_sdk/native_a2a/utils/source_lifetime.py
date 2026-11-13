@@ -76,7 +76,7 @@ def _original_errors(errors: list[BaseException]) -> BaseException | None:
             if id(current) in visited:
                 continue
             visited.add(id(current))
-            if isinstance(current, BaseExceptionGroup):
+            if issubclass(type(current), BaseExceptionGroup):
                 pending.extend(
                     BaseExceptionGroup.__dict__['exceptions'].__get__(current)
                 )

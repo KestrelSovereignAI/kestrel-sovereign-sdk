@@ -9,7 +9,7 @@ import inspect
 import os
 
 from builtins import BaseExceptionGroup, ExceptionGroup
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 import anyio
@@ -17,7 +17,7 @@ import pytest
 
 from kestrel_sdk.native_a2a.utils import source_lifetime
 from kestrel_sdk.native_a2a.utils.source_lifetime import SourceReader, standalone_source_lifetime
-from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
+from kestrel_sdk.native_a2a.utils.source_ownership import CallbackSource, SourceAcquisition
 from anyio.abc import TaskStatus
 
 from tests.native_a2a.source_witness import (
@@ -202,7 +202,7 @@ def test_original_error_already_retained_as_cause_is_not_duplicated(
 
 
 @pytest.mark.parametrize('backend', ['asyncio', 'trio'])
-@pytest.mark.parametrize('spoof', ['cause', 'group'])
+@pytest.mark.parametrize('spoof', ['cause', 'group', 'class'])
 def test_overridden_graph_properties_cannot_hide_original_close_failure(
     tmp_path: Path, backend: str, spoof: str
 ) -> None:
@@ -221,13 +221,19 @@ def test_overridden_graph_properties_cannot_hide_original_close_failure(
                 assert error is not None
                 return (error,)
 
-        original = (
-            SpoofedCause('original body failure')
-            if spoof == 'cause'
-            else SpoofedGroup(
+        class SpoofedClass(RuntimeError):
+            @property
+            def __class__(self) -> type[object]:
+                return ExceptionGroup
+
+        if spoof == 'cause':
+            original = SpoofedCause('original body failure')
+        elif spoof == 'group':
+            original = SpoofedGroup(
                 'original body group', [ValueError('actual body child')]
             )
-        )
+        else:
+            original = SpoofedClass('original physical exception type')
 
         def acquire(resources: SourceAcquisition) -> _DescriptorSource:
             source = _DescriptorSource(
@@ -250,6 +256,51 @@ def test_overridden_graph_properties_cannot_hide_original_close_failure(
         assert actual[1].errno == errno.EBADF
         assert BaseException.__dict__['__cause__'].__get__(original) is None
         sources[0].assert_original_retired()
+
+    anyio.run(run, backend=backend)
+
+
+@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
+def test_spoofed_callback_class_cannot_bypass_original_iterable_retirement(
+    tmp_path: Path, backend: str
+) -> None:
+    async def run() -> None:
+        sources: list[_DescriptorSource[int]] = []
+
+        class OriginalIterable(_DescriptorSource[int]):
+            @property
+            def __class__(self) -> type[object]:
+                return CallbackSource
+
+            async def producer(
+                self, emit: Callable[[int], Awaitable[bool]]
+            ) -> None:
+                self._record('wrong callback role')
+                await emit(1)
+
+        def acquire(resources: SourceAcquisition) -> _DescriptorSource[int]:
+            source = OriginalIterable(tmp_path / 'source', backend, (1,))
+            sources.append(source)
+            return source
+
+        try:
+            with anyio.fail_after(5):
+                async with standalone_source_lifetime(acquire) as reader:
+                    assert [value async for value in reader] == [1]
+            sources[0].assert_original_retired()
+            assert all(
+                phase != 'wrong callback role' for phase, _ in sources[0].phases
+            )
+        finally:
+            # Only recovery of a failed negative probe, not source retirement
+            # evidence or a second aclose in another Task/context.
+            for source in sources:
+                try:
+                    os.fstat(source.fd)
+                except OSError as error:
+                    assert error.errno == errno.EBADF
+                else:
+                    os.close(source.fd)
 
     anyio.run(run, backend=backend)
 

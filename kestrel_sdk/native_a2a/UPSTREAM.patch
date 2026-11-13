@@ -1486,7 +1486,7 @@ index 9eb6d02..f72c020 100644
          return Parse(data, message, ignore_unknown_fields=True)
 diff --git a/src/a2a/utils/source_lifetime.py b/src/a2a/utils/source_lifetime.py
 new file mode 100644
-index 0000000..e3da46e
+index 0000000..4bdbf13
 --- /dev/null
 +++ b/src/a2a/utils/source_lifetime.py
 @@ -0,0 +1,284 @@
@@ -1567,7 +1567,7 @@ index 0000000..e3da46e
 +            if id(current) in visited:
 +                continue
 +            visited.add(id(current))
-+            if isinstance(current, BaseExceptionGroup):
++            if issubclass(type(current), BaseExceptionGroup):
 +                pending.extend(
 +                    BaseExceptionGroup.__dict__['exceptions'].__get__(current)
 +                )
@@ -1776,10 +1776,10 @@ index 0000000..e3da46e
 +        raise error
 diff --git a/src/a2a/utils/source_ownership.py b/src/a2a/utils/source_ownership.py
 new file mode 100644
-index 0000000..d6f54d7
+index 0000000..e3983e3
 --- /dev/null
 +++ b/src/a2a/utils/source_ownership.py
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,349 @@
 +"""The one-item source handoff, independent of scheduling and host authority.
 +
 +Derived from Kestrel's original-source iterator. A scheduler/host adapter owns
@@ -1797,7 +1797,7 @@ index 0000000..d6f54d7
 +from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 +from contextlib import AbstractAsyncContextManager, asynccontextmanager
 +from dataclasses import dataclass, field
-+from typing import Generic, Protocol, TypeVar
++from typing import Generic, Protocol, TypeVar, cast
 +
 +
 +T = TypeVar('T')
@@ -2095,11 +2095,17 @@ index 0000000..d6f54d7
 +        with anyio.CancelScope(shield=True):
 +            try:
 +                source = acquire(resources)
-+                if isinstance(source, CallbackSource):
-+                    result = await source.producer(handoff.publish)
++                # isinstance may honor a spoofed __class__. Ownership follows
++                # the actual callback tag; casts only narrow that union branch.
++                if issubclass(type(source), CallbackSource):
++                    result = await cast('CallbackSource[T]', source).producer(
++                        handoff.publish
++                    )
 +                    _require_none(result, 'callback producer')
 +                else:
-+                    iterator = resources.retain_iterable(source)
++                    iterator = resources.retain_iterable(
++                        cast('AsyncIterable[T]', source)
++                    )
 +                    while True:
 +                        try:
 +                            item = await anext(iterator)
@@ -5172,10 +5178,10 @@ index 0000000..5c9fb99
 +    assert 'Exception ignored' not in result.stderr
 diff --git a/tests/utils/test_source_lifetime.py b/tests/utils/test_source_lifetime.py
 new file mode 100644
-index 0000000..a1a3004
+index 0000000..fe4ef18
 --- /dev/null
 +++ b/tests/utils/test_source_lifetime.py
-@@ -0,0 +1,603 @@
+@@ -0,0 +1,654 @@
 +"""Real original Tasks, file descriptors, context tokens and caller withdrawal."""
 +
 +from __future__ import annotations
@@ -5186,7 +5192,7 @@ index 0000000..a1a3004
 +import os
 +
 +from builtins import BaseExceptionGroup, ExceptionGroup
-+from collections.abc import AsyncIterator
++from collections.abc import AsyncIterator, Awaitable, Callable
 +from pathlib import Path
 +
 +import anyio
@@ -5194,7 +5200,7 @@ index 0000000..a1a3004
 +
 +from a2a.utils import source_lifetime
 +from a2a.utils.source_lifetime import SourceReader, standalone_source_lifetime
-+from a2a.utils.source_ownership import SourceAcquisition
++from a2a.utils.source_ownership import CallbackSource, SourceAcquisition
 +from anyio.abc import TaskStatus
 +
 +from tests.source_witness import (
@@ -5379,7 +5385,7 @@ index 0000000..a1a3004
 +
 +
 +@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
-+@pytest.mark.parametrize('spoof', ['cause', 'group'])
++@pytest.mark.parametrize('spoof', ['cause', 'group', 'class'])
 +def test_overridden_graph_properties_cannot_hide_original_close_failure(
 +    tmp_path: Path, backend: str, spoof: str
 +) -> None:
@@ -5398,13 +5404,19 @@ index 0000000..a1a3004
 +                assert error is not None
 +                return (error,)
 +
-+        original = (
-+            SpoofedCause('original body failure')
-+            if spoof == 'cause'
-+            else SpoofedGroup(
++        class SpoofedClass(RuntimeError):
++            @property
++            def __class__(self) -> type[object]:
++                return ExceptionGroup
++
++        if spoof == 'cause':
++            original = SpoofedCause('original body failure')
++        elif spoof == 'group':
++            original = SpoofedGroup(
 +                'original body group', [ValueError('actual body child')]
 +            )
-+        )
++        else:
++            original = SpoofedClass('original physical exception type')
 +
 +        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
 +            source = _DescriptorSource(
@@ -5427,6 +5439,51 @@ index 0000000..a1a3004
 +        assert actual[1].errno == errno.EBADF
 +        assert BaseException.__dict__['__cause__'].__get__(original) is None
 +        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_spoofed_callback_class_cannot_bypass_original_iterable_retirement(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        sources: list[_DescriptorSource[int]] = []
++
++        class OriginalIterable(_DescriptorSource[int]):
++            @property
++            def __class__(self) -> type[object]:
++                return CallbackSource
++
++            async def producer(
++                self, emit: Callable[[int], Awaitable[bool]]
++            ) -> None:
++                self._record('wrong callback role')
++                await emit(1)
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource[int]:
++            source = OriginalIterable(tmp_path / 'source', backend, (1,))
++            sources.append(source)
++            return source
++
++        try:
++            with anyio.fail_after(5):
++                async with standalone_source_lifetime(acquire) as reader:
++                    assert [value async for value in reader] == [1]
++            sources[0].assert_original_retired()
++            assert all(
++                phase != 'wrong callback role' for phase, _ in sources[0].phases
++            )
++        finally:
++            # Only recovery of a failed negative probe, not source retirement
++            # evidence or a second aclose in another Task/context.
++            for source in sources:
++                try:
++                    os.fstat(source.fd)
++                except OSError as error:
++                    assert error.errno == errno.EBADF
++                else:
++                    os.close(source.fd)
 +
 +    anyio.run(run, backend=backend)
 +
