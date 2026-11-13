@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 0.53.0
+
 ### Added
 
 - Complete standalone request-lifetime ownership for streaming HTTP routes,
@@ -13,11 +15,36 @@ All notable changes to this project are documented in this file.
 - Request roots retain delivered original failures, including generator-finally
   failures during natural exhaustion; protocol projection is not a successful
   source-lifetime receipt even if a subsequent `aclose()` succeeds.
+- Terminal `StreamRefusal` values keep logical protocol results separate from
+  failed source lifetimes. Modern HTTP drains the actual source and joins its
+  retirement before projecting the error; late finalizer failures still win.
+  Deliberately unsupported profiles reject the value rather than serialize an
+  empty protobuf. This is an opt-in handler value, not an exception whitelist
+  or physical-retirement acknowledgement.
 - Compatibility gRPC coroutine writers retain their original source through
   all writes; cancellation or an observed close failure is not successful
-  retirement. Native host adapters and consumer acceptance remain release gates.
+  retirement. Native hosts explicitly supply their admission/lifetime policy;
+  copied context alone does not admit or retire work.
 - Exact-Git-tree regression import via `--tests-since`, with canonical test
-  namespace relocation and required package ancestors, not all upstream fixtures.
+  namespace relocation, retained reviewed test paths and required package
+  ancestors, not dirty vendored bytes or all upstream fixtures.
+
+### Fixed
+
+- Late subprocess spawn completion re-evaluates its exact retained child after
+  joining an older incomplete retirement attempt, instead of losing the only
+  autonomous cleanup wakeup. The actual original child is terminated and reaped.
+- Test diagnostics track completed pytest progress instead of healthy total
+  wall time while retaining the original native diagnostic sink through thread
+  join and interpreter shutdown. Accelerated regression profiles begin after
+  cold collection; normal production startup diagnostics remain unchanged.
+
+### Migration
+
+- The base SDK and existing wire types remain unchanged. Native Core adapters
+  using the new factory/refusal contracts require this release and their
+  coordinated Core dependency floor. Source merge is not operator rollout,
+  live Kite acceptance, or proof of cloud cold-start time/cost.
 
 ## 0.52.2
 
