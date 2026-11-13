@@ -95,6 +95,19 @@ def test_producer_test_delta_uses_exact_tree_and_only_required_package_support(t
     )
     with pytest.raises(FileExistsError, match="Refusing to overwrite"):
         import_test_delta(root, source, base, revision)
+    corpus = tmp_path / "existing-reviewed-corpus"
+    corpus.mkdir()
+    (corpus / "test_unrelated.py").write_text("dirty prior bytes must not be copied\n")
+    retained_root = tmp_path / "retained-output"
+    import_test_delta(retained_root, source, base, revision, retain_tests_from=corpus)
+    assert (retained_root / "tests/native_a2a/test_unrelated.py").read_text() == relocate_test(
+        "def test_unrelated(): pass\n"
+    )
+    (corpus / "unknown.py").write_text("not present in the actual producer\n")
+    rejected = tmp_path / "unknown-corpus-output"
+    with pytest.raises(ValueError, match="Retained tests need explicit disposition"):
+        import_test_delta(rejected, source, base, revision, retain_tests_from=corpus)
+    assert not rejected.exists()
     subprocess.run(["git", "-C", str(source), "rm", "tests/test_unrelated.py"], check=True, capture_output=True)
     commit_fixture(source, "--quiet", "-m", "deletion requires explicit disposition")
     deleted = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()

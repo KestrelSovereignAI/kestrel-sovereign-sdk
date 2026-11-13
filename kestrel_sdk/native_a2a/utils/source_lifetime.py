@@ -52,6 +52,10 @@ class SourceDemand(Protocol[T_co]):
         """Raise known original retirement failures, never a body projection."""
         ...
 
+    def raise_if_source_failed(self) -> None:
+        """Raise an actual joined source failure; pending is not success."""
+        ...
+
 
 class SourceLifetimeFactory(Protocol):
     """Explicit caller-selected admission and physical-retirement policy."""
@@ -214,6 +218,17 @@ class SourceReader(AsyncIterator[T]):
     def request_stop(self) -> None:
         """Withdraw demand without claiming that resources have retired."""
         self._runtime.handoff.request_stop()
+
+    def raise_if_source_failed(self) -> None:
+        """Inspect only failure recorded after the actual original group joined.
+
+        Returning while pending acknowledges nothing. Caller withdrawal is not
+        the original producer outcome and is never projected by this hook.
+        """
+        if self._runtime.joined.is_set():
+            error = self._runtime.terminal_error()
+            if error is not None:
+                raise error
 
     def raise_if_retirement_failed(self) -> None:
         """Prevent known close failures becoming ordinary protocol payloads.

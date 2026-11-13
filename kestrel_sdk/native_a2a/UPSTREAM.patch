@@ -502,6 +502,60 @@ index 9e0773f..dd3018c 100644
              raise InvalidParamsError(
                  message=f'Failed to parse historyLength field: {e}.'
              ) from e
+diff --git a/src/a2a/server/request_handlers/request_handler.py b/src/a2a/server/request_handlers/request_handler.py
+index 6fb4209..d4bc974 100644
+--- a/src/a2a/server/request_handlers/request_handler.py
++++ b/src/a2a/server/request_handlers/request_handler.py
+@@ -29,6 +29,10 @@ from a2a.types.a2a_pb2 import (
+ )
+ from a2a.utils.errors import UnsupportedOperationError
+ from a2a.utils.proto_utils import validate_proto_required_fields
++from a2a.utils.stream_refusal import StreamRefusal
++
++
++StreamItem = Event | StreamRefusal
+ 
+ 
+ class RequestHandler(ABC):
+@@ -115,7 +119,7 @@ class RequestHandler(ABC):
+         self,
+         params: SendMessageRequest,
+         context: ServerCallContext,
+-    ) -> AsyncGenerator[Event]:
++    ) -> AsyncGenerator[StreamItem]:
+         """Handles the 'message/stream' method (streaming).
+ 
+         Sends a message to the agent and yields stream events as they are
+@@ -126,7 +130,10 @@ class RequestHandler(ABC):
+             context: Context provided by the server.
+ 
+         Yields:
+-            `Event` objects from the agent's execution.
++            `Event` objects from the agent's execution. Modern HTTP handlers may
++            emit one terminal `StreamRefusal` after their own resource scopes
++            settle. It is data, never a replacement for an unexpected source or
++            finalizer exception. Other transport profiles explicitly reject it.
+         """
+         # This is needed for typechecker to recognise this method as an async generator.
+         raise UnsupportedOperationError
+@@ -173,7 +180,7 @@ class RequestHandler(ABC):
+         self,
+         params: SubscribeToTaskRequest,
+         context: ServerCallContext,
+-    ) -> AsyncGenerator[Event]:
++    ) -> AsyncGenerator[StreamItem]:
+         """Handles the 'SubscribeToTask' method.
+ 
+         Allows a client to subscribe to a running streaming task's event stream.
+@@ -184,6 +191,8 @@ class RequestHandler(ABC):
+ 
+         Yields:
+              `Event` objects from the agent's ongoing execution for the specified task.
++             Modern HTTP also accepts a terminal `StreamRefusal`, with the same
++             actual-retirement obligations as `on_message_send_stream`.
+         """
+         raise UnsupportedOperationError
+         yield
 diff --git a/src/a2a/server/request_handlers/response_helpers.py b/src/a2a/server/request_handlers/response_helpers.py
 index 262e103..0f806c2 100644
 --- a/src/a2a/server/request_handlers/response_helpers.py
@@ -588,7 +642,7 @@ index 77c0c07..5bd4ae8 100644
  
  def add_a2a_routes_to_fastapi(
 diff --git a/src/a2a/server/routes/jsonrpc_dispatcher.py b/src/a2a/server/routes/jsonrpc_dispatcher.py
-index fb1801b..32ef526 100644
+index fb1801b..f3900c2 100644
 --- a/src/a2a/server/routes/jsonrpc_dispatcher.py
 +++ b/src/a2a/server/routes/jsonrpc_dispatcher.py
 @@ -3,15 +3,15 @@
@@ -617,16 +671,20 @@ index fb1801b..32ef526 100644
  from a2a.types.a2a_pb2 import (
      CancelTaskRequest,
      DeleteTaskPushNotificationConfigRequest,
-@@ -48,6 +49,8 @@ from a2a.utils.errors import (
+@@ -48,6 +49,12 @@ from a2a.utils.errors import (
      TaskNotFoundError,
      UnsupportedOperationError,
  )
 +from a2a.utils.source_lifetime import SourceDemand
 +from a2a.utils.source_ownership import SourceAcquisition
++from a2a.utils.stream_refusal import (
++    StreamRefusal,
++    map_stream_item,
++)
  from a2a.utils.telemetry import SpanKind, trace_class
  from a2a.utils.version_validator import validate_version
  
-@@ -170,6 +173,10 @@ class JsonRpcDispatcher:
+@@ -170,6 +177,10 @@ class JsonRpcDispatcher:
          self,
          request_id: str | int | None,
          error: Exception | JSONRPCError | A2AError,
@@ -637,7 +695,7 @@ index fb1801b..32ef526 100644
      ) -> JSONResponse:
          """Creates a Starlette JSONResponse for a JSON-RPC error.
  
-@@ -178,11 +185,26 @@ class JsonRpcDispatcher:
+@@ -178,11 +189,26 @@ class JsonRpcDispatcher:
          Args:
              request_id: The ID of the request that caused the error.
              error: The error object (one of the JSONRPCError types).
@@ -665,7 +723,7 @@ index fb1801b..32ef526 100644
              error = InternalError(message=str(error))
  
          response_data = build_error_response(request_id, error)
-@@ -208,7 +230,9 @@ class JsonRpcDispatcher:
+@@ -208,7 +234,9 @@ class JsonRpcDispatcher:
              status_code=200,
          )
  
@@ -676,7 +734,7 @@ index fb1801b..32ef526 100644
          """Handles incoming POST requests to the main A2A endpoint.
  
          Parses the request body as JSON, validates it against A2A request types,
-@@ -227,8 +251,6 @@ class JsonRpcDispatcher:
+@@ -227,8 +255,6 @@ class JsonRpcDispatcher:
              into JSON-RPC error responses by this method.
          """
          request_id = None
@@ -685,7 +743,7 @@ index fb1801b..32ef526 100644
          try:
              body = await request.json()
              if isinstance(body, dict):
-@@ -267,11 +289,11 @@ class JsonRpcDispatcher:
+@@ -267,11 +293,11 @@ class JsonRpcDispatcher:
                          ),
                      )
              except Exception as e:
@@ -701,7 +759,7 @@ index fb1801b..32ef526 100644
  
              # 2) Route by method name; unknown -> -32601, known -> validate params (-32602 on failure)
              method: str | None = base_request.method
-@@ -293,6 +315,7 @@ class JsonRpcDispatcher:
+@@ -293,6 +319,7 @@ class JsonRpcDispatcher:
                      method=method,
                      body=body,
                      request=request,
@@ -709,7 +767,7 @@ index fb1801b..32ef526 100644
                  )
  
              model_class = self.METHOD_TO_MODEL.get(method)
-@@ -309,11 +332,11 @@ class JsonRpcDispatcher:
+@@ -309,11 +336,11 @@ class JsonRpcDispatcher:
                      params, model_class(), ignore_unknown_fields=True
                  )
              except Exception as e:
@@ -725,7 +783,7 @@ index fb1801b..32ef526 100644
  
              # 3) Build call context and wrap the request for downstream handling
              call_context = self._context_builder.build(request)
-@@ -327,37 +350,37 @@ class JsonRpcDispatcher:
+@@ -327,37 +354,37 @@ class JsonRpcDispatcher:
              )
              if method in ('SendStreamingMessage', 'SubscribeToTask'):
                  handler_result = await self._process_streaming_request(
@@ -775,7 +833,7 @@ index fb1801b..32ef526 100644
  
      @validate_version(constants.PROTOCOL_VERSION_1_0)
      async def _process_streaming_request(
-@@ -365,6 +388,8 @@ class JsonRpcDispatcher:
+@@ -365,6 +392,8 @@ class JsonRpcDispatcher:
          request_id: str | int | None,
          request_obj: Any,
          context: ServerCallContext,
@@ -784,7 +842,7 @@ index fb1801b..32ef526 100644
      ) -> AsyncGenerator[dict[str, Any], None]:
          """Processes streaming requests (SendStreamingMessage or SubscribeToTask).
  
-@@ -372,23 +397,39 @@ class JsonRpcDispatcher:
+@@ -372,23 +401,48 @@ class JsonRpcDispatcher:
              request_id: The ID of the request.
              request_obj: The proto request message.
              context: The ServerCallContext for the request.
@@ -808,7 +866,7 @@ index fb1801b..32ef526 100644
 -            raise UnsupportedOperationError(message='Stream not supported')
 +        def acquire(
 +            resources: SourceAcquisition,
-+        ) -> AsyncIterator[dict[str, Any]]:
++        ) -> AsyncIterator[dict[str, Any] | StreamRefusal]:
 +            if method == 'SendStreamingMessage':
 +                source = self.request_handler.on_message_send_stream(
 +                    request_obj, context
@@ -821,13 +879,22 @@ index fb1801b..32ef526 100644
 +                raise UnsupportedOperationError(message='Stream not supported')
 +            iterator = resources.retain_iterable(source)
 +
-+            async def mapped_events() -> AsyncIterator[dict[str, Any]]:
++            async def mapped_events() -> AsyncIterator[
++                dict[str, Any] | StreamRefusal
++            ]:
 +                async for event in iterator:
-+                    stream_response = proto_utils.to_stream_response(event)
-+                    result = MessageToDict(
-+                        stream_response, preserving_proto_field_name=False
++                    yield map_stream_item(
++                        event,
++                        lambda value: (
++                            JSONRPC20Response(
++                                result=MessageToDict(
++                                    proto_utils.to_stream_response(value),
++                                    preserving_proto_field_name=False,
++                                ),
++                                _id=request_id,
++                            ).data
++                        ),
 +                    )
-+                    yield JSONRPC20Response(result=result, _id=request_id).data
 +
 +            return mapped_events()
 +
@@ -835,7 +902,7 @@ index fb1801b..32ef526 100644
  
          # Eagerly fetch the first event to trigger validation/upfront errors
          try:
-@@ -397,22 +438,16 @@ class JsonRpcDispatcher:
+@@ -397,22 +451,16 @@ class JsonRpcDispatcher:
              first_event = None
  
          async def _wrap_stream(
@@ -862,7 +929,7 @@ index fb1801b..32ef526 100644
                  yield build_error_response(request_id, e)
  
          return _wrap_stream(stream, first_event)
-@@ -595,6 +630,8 @@ class JsonRpcDispatcher:
+@@ -595,6 +643,8 @@ class JsonRpcDispatcher:
                              event['event'] = 'error'
                          yield event
                  except Exception as e:
@@ -923,7 +990,7 @@ index 648e9df..c4b6a15 100644
          )
      ]
 diff --git a/src/a2a/server/routes/rest_dispatcher.py b/src/a2a/server/routes/rest_dispatcher.py
-index 80964e5..c1e469a 100644
+index 80964e5..501b852 100644
 --- a/src/a2a/server/routes/rest_dispatcher.py
 +++ b/src/a2a/server/routes/rest_dispatcher.py
 @@ -1,9 +1,11 @@
@@ -938,7 +1005,7 @@ index 80964e5..c1e469a 100644
  
  from a2a.server.context import ServerCallContext
  from a2a.server.request_handlers.request_handler import RequestHandler
-@@ -13,26 +15,34 @@ from a2a.server.routes.common import (
+@@ -13,26 +15,38 @@ from a2a.server.routes.common import (
      create_event_source_response,
      serialize_list_tasks_response,
  )
@@ -962,6 +1029,10 @@ index 80964e5..c1e469a 100644
      TaskNotFoundError,
  )
 +from a2a.utils.source_ownership import SourceAcquisition
++from a2a.utils.stream_refusal import (
++    StreamRefusal,
++    map_stream_item,
++)
  from a2a.utils.telemetry import SpanKind, trace_class
  from a2a.utils.version_validator import validate_version
  
@@ -979,7 +1050,7 @@ index 80964e5..c1e469a 100644
  if TYPE_CHECKING:
      from sse_starlette.event import ServerSentEvent
      from sse_starlette.sse import EventSourceResponse
-@@ -122,7 +132,9 @@ class RestDispatcher:
+@@ -122,7 +136,9 @@ class RestDispatcher:
      async def _handle_streaming(
          self,
          request: Request,
@@ -990,7 +1061,7 @@ index 80964e5..c1e469a 100644
      ) -> EventSourceResponse:
          """Centralized error handling and context management for streaming calls."""
          # Pre-consume and cache the request body to prevent deadlock in streaming context
-@@ -131,6 +143,8 @@ class RestDispatcher:
+@@ -131,6 +147,8 @@ class RestDispatcher:
          try:
              await request.body()
          except (ValueError, RuntimeError, OSError) as e:
@@ -999,7 +1070,7 @@ index 80964e5..c1e469a 100644
              raise InvalidRequestError(
                  message=f'Failed to pre-consume request body: {e}'
              ) from e
-@@ -144,7 +158,10 @@ class RestDispatcher:
+@@ -144,7 +162,10 @@ class RestDispatcher:
          # the correct HTTP status code instead of starting an SSE stream.
          # Without this, the error would be raised after SSE headers are
          # already sent, and the client would see a broken stream instead
@@ -1011,7 +1082,7 @@ index 80964e5..c1e469a 100644
          try:
              first_item = await anext(stream)
          except StopAsyncIteration:
-@@ -159,9 +176,11 @@ class RestDispatcher:
+@@ -159,9 +180,11 @@ class RestDispatcher:
                  async for item in stream:
                      yield ServerSentEvent(data=json_utils.dumps(item))
              except Exception as e:
@@ -1024,42 +1095,60 @@ index 80964e5..c1e469a 100644
                      event='error',
                  )
  
-@@ -200,13 +219,15 @@ class RestDispatcher:
+@@ -200,15 +223,21 @@ class RestDispatcher:
          @validate_version(constants.PROTOCOL_VERSION_1_0)
          async def _handler(
              context: ServerCallContext,
+-        ) -> AsyncIterator[dict[str, Any]]:
 +            resources: SourceAcquisition,
-         ) -> AsyncIterator[dict[str, Any]]:
++        ) -> AsyncIterator[dict[str, Any] | StreamRefusal]:
              body = await request.body()
              params = a2a_pb2.SendMessageRequest()
              proto_utils.parse_lenient(body, params)
 -            async for event in self.request_handler.on_message_send_stream(
 -                params, context
 -            ):
+-                response = proto_utils.to_stream_response(event)
+-                yield MessageToDict(response)
 +            stream = resources.retain_iterable(
 +                self.request_handler.on_message_send_stream(params, context)
 +            )
 +            async for event in stream:
-                 response = proto_utils.to_stream_response(event)
-                 yield MessageToDict(response)
++                yield map_stream_item(
++                    event,
++                    lambda value: MessageToDict(
++                        proto_utils.to_stream_response(value)
++                    ),
++                )
  
-@@ -241,10 +262,14 @@ class RestDispatcher:
+         return await self._handle_streaming(request, _handler)
+ 
+@@ -241,12 +270,20 @@ class RestDispatcher:
          @validate_version(constants.PROTOCOL_VERSION_1_0)
          async def _handler(
              context: ServerCallContext,
-+            resources: SourceAcquisition,
-         ) -> AsyncIterator[dict[str, Any]]:
+-        ) -> AsyncIterator[dict[str, Any]]:
 -            async for event in self.request_handler.on_subscribe_to_task(
 -                SubscribeToTaskRequest(id=task_id), context
 -            ):
+-                response = proto_utils.to_stream_response(event)
+-                yield MessageToDict(response)
++            resources: SourceAcquisition,
++        ) -> AsyncIterator[dict[str, Any] | StreamRefusal]:
 +            stream = resources.retain_iterable(
 +                self.request_handler.on_subscribe_to_task(
 +                    SubscribeToTaskRequest(id=task_id), context
 +                )
 +            )
 +            async for event in stream:
-                 response = proto_utils.to_stream_response(event)
-                 yield MessageToDict(response)
++                yield map_stream_item(
++                    event,
++                    lambda value: MessageToDict(
++                        proto_utils.to_stream_response(value)
++                    ),
++                )
+ 
+         return await self._handle_streaming(request, _handler)
  
 diff --git a/src/a2a/server/routes/rest_routes.py b/src/a2a/server/routes/rest_routes.py
 index b741411..6061153 100644
@@ -1157,10 +1246,10 @@ index b741411..6061153 100644
  
 diff --git a/src/a2a/server/routes/source_lifetime.py b/src/a2a/server/routes/source_lifetime.py
 new file mode 100644
-index 0000000..ad5dfa3
+index 0000000..eb8109a
 --- /dev/null
 +++ b/src/a2a/server/routes/source_lifetime.py
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,204 @@
 +"""Explicit request roots spanning endpoint dispatch AND ASGI response use."""
 +
 +from __future__ import annotations
@@ -1174,6 +1263,7 @@ index 0000000..ad5dfa3
 +    SourceLifetimeFactory,
 +    standalone_source_lifetime,
 +)
++from a2a.utils.stream_refusal import ProtocolStreamDemand, StreamRefusal
 +
 +
 +if TYPE_CHECKING:
@@ -1232,7 +1322,9 @@ index 0000000..ad5dfa3
 +        finally:
 +            self._active = False
 +
-+    async def open(self, acquire: SourceFactory[T]) -> SourceDemand[T]:
++    async def open(
++        self, acquire: SourceFactory[T | StreamRefusal]
++    ) -> SourceDemand[T]:
 +        """Admit exactly one source; its factory runs only in that owner."""
 +        if not self._active:
 +            raise RuntimeError(
@@ -1241,7 +1333,8 @@ index 0000000..ad5dfa3
 +        if self._opened:
 +            raise RuntimeError('A request source has already been admitted')
 +        self._opened = True
-+        reader = await self._stack.enter_async_context(self._factory(acquire))
++        original = await self._stack.enter_async_context(self._factory(acquire))
++        reader = ProtocolStreamDemand[T](original)
 +        self._reader = reader
 +        return reader
 +
@@ -1457,18 +1550,22 @@ index ef81829..fee906d 100644
              return response
  
 diff --git a/src/a2a/utils/proto_utils.py b/src/a2a/utils/proto_utils.py
-index 9eb6d02..f72c020 100644
+index 9eb6d02..5df7ce0 100644
 --- a/src/a2a/utils/proto_utils.py
 +++ b/src/a2a/utils/proto_utils.py
-@@ -26,6 +26,7 @@ from google.protobuf.descriptor import FieldDescriptor
+@@ -26,8 +26,10 @@ from google.protobuf.descriptor import FieldDescriptor
  from google.protobuf.json_format import Parse, ParseDict, ParseError
  from google.protobuf.message import Message as ProtobufMessage
  from google.rpc import error_details_pb2
 +from kestrel_sdk.features.host_errors import is_host_control_error
  
- from a2a.utils.errors import InvalidParamsError
+-from a2a.utils.errors import InvalidParamsError
++from a2a.utils.errors import InvalidParamsError, UnsupportedOperationError
++from a2a.utils.stream_refusal import StreamRefusal
  
-@@ -71,11 +72,15 @@ def parse_lenient(
+ 
+ if TYPE_CHECKING:
+@@ -71,18 +73,22 @@ def parse_lenient(
      Raises:
          ParseError: If the data is not valid ProtoJSON, including bytes that
              are not valid UTF-8.
@@ -1484,12 +1581,40 @@ index 9eb6d02..f72c020 100644
              raise ParseError(f'Failed to load JSON: {e}.') from e
      if isinstance(data, str):
          return Parse(data, message, ignore_unknown_fields=True)
+     return ParseDict(data, message, ignore_unknown_fields=True)
+ 
+ 
+-def to_stream_response(event: Event) -> StreamResponse:
++def to_stream_response(event: Event | StreamRefusal) -> StreamResponse:
+     """Convert internal Event to StreamResponse proto.
+ 
+     Args:
+@@ -91,6 +97,10 @@ def to_stream_response(event: Event) -> StreamResponse:
+     Returns:
+         A StreamResponse proto with the appropriate field set.
+     """
++    if issubclass(type(event), StreamRefusal):
++        raise UnsupportedOperationError(
++            'Terminal refusal values require a source-lifetime-aware HTTP dispatcher'
++        )
+     response = StreamResponse()
+     if isinstance(event, Task):
+         response.task.CopyFrom(event)
+@@ -100,6 +110,8 @@ def to_stream_response(event: Event) -> StreamResponse:
+         response.status_update.CopyFrom(event)
+     elif isinstance(event, TaskArtifactUpdateEvent):
+         response.artifact_update.CopyFrom(event)
++    else:
++        raise TypeError('Unsupported stream event type')
+     return response
+ 
+ 
 diff --git a/src/a2a/utils/source_lifetime.py b/src/a2a/utils/source_lifetime.py
 new file mode 100644
-index 0000000..4bdbf13
+index 0000000..64b77ac
 --- /dev/null
 +++ b/src/a2a/utils/source_lifetime.py
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,299 @@
 +"""Standalone backend ownership for the shared original-source body.
 +
 +The enclosing context belongs to the request's complete ASGI lifetime, not
@@ -1541,6 +1666,10 @@ index 0000000..4bdbf13
 +
 +    def raise_if_retirement_failed(self) -> None:
 +        """Raise known original retirement failures, never a body projection."""
++        ...
++
++    def raise_if_source_failed(self) -> None:
++        """Raise an actual joined source failure; pending is not success."""
 +        ...
 +
 +
@@ -1705,6 +1834,17 @@ index 0000000..4bdbf13
 +    def request_stop(self) -> None:
 +        """Withdraw demand without claiming that resources have retired."""
 +        self._runtime.handoff.request_stop()
++
++    def raise_if_source_failed(self) -> None:
++        """Inspect only failure recorded after the actual original group joined.
++
++        Returning while pending acknowledges nothing. Caller withdrawal is not
++        the original producer outcome and is never projected by this hook.
++        """
++        if self._runtime.joined.is_set():
++            error = self._runtime.terminal_error()
++            if error is not None:
++                raise error
 +
 +    def raise_if_retirement_failed(self) -> None:
 +        """Prevent known close failures becoming ordinary protocol payloads.
@@ -2129,6 +2269,126 @@ index 0000000..e3983e3
 +    return SourceBodyOutcome(
 +        body_error, retirement_errors, tuple(observation_errors)
 +    )
+diff --git a/src/a2a/utils/stream_refusal.py b/src/a2a/utils/stream_refusal.py
+new file mode 100644
+index 0000000..3668652
+--- /dev/null
++++ b/src/a2a/utils/stream_refusal.py
+@@ -0,0 +1,114 @@
++"""Explicit logical stream outcomes, never source-retirement acknowledgements."""
++
++from __future__ import annotations
++
++from collections.abc import AsyncIterator
++from dataclasses import dataclass
++from typing import TYPE_CHECKING, TypeVar, cast
++
++from kestrel_sdk.features.host_errors import is_host_control_error
++
++from a2a.utils.errors import A2AError
++
++
++if TYPE_CHECKING:
++    from collections.abc import Callable
++
++    from a2a.utils.source_lifetime import SourceDemand
++
++
++T = TypeVar('T')
++R = TypeVar('R')
++
++
++@dataclass(frozen=True, slots=True)
++class StreamRefusal:
++    """A terminal business-protocol result, not a failed source or close receipt.
++
++    A handler emits this at its logical decision branch after its own resource
++    lifetimes have settled. It must not convert an arbitrary body/finalizer
++    exception into this value. Dispatchers still require actual source EOF and
++    original retirement before projecting the enclosed ordinary protocol error.
++    """
++
++    error: A2AError
++
++    def __post_init__(self) -> None:
++        """Reject values that are not actual A2A protocol errors."""
++        if not issubclass(type(self.error), A2AError):
++            raise TypeError('A stream refusal requires an A2A protocol error')
++
++
++def map_stream_item(
++    item: T | StreamRefusal, mapper: Callable[[T], R]
++) -> R | StreamRefusal:
++    """Map only normal data; retain an explicit refusal without formatting it."""
++    if issubclass(type(item), StreamRefusal):
++        return cast('StreamRefusal', item)
++    return mapper(cast('T', item))
++
++
++async def drain_stream_refusal(
++    stream: SourceDemand[object], refusal: StreamRefusal
++) -> A2AError:
++    """Return protocol data only after actual terminal-source EOF/join.
++
++    The lifetime policy owns the original source and its close. This consumer
++    performs no close, new Task, timeout or manufactured completion receipt.
++    Late source/closer failures propagate instead of becoming protocol data.
++    """
++    try:
++        await anext(stream)
++    except StopAsyncIteration:
++        pass
++    else:
++        stream.request_stop()
++        raise ValueError(
++            'A terminal stream refusal was followed by another item'
++        )
++    if is_host_control_error(refusal.error):
++        raise refusal.error
++    return refusal.error
++
++
++class ProtocolStreamDemand(AsyncIterator[T]):
++    """Borrow demand and project logical refusals only after original EOF/join.
++
++    This is not a second source owner: it cannot close, admit or certify a
++    producer. The enclosing request's explicitly selected lifetime policy
++    still owns physical completion and every original failure.
++    """
++
++    def __init__(self, stream: SourceDemand[T | StreamRefusal]) -> None:
++        """Retain the actual non-closing demand, not a copied source."""
++        self._stream = stream
++        self._terminal_refusal_seen = False
++
++    def __aiter__(self) -> ProtocolStreamDemand[T]:
++        """Return this borrowed protocol-demand view."""
++        return self
++
++    async def __anext__(self) -> T:
++        """Read normal data or a physically settled logical protocol refusal."""
++        item = await anext(self._stream)
++        if issubclass(type(item), StreamRefusal):
++            self._terminal_refusal_seen = True
++            error = await drain_stream_refusal(
++                self._stream, cast('StreamRefusal', item)
++            )
++            raise error
++        return cast('T', item)
++
++    def request_stop(self) -> None:
++        """Withdraw demand without claiming original-source retirement."""
++        self._stream.request_stop()
++
++    def raise_if_retirement_failed(self) -> None:
++        """Delegate physical failure evidence to the actual lifetime policy."""
++        if self._terminal_refusal_seen:
++            self._stream.raise_if_source_failed()
++        self._stream.raise_if_retirement_failed()
++
++    def raise_if_source_failed(self) -> None:
++        """Delegate original source evidence, never an observer's cached error."""
++        self._stream.raise_if_source_failed()
 diff --git a/src/a2a/utils/telemetry.py b/src/a2a/utils/telemetry.py
 index d20caad..c4acaeb 100644
 --- a/src/a2a/utils/telemetry.py
@@ -3621,10 +3881,10 @@ index a0450b2..0b8d1a0 100644
  
 diff --git a/tests/server/routes/test_source_lifetime.py b/tests/server/routes/test_source_lifetime.py
 new file mode 100644
-index 0000000..ce66578
+index 0000000..5f2d9d0
 --- /dev/null
 +++ b/tests/server/routes/test_source_lifetime.py
-@@ -0,0 +1,697 @@
+@@ -0,0 +1,783 @@
 +"""Real response execution, original OS failures and request-root retirement."""
 +
 +from __future__ import annotations
@@ -3813,6 +4073,92 @@ index 0000000..ce66578
 +        assert 'source_root' not in str(app.openapi())
 +        return app, path, body, headers
 +    return Starlette(routes=routes), path, body, headers
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++@pytest.mark.parametrize('frontend', ['starlette', 'fastapi'])
++@pytest.mark.parametrize('binding', ['rest', 'rest-tenant', 'jsonrpc'])
++@pytest.mark.parametrize('subscribe', [False, True])
++@pytest.mark.parametrize('fail_close', [False, True])
++def test_terminal_refusal_is_normalized_only_after_real_source_retirement(
++    tmp_path: Path,
++    backend: str,
++    frontend: str,
++    binding: str,
++    subscribe: bool,
++    fail_close: bool,
++) -> None:
++    from a2a.server.request_handlers.response_helpers import (
++        build_error_response,
++    )
++    from a2a.utils.error_handlers import build_rest_error_payload
++    from a2a.utils.errors import UnsupportedOperationError
++    from a2a.utils.stream_refusal import StreamRefusal
++
++    async def run() -> None:
++        error = UnsupportedOperationError('Expected terminal refusal')
++        refusal = StreamRefusal(error)
++        sources: list[DescriptorSource] = []
++
++        def acquire() -> DescriptorSource:
++            source = DescriptorSource(
++                tmp_path / 'refusal', backend, (refusal,), fail_close=fail_close
++            )
++            sources.append(source)
++            return source
++
++        app, path, body, headers = _stream_application(
++            StreamRequestHandler(acquire),
++            frontend,
++            binding,
++            subscribe=subscribe,
++        )
++
++        async def checked_app(
++            scope: Scope, receive: Receive, send: Send
++        ) -> None:
++            async def after_original_retirement(message: Message) -> None:
++                if message['type'] == 'http.response.start':
++                    assert len(sources) == 1
++                    sources[0].assert_original_retired()
++                await send(message)
++
++            await app(scope, receive, after_original_retirement)
++
++        probe = RootFailureProbe(checked_app)
++
++        async def invoke() -> httpx.Response:
++            async with httpx.AsyncClient(
++                transport=httpx.ASGITransport(app=probe),
++                base_url='http://testserver',
++            ) as client:
++                return await client.post(path, json=body, headers=headers)
++
++        with anyio.fail_after(5):
++            if fail_close:
++                with probe.expect(OSError):
++                    response = await invoke()
++                assert response.status_code == 500
++                assert probe.original is sources[0].close_error
++            else:
++                response = await invoke()
++                assert probe.error is None
++                assert response.status_code == (
++                    200 if binding == 'jsonrpc' else 400
++                )
++                expected = (
++                    build_error_response('one', error)
++                    if binding == 'jsonrpc'
++                    else build_rest_error_payload(error)
++                )
++                assert response.json() == expected
++                assert not response.headers['content-type'].startswith(
++                    'text/event-stream'
++                )
++        sources[0].assert_original_retired()
++        assert error.__cause__ is None
++
++    anyio.run(run, backend=backend)
 +
 +
 +@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
@@ -6187,6 +6533,308 @@ index 0000000..484ca0a
 +        with pytest.raises(RuntimeError, match='after terminal observation'):
 +            await handoff.publish(1)
 +        assert await handoff.pull() == (False, None)
++
++    anyio.run(run, backend=backend)
+diff --git a/tests/utils/test_stream_refusal.py b/tests/utils/test_stream_refusal.py
+new file mode 100644
+index 0000000..d81303a
+--- /dev/null
++++ b/tests/utils/test_stream_refusal.py
+@@ -0,0 +1,206 @@
++"""A logical refusal is data; only original-source EOF/join permits projection."""
++
++from __future__ import annotations
++
++import subprocess
++import sys
++
++from collections.abc import AsyncIterable
++from pathlib import Path
++from typing import cast
++
++import anyio
++import pytest
++
++from a2a.utils.errors import A2AError, UnsupportedOperationError
++from a2a.utils.source_lifetime import standalone_source_lifetime
++from a2a.utils.source_ownership import SourceAcquisition
++
++from tests.source_witness import DescriptorSource
++
++
++def test_actual_registered_host_control_is_not_projected_as_protocol_data() -> (
++    None
++):
++    # A real process owns this registration; never replace the process-global
++    # policy of other tests with a pretend classifier or leak our registration.
++    child = subprocess.run(
++        [
++            sys.executable,
++            '-I',
++            '-B',
++            '-c',
++            """
++import anyio
++from kestrel_sdk.features.host_errors import register_control_error_predicate
++from a2a.utils.errors import UnsupportedOperationError
++from a2a.utils.source_lifetime import standalone_source_lifetime
++from a2a.utils.stream_refusal import StreamRefusal, drain_stream_refusal
++
++original = UnsupportedOperationError("actual registered host control")
++register_control_error_predicate(lambda error: error is original)
++
++async def source():
++    yield StreamRefusal(original)
++
++async def main():
++    async with standalone_source_lifetime(lambda resources: source()) as reader:
++        refusal = await anext(reader)
++        try:
++            await drain_stream_refusal(reader, refusal)
++        except UnsupportedOperationError as error:
++            assert error is original and error.__cause__ is None
++        else:
++            raise AssertionError("Host control was projected as ordinary protocol data")
++
++anyio.run(main)
++""",
++        ],
++        capture_output=True,
++        text=True,
++        timeout=10,
++        check=False,
++    )
++    assert child.returncode == 0, (child.stdout, child.stderr)
++    assert (
++        'ResourceWarning' not in child.stderr
++        and 'Exception ignored' not in child.stderr
++    )
++
++
++def test_refusal_is_an_explicit_value_and_does_not_map_or_format_its_error() -> (
++    None
++):
++    from a2a.utils.stream_refusal import StreamRefusal, map_stream_item
++
++    error = UnsupportedOperationError('expected logical refusal')
++    refusal = StreamRefusal(error)
++    mapped: list[str] = []
++
++    def serialize(value: str) -> str:
++        mapped.append(value)
++        return value.upper()
++
++    assert map_stream_item(refusal, serialize) is refusal
++    assert mapped == []
++    assert map_stream_item('event', serialize) == 'EVENT'
++    assert mapped == ['event'] and refusal.error is error
++    assert error.__cause__ is None
++    with pytest.raises(TypeError):
++        StreamRefusal(cast(A2AError, object()))
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++@pytest.mark.parametrize('fail_close', [False, True])
++def test_refusal_projection_waits_for_original_retirement_and_preserves_late_failure(
++    tmp_path: Path,
++    backend: str,
++    fail_close: bool,
++) -> None:
++    from a2a.utils.stream_refusal import StreamRefusal, drain_stream_refusal
++
++    async def run() -> None:
++        error = UnsupportedOperationError('expected logical refusal')
++        refusal = StreamRefusal(error)
++        sources: list[DescriptorSource[object]] = []
++
++        def acquire(resources: SourceAcquisition) -> AsyncIterable[object]:
++            source = DescriptorSource(
++                tmp_path / 'refusal', backend, (refusal,), fail_close=fail_close
++            )
++            sources.append(source)
++            resources.retain(source, source.aclose)
++            return source
++
++        if fail_close:
++            with pytest.raises(OSError) as root:
++                async with standalone_source_lifetime(acquire) as reader:
++                    assert await anext(reader) is refusal
++                    with pytest.raises(OSError) as close:
++                        await drain_stream_refusal(reader, refusal)
++            assert root.value is close.value is sources[0].close_error
++        else:
++            async with standalone_source_lifetime(acquire) as reader:
++                assert await anext(reader) is refusal
++                assert await drain_stream_refusal(reader, refusal) is error
++                sources[0].assert_original_retired()
++        sources[0].assert_original_retired()
++        assert error.__cause__ is None
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_refusal_cannot_acknowledge_a_blocked_original_close(
++    tmp_path: Path, backend: str
++) -> None:
++    from a2a.utils.stream_refusal import StreamRefusal, drain_stream_refusal
++
++    async def run() -> None:
++        closing, release, projected = (
++            anyio.Event(),
++            anyio.Event(),
++            anyio.Event(),
++        )
++        error = UnsupportedOperationError('expected logical refusal')
++        refusal = StreamRefusal(error)
++        sources: list[DescriptorSource[object]] = []
++
++        def acquire(resources: SourceAcquisition) -> AsyncIterable[object]:
++            source = DescriptorSource(
++                tmp_path / 'blocked',
++                backend,
++                (refusal,),
++                closing=closing,
++                release=release,
++            )
++            sources.append(source)
++            resources.retain(source, source.aclose)
++            return source
++
++        with anyio.fail_after(5):
++            async with standalone_source_lifetime(acquire) as reader:
++                assert await anext(reader) is refusal
++
++                async def project() -> None:
++                    assert await drain_stream_refusal(reader, refusal) is error
++                    projected.set()
++
++                async with anyio.create_task_group() as group:
++                    group.start_soon(project)
++                    await closing.wait()
++                    assert not projected.is_set()
++                    release.set()
++            assert projected.is_set()
++            sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_refusal_followed_by_another_item_is_not_a_terminal_outcome(
++    tmp_path: Path, backend: str
++) -> None:
++    from a2a.utils.stream_refusal import StreamRefusal, drain_stream_refusal
++
++    async def run() -> None:
++        refusal = StreamRefusal(
++            UnsupportedOperationError('expected logical refusal')
++        )
++        sources: list[DescriptorSource[object]] = []
++
++        def acquire(resources: SourceAcquisition) -> AsyncIterable[object]:
++            source = DescriptorSource(
++                tmp_path / 'extra-item', backend, (refusal, object())
++            )
++            sources.append(source)
++            resources.retain(source, source.aclose)
++            return source
++
++        with pytest.raises(ValueError, match='terminal stream refusal'):
++            async with standalone_source_lifetime(acquire) as reader:
++                assert await anext(reader) is refusal
++                await drain_stream_refusal(reader, refusal)
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
+diff --git a/tests/utils/test_stream_refusal_policy.py b/tests/utils/test_stream_refusal_policy.py
+new file mode 100644
+index 0000000..a521ef9
+--- /dev/null
++++ b/tests/utils/test_stream_refusal_policy.py
+@@ -0,0 +1,84 @@
++"""Refusal demand views do not manufacture completion or empty protobufs."""
++
++from __future__ import annotations
++
++import os
++
++from collections.abc import AsyncIterable
++from pathlib import Path
++from typing import cast
++
++import anyio
++import pytest
++
++from a2a.utils.errors import UnsupportedOperationError
++from a2a.utils.proto_utils import Event, to_stream_response
++from a2a.utils.source_lifetime import standalone_source_lifetime
++from a2a.utils.source_ownership import SourceAcquisition
++from a2a.utils.stream_refusal import ProtocolStreamDemand, StreamRefusal
++
++from tests.source_witness import DescriptorSource
++
++
++def test_profiles_without_refusal_projection_reject_it_instead_of_empty_protobuf() -> (
++    None
++):
++    error = UnsupportedOperationError('expected logical refusal')
++    with pytest.raises(
++        UnsupportedOperationError, match='source-lifetime-aware HTTP dispatcher'
++    ):
++        to_stream_response(StreamRefusal(error))
++    with pytest.raises(TypeError, match='Unsupported stream event type'):
++        to_stream_response(cast(Event, object()))
++    assert error.__cause__ is None
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_protocol_view_inspection_does_not_certify_pending_original_close(
++    tmp_path: Path,
++    backend: str,
++) -> None:
++    async def run() -> None:
++        closing, release, projected = (
++            anyio.Event(),
++            anyio.Event(),
++            anyio.Event(),
++        )
++        error = UnsupportedOperationError('expected logical refusal')
++        sources: list[DescriptorSource[object]] = []
++
++        def acquire(resources: SourceAcquisition) -> AsyncIterable[object]:
++            source = DescriptorSource(
++                tmp_path / 'pending-view',
++                backend,
++                (StreamRefusal(error),),
++                closing=closing,
++                release=release,
++            )
++            sources.append(source)
++            resources.retain(source, source.aclose)
++            return source
++
++        with anyio.fail_after(5):
++            async with standalone_source_lifetime(acquire) as reader:
++                protocol = ProtocolStreamDemand(reader)
++                assert not hasattr(protocol, 'aclose')
++
++                async def project() -> None:
++                    with pytest.raises(UnsupportedOperationError) as refused:
++                        await anext(protocol)
++                    assert refused.value is error
++                    projected.set()
++
++                async with anyio.create_task_group() as group:
++                    group.start_soon(project)
++                    await closing.wait()
++                    protocol.raise_if_source_failed()
++                    protocol.raise_if_retirement_failed()
++                    os.fstat(sources[0].fd)
++                    assert not projected.is_set()
++                    release.set()
++            assert projected.is_set()
++            sources[0].assert_original_retired()
 +
 +    anyio.run(run, backend=backend)
 diff --git a/tests/utils/test_telemetry.py b/tests/utils/test_telemetry.py

@@ -12,6 +12,7 @@ from kestrel_sdk.native_a2a.utils.source_lifetime import (
     SourceLifetimeFactory,
     standalone_source_lifetime,
 )
+from kestrel_sdk.native_a2a.utils.stream_refusal import ProtocolStreamDemand, StreamRefusal
 
 
 if TYPE_CHECKING:
@@ -70,7 +71,9 @@ class SourceRequestRoot:
         finally:
             self._active = False
 
-    async def open(self, acquire: SourceFactory[T]) -> SourceDemand[T]:
+    async def open(
+        self, acquire: SourceFactory[T | StreamRefusal]
+    ) -> SourceDemand[T]:
         """Admit exactly one source; its factory runs only in that owner."""
         if not self._active:
             raise RuntimeError(
@@ -79,7 +82,8 @@ class SourceRequestRoot:
         if self._opened:
             raise RuntimeError('A request source has already been admitted')
         self._opened = True
-        reader = await self._stack.enter_async_context(self._factory(acquire))
+        original = await self._stack.enter_async_context(self._factory(acquire))
+        reader = ProtocolStreamDemand[T](original)
         self._reader = reader
         return reader
 

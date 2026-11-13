@@ -30,6 +30,10 @@ from kestrel_sdk.native_a2a.types.a2a_pb2 import (
 )
 from kestrel_sdk.native_a2a.utils.errors import UnsupportedOperationError
 from kestrel_sdk.native_a2a.utils.proto_utils import validate_proto_required_fields
+from kestrel_sdk.native_a2a.utils.stream_refusal import StreamRefusal
+
+
+StreamItem = Event | StreamRefusal
 
 
 class RequestHandler(ABC):
@@ -116,7 +120,7 @@ class RequestHandler(ABC):
         self,
         params: SendMessageRequest,
         context: ServerCallContext,
-    ) -> AsyncGenerator[Event]:
+    ) -> AsyncGenerator[StreamItem]:
         """Handles the 'message/stream' method (streaming).
 
         Sends a message to the agent and yields stream events as they are
@@ -127,7 +131,10 @@ class RequestHandler(ABC):
             context: Context provided by the server.
 
         Yields:
-            `Event` objects from the agent's execution.
+            `Event` objects from the agent's execution. Modern HTTP handlers may
+            emit one terminal `StreamRefusal` after their own resource scopes
+            settle. It is data, never a replacement for an unexpected source or
+            finalizer exception. Other transport profiles explicitly reject it.
         """
         # This is needed for typechecker to recognise this method as an async generator.
         raise UnsupportedOperationError
@@ -174,7 +181,7 @@ class RequestHandler(ABC):
         self,
         params: SubscribeToTaskRequest,
         context: ServerCallContext,
-    ) -> AsyncGenerator[Event]:
+    ) -> AsyncGenerator[StreamItem]:
         """Handles the 'SubscribeToTask' method.
 
         Allows a client to subscribe to a running streaming task's event stream.
@@ -185,6 +192,8 @@ class RequestHandler(ABC):
 
         Yields:
              `Event` objects from the agent's ongoing execution for the specified task.
+             Modern HTTP also accepts a terminal `StreamRefusal`, with the same
+             actual-retirement obligations as `on_message_send_stream`.
         """
         raise UnsupportedOperationError
         yield

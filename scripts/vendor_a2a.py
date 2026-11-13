@@ -41,8 +41,11 @@ def relocate_test(text: str) -> str:
     )
 
 
-def import_test_delta(root: Path, source: Path, base: str, revision: str) -> None:
-    """Import only changed producer tests and their actual package ancestors.
+def import_test_delta(
+    root: Path, source: Path, base: str, revision: str,
+    *, retain_tests_from: Path | None = None,
+) -> None:
+    """Import changed tests plus the existing reviewed corpus from one Git tree.
 
     The source is an exact Git tree, never dirty tests or every upstream fixture.
     A fresh output is required. Deletion/rename disposition must be explicit.
@@ -58,6 +61,21 @@ def import_test_delta(root: Path, source: Path, base: str, revision: str) -> Non
             raise ValueError(f"Test delta needs explicit disposition: {status} {path}")
         selected.add(path)
     available = set(_git(source, "ls-tree", "-rz", "--name-only", tree, "tests").decode().split("\0"))
+    if retain_tests_from is not None:
+        if not retain_tests_from.is_dir() or retain_tests_from.is_symlink():
+            raise ValueError("The retained test corpus must be an actual directory")
+        previous = tuple(retain_tests_from.rglob("*.py"))
+        if not previous or any(path.is_symlink() for path in previous):
+            raise ValueError("The retained test corpus must contain regular Python files")
+        retained = {
+            "tests/" + path.relative_to(retain_tests_from).as_posix()
+            for path in previous
+        }
+        if missing := retained - available:
+            raise ValueError(f"Retained tests need explicit disposition: {sorted(missing)}")
+        # Only paths are retained. Every byte, including unchanged regressions,
+        # is regenerated from the exact producer tree, never the prior checkout.
+        selected.update(retained)
     for path in tuple(selected):
         for parent in Path(path).parents:
             if parent == Path("."):
@@ -145,7 +163,7 @@ def import_vendor(root: Path, source: Path, revision: str, base: str) -> None:
         "base_commit": base_commit,
         "reviewed_source_tree": tree,
         "namespace": "kestrel_sdk.native_a2a",
-        "modifications": "Reviewed signing, HTTP authorization and version negotiation, client ownership, discovery/response decoding, native-only client selection, HTTP error media types, original host-control errors, shared original-source handoff/retirement body, explicit complete HTTP/ASGI request roots and compatibility gRPC coroutine writers in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
+        "modifications": "Reviewed signing, HTTP authorization and version negotiation, client ownership, discovery/response decoding, native-only client selection, HTTP error media types, original host-control errors, shared original-source handoff/retirement body, explicit complete HTTP/ASGI request roots, terminal protocol-refusal data after actual source retirement, and compatibility gRPC coroutine writers in UPSTREAM.patch; Python module references relocated by scripts/vendor_a2a.py. This is a modified upstream SDK, not an official release.",
         "files": files,
         "provenance_sha256": provenance,
     }
@@ -175,13 +193,16 @@ def main() -> None:
     parser.add_argument("--revision")
     parser.add_argument("--base")
     parser.add_argument("--tests-since", help="Exact prior producer revision; import its changed tests into a fresh output")
+    parser.add_argument("--retain-tests-from", type=Path, help="Existing reviewed tests/native_a2a corpus; regenerate these paths from the producer too")
     arguments = parser.parse_args()
+    if arguments.retain_tests_from is not None and (arguments.check or arguments.tests_since is None):
+        parser.error("--retain-tests-from requires an import with --tests-since")
     if not arguments.check:
         if not all((arguments.source, arguments.revision, arguments.base)):
             parser.error("Import requires --source, --revision and --base")
         import_vendor(arguments.root, arguments.source, arguments.revision, arguments.base)
         if arguments.tests_since is not None:
-            import_test_delta(arguments.root, arguments.source, arguments.tests_since, arguments.revision)
+            import_test_delta(arguments.root, arguments.source, arguments.tests_since, arguments.revision, retain_tests_from=arguments.retain_tests_from)
     failures = check_vendor(arguments.root)
     if failures:
         parser.exit(1, "\n".join(failures) + "\n")

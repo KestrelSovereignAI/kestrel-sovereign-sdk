@@ -52,6 +52,10 @@ from kestrel_sdk.native_a2a.utils.errors import (
 )
 from kestrel_sdk.native_a2a.utils.source_lifetime import SourceDemand
 from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
+from kestrel_sdk.native_a2a.utils.stream_refusal import (
+    StreamRefusal,
+    map_stream_item,
+)
 from kestrel_sdk.native_a2a.utils.telemetry import SpanKind, trace_class
 from kestrel_sdk.native_a2a.utils.version_validator import validate_version
 
@@ -407,7 +411,7 @@ class JsonRpcDispatcher:
 
         def acquire(
             resources: SourceAcquisition,
-        ) -> AsyncIterator[dict[str, Any]]:
+        ) -> AsyncIterator[dict[str, Any] | StreamRefusal]:
             if method == 'SendStreamingMessage':
                 source = self.request_handler.on_message_send_stream(
                     request_obj, context
@@ -420,13 +424,22 @@ class JsonRpcDispatcher:
                 raise UnsupportedOperationError(message='Stream not supported')
             iterator = resources.retain_iterable(source)
 
-            async def mapped_events() -> AsyncIterator[dict[str, Any]]:
+            async def mapped_events() -> AsyncIterator[
+                dict[str, Any] | StreamRefusal
+            ]:
                 async for event in iterator:
-                    stream_response = proto_utils.to_stream_response(event)
-                    result = MessageToDict(
-                        stream_response, preserving_proto_field_name=False
+                    yield map_stream_item(
+                        event,
+                        lambda value: (
+                            JSONRPC20Response(
+                                result=MessageToDict(
+                                    proto_utils.to_stream_response(value),
+                                    preserving_proto_field_name=False,
+                                ),
+                                _id=request_id,
+                            ).data
+                        ),
                     )
-                    yield JSONRPC20Response(result=result, _id=request_id).data
 
             return mapped_events()
 
