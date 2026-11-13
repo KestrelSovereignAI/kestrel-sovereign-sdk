@@ -1,3 +1,4 @@
+# Modified by Kestrel: isolated SDK namespace; see kestrel_sdk/native_a2a/VENDORED.json.
 """Original source acquisition/retirement using real Tasks, tokens and files."""
 
 import errno

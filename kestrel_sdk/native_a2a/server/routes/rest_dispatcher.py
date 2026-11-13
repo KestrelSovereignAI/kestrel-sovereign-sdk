@@ -30,6 +30,10 @@ from kestrel_sdk.native_a2a.utils.errors import (
     TaskNotFoundError,
 )
 from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
+from kestrel_sdk.native_a2a.utils.stream_refusal import (
+    StreamRefusal,
+    map_stream_item,
+)
 from kestrel_sdk.native_a2a.utils.telemetry import SpanKind, trace_class
 from kestrel_sdk.native_a2a.utils.version_validator import validate_version
 
@@ -221,7 +225,7 @@ class RestDispatcher:
         async def _handler(
             context: ServerCallContext,
             resources: SourceAcquisition,
-        ) -> AsyncIterator[dict[str, Any]]:
+        ) -> AsyncIterator[dict[str, Any] | StreamRefusal]:
             body = await request.body()
             params = a2a_pb2.SendMessageRequest()
             proto_utils.parse_lenient(body, params)
@@ -229,8 +233,12 @@ class RestDispatcher:
                 self.request_handler.on_message_send_stream(params, context)
             )
             async for event in stream:
-                response = proto_utils.to_stream_response(event)
-                yield MessageToDict(response)
+                yield map_stream_item(
+                    event,
+                    lambda value: MessageToDict(
+                        proto_utils.to_stream_response(value)
+                    ),
+                )
 
         return await self._handle_streaming(request, _handler)
 
@@ -264,15 +272,19 @@ class RestDispatcher:
         async def _handler(
             context: ServerCallContext,
             resources: SourceAcquisition,
-        ) -> AsyncIterator[dict[str, Any]]:
+        ) -> AsyncIterator[dict[str, Any] | StreamRefusal]:
             stream = resources.retain_iterable(
                 self.request_handler.on_subscribe_to_task(
                     SubscribeToTaskRequest(id=task_id), context
                 )
             )
             async for event in stream:
-                response = proto_utils.to_stream_response(event)
-                yield MessageToDict(response)
+                yield map_stream_item(
+                    event,
+                    lambda value: MessageToDict(
+                        proto_utils.to_stream_response(value)
+                    ),
+                )
 
         return await self._handle_streaming(request, _handler)
 

@@ -190,6 +190,92 @@ def _stream_application(
 
 
 @pytest.mark.parametrize('backend', ['asyncio', 'trio'])
+@pytest.mark.parametrize('frontend', ['starlette', 'fastapi'])
+@pytest.mark.parametrize('binding', ['rest', 'rest-tenant', 'jsonrpc'])
+@pytest.mark.parametrize('subscribe', [False, True])
+@pytest.mark.parametrize('fail_close', [False, True])
+def test_terminal_refusal_is_normalized_only_after_real_source_retirement(
+    tmp_path: Path,
+    backend: str,
+    frontend: str,
+    binding: str,
+    subscribe: bool,
+    fail_close: bool,
+) -> None:
+    from kestrel_sdk.native_a2a.server.request_handlers.response_helpers import (
+        build_error_response,
+    )
+    from kestrel_sdk.native_a2a.utils.error_handlers import build_rest_error_payload
+    from kestrel_sdk.native_a2a.utils.errors import UnsupportedOperationError
+    from kestrel_sdk.native_a2a.utils.stream_refusal import StreamRefusal
+
+    async def run() -> None:
+        error = UnsupportedOperationError('Expected terminal refusal')
+        refusal = StreamRefusal(error)
+        sources: list[DescriptorSource] = []
+
+        def acquire() -> DescriptorSource:
+            source = DescriptorSource(
+                tmp_path / 'refusal', backend, (refusal,), fail_close=fail_close
+            )
+            sources.append(source)
+            return source
+
+        app, path, body, headers = _stream_application(
+            StreamRequestHandler(acquire),
+            frontend,
+            binding,
+            subscribe=subscribe,
+        )
+
+        async def checked_app(
+            scope: Scope, receive: Receive, send: Send
+        ) -> None:
+            async def after_original_retirement(message: Message) -> None:
+                if message['type'] == 'http.response.start':
+                    assert len(sources) == 1
+                    sources[0].assert_original_retired()
+                await send(message)
+
+            await app(scope, receive, after_original_retirement)
+
+        probe = RootFailureProbe(checked_app)
+
+        async def invoke() -> httpx.Response:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=probe),
+                base_url='http://testserver',
+            ) as client:
+                return await client.post(path, json=body, headers=headers)
+
+        with anyio.fail_after(5):
+            if fail_close:
+                with probe.expect(OSError):
+                    response = await invoke()
+                assert response.status_code == 500
+                assert probe.original is sources[0].close_error
+            else:
+                response = await invoke()
+                assert probe.error is None
+                assert response.status_code == (
+                    200 if binding == 'jsonrpc' else 400
+                )
+                expected = (
+                    build_error_response('one', error)
+                    if binding == 'jsonrpc'
+                    else build_rest_error_payload(error)
+                )
+                assert response.json() == expected
+                assert not response.headers['content-type'].startswith(
+                    'text/event-stream'
+                )
+        sources[0].assert_original_retired()
+        assert error.__cause__ is None
+
+    anyio.run(run, backend=backend)
+
+
+@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
 def test_explicit_source_request_preserves_original_send_capability(
     backend: str,
 ) -> None:

@@ -29,7 +29,8 @@ from google.protobuf.message import Message as ProtobufMessage
 from google.rpc import error_details_pb2
 from kestrel_sdk.features.host_errors import is_host_control_error
 
-from kestrel_sdk.native_a2a.utils.errors import InvalidParamsError
+from kestrel_sdk.native_a2a.utils.errors import InvalidParamsError, UnsupportedOperationError
+from kestrel_sdk.native_a2a.utils.stream_refusal import StreamRefusal
 
 
 if TYPE_CHECKING:
@@ -88,7 +89,7 @@ def parse_lenient(
     return ParseDict(data, message, ignore_unknown_fields=True)
 
 
-def to_stream_response(event: Event) -> StreamResponse:
+def to_stream_response(event: Event | StreamRefusal) -> StreamResponse:
     """Convert internal Event to StreamResponse proto.
 
     Args:
@@ -97,6 +98,10 @@ def to_stream_response(event: Event) -> StreamResponse:
     Returns:
         A StreamResponse proto with the appropriate field set.
     """
+    if issubclass(type(event), StreamRefusal):
+        raise UnsupportedOperationError(
+            'Terminal refusal values require a source-lifetime-aware HTTP dispatcher'
+        )
     response = StreamResponse()
     if isinstance(event, Task):
         response.task.CopyFrom(event)
@@ -106,6 +111,8 @@ def to_stream_response(event: Event) -> StreamResponse:
         response.status_update.CopyFrom(event)
     elif isinstance(event, TaskArtifactUpdateEvent):
         response.artifact_update.CopyFrom(event)
+    else:
+        raise TypeError('Unsupported stream event type')
     return response
 
 
