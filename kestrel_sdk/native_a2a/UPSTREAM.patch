@@ -1,5 +1,139 @@
+diff --git a/src/a2a/compat/v0_3/grpc_handler.py b/src/a2a/compat/v0_3/grpc_handler.py
+index b7bec26..bdd3251 100644
+--- a/src/a2a/compat/v0_3/grpc_handler.py
++++ b/src/a2a/compat/v0_3/grpc_handler.py
+@@ -27,6 +27,12 @@ from a2a.server.request_handlers.grpc_handler import (
+ )
+ from a2a.server.request_handlers.request_handler import RequestHandler
+ from a2a.utils.errors import A2AError, InvalidParamsError
++from a2a.utils.source_lifetime import (
++    SourceDemand,
++    SourceLifetimeFactory,
++    standalone_source_lifetime,
++)
++from a2a.utils.source_ownership import SourceAcquisition
+ 
+ 
+ logger = logging.getLogger(__name__)
+@@ -41,7 +47,9 @@ class CompatGrpcHandler(a2a_v0_3_pb2_grpc.A2AServiceServicer):
+         self,
+         request_handler: RequestHandler,
+         context_builder: GrpcServerCallContextBuilder | None = None,
+-    ):
++        *,
++        source_lifetime_factory: SourceLifetimeFactory = standalone_source_lifetime,
++    ) -> None:
+         """Initializes the CompatGrpcHandler.
+ 
+         Args:
+@@ -49,8 +57,10 @@ class CompatGrpcHandler(a2a_v0_3_pb2_grpc.A2AServiceServicer):
+                              delegate requests to.
+             context_builder: The CallContextBuilder object. If none the
+                              DefaultCallContextBuilder is used.
++            source_lifetime_factory: Explicit source admission/retirement policy.
+         """
+         self.handler03 = RequestHandler03(request_handler=request_handler)
++        self._source_lifetime_factory = source_lifetime_factory
+         self._context_builder = V03GrpcServerCallContextBuilder(
+             context_builder or DefaultGrpcServerCallContextBuilder()
+         )
+@@ -74,14 +84,22 @@ class CompatGrpcHandler(a2a_v0_3_pb2_grpc.A2AServiceServicer):
+     async def _handle_stream(
+         self,
+         context: grpc.aio.ServicerContext,
+-        handler_func: Callable[[ServerCallContext], AsyncIterable[TResponse]],
+-    ) -> AsyncIterable[TResponse]:
++        handler_func: Callable[
++            [ServerCallContext, SourceAcquisition], AsyncIterable[TResponse]
++        ],
++    ) -> None:
+         """Centralized error handling and context management for streaming calls."""
++        stream: SourceDemand[TResponse] | None = None
+         try:
+             server_context = self._context_builder.build(context)
+-            async for item in handler_func(server_context):
+-                yield item
++            async with self._source_lifetime_factory(
++                lambda resources: handler_func(server_context, resources)
++            ) as stream:
++                async for item in stream:
++                    await context.write(item)
+         except A2AError as e:
++            if stream is not None:
++                stream.raise_if_retirement_failed()
+             await self.abort_context(e, context)
+ 
+     def _extract_task_id(self, resource_name: str) -> str:
+@@ -150,24 +168,27 @@ class CompatGrpcHandler(a2a_v0_3_pb2_grpc.A2AServiceServicer):
+         self,
+         request: a2a_v0_3_pb2.SendMessageRequest,
+         context: grpc.aio.ServicerContext,
+-    ) -> AsyncIterable[a2a_v0_3_pb2.StreamResponse]:
++    ) -> None:
+         """Handles the 'SendStreamingMessage' gRPC method (v0.3)."""
+ 
+         async def _handler(
+             server_context: ServerCallContext,
++            resources: SourceAcquisition,
+         ) -> AsyncIterable[a2a_v0_3_pb2.StreamResponse]:
+             req_v03 = types_v03.SendMessageRequest(
+                 id=0, params=proto_utils.FromProto.message_send_params(request)
+             )
+-            async for v03_stream_resp in self.handler03.on_message_send_stream(
+-                req_v03, server_context
+-            ):
++            stream = resources.retain_iterable(
++                self.handler03.on_message_send_stream(
++                    req_v03, server_context, resources=resources
++                )
++            )
++            async for v03_stream_resp in stream:
+                 yield proto_utils.ToProto.stream_response(
+                     v03_stream_resp.result
+                 )
+ 
+-        async for item in self._handle_stream(context, _handler):
+-            yield item
++        await self._handle_stream(context, _handler)
+ 
+     async def GetTask(
+         self,
+@@ -209,24 +230,27 @@ class CompatGrpcHandler(a2a_v0_3_pb2_grpc.A2AServiceServicer):
+         self,
+         request: a2a_v0_3_pb2.TaskSubscriptionRequest,
+         context: grpc.aio.ServicerContext,
+-    ) -> AsyncIterable[a2a_v0_3_pb2.StreamResponse]:
++    ) -> None:
+         """Handles the 'TaskSubscription' gRPC method (v0.3)."""
+ 
+         async def _handler(
+             server_context: ServerCallContext,
++            resources: SourceAcquisition,
+         ) -> AsyncIterable[a2a_v0_3_pb2.StreamResponse]:
+             req_v03 = types_v03.TaskResubscriptionRequest(
+                 id=0, params=proto_utils.FromProto.task_id_params(request)
+             )
+-            async for v03_stream_resp in self.handler03.on_subscribe_to_task(
+-                req_v03, server_context
+-            ):
++            stream = resources.retain_iterable(
++                self.handler03.on_subscribe_to_task(
++                    req_v03, server_context, resources=resources
++                )
++            )
++            async for v03_stream_resp in stream:
+                 yield proto_utils.ToProto.stream_response(
+                     v03_stream_resp.result
+                 )
+ 
+-        async for item in self._handle_stream(context, _handler):
+-            yield item
++        await self._handle_stream(context, _handler)
+ 
+     async def CreateTaskPushNotificationConfig(
+         self,
 diff --git a/src/a2a/compat/v0_3/jsonrpc_adapter.py b/src/a2a/compat/v0_3/jsonrpc_adapter.py
-index 2263f33..1e07992 100644
+index 2263f33..9ffd4f2 100644
 --- a/src/a2a/compat/v0_3/jsonrpc_adapter.py
 +++ b/src/a2a/compat/v0_3/jsonrpc_adapter.py
 @@ -3,6 +3,7 @@ import logging
@@ -10,7 +144,18 @@ index 2263f33..1e07992 100644
  from sse_starlette.sse import EventSourceResponse
  from starlette.responses import JSONResponse
  
-@@ -87,7 +88,13 @@ class JSONRPC03Adapter:
+@@ -41,8 +42,10 @@ from a2a.server.routes.common import (
+     ServerCallContextBuilder,
+     create_event_source_response,
+ )
++from a2a.server.routes.source_lifetime import SourceRequestRoot
+ from a2a.utils import constants
+ from a2a.utils.errors import JSON_RPC_ERROR_CODE_MAP, A2AError
++from a2a.utils.source_ownership import SourceAcquisition
+ from a2a.utils.version_validator import validate_version
+ 
+ 
+@@ -87,7 +90,13 @@ class JSONRPC03Adapter:
          self,
          request_id: 'str | int | None',
          error: 'Exception | CoreJSONRPCError',
@@ -24,7 +169,16 @@ index 2263f33..1e07992 100644
          if isinstance(error, CoreJSONRPCError):
              err_dict = error.model_dump(by_alias=True)
              return JSONResponse(
-@@ -122,14 +129,14 @@ class JSONRPC03Adapter:
+@@ -115,6 +124,8 @@ class JSONRPC03Adapter:
+         method: str,
+         body: dict,
+         request: Request,
++        *,
++        source_root: SourceRequestRoot,
+     ) -> 'JSONResponse | EventSourceResponse':
+         """Handles v0.3 specific JSON-RPC requests."""
+         try:
+@@ -122,14 +133,14 @@ class JSONRPC03Adapter:
              try:
                  specific_request = model_class.model_validate(body)  # type: ignore[attr-defined]
              except Exception as e:
@@ -43,7 +197,19 @@ index 2263f33..1e07992 100644
  
              call_context = self._context_builder.build(request)
              call_context.tenant = (
-@@ -151,10 +158,9 @@ class JSONRPC03Adapter:
+@@ -142,7 +153,10 @@ class JSONRPC03Adapter:
+ 
+             if method in ('message/stream', 'tasks/resubscribe'):
+                 return await self._process_streaming_request(
+-                    request_id, specific_request, call_context
++                    request_id,
++                    specific_request,
++                    call_context,
++                    source_root=source_root,
+                 )
+ 
+             return await self._process_non_streaming_request(
+@@ -151,10 +165,9 @@ class JSONRPC03Adapter:
          except A2AError as e:
              return self._generate_error_response(request_id, e)
          except Exception as e:
@@ -56,10 +222,51 @@ index 2263f33..1e07992 100644
  
      @validate_version(constants.PROTOCOL_VERSION_0_3)
      async def _process_non_streaming_request(
-@@ -285,10 +291,10 @@ class JSONRPC03Adapter:
+@@ -252,17 +265,24 @@ class JSONRPC03Adapter:
+         request_id: 'str | int | None',
+         request_obj: Any,
+         context: ServerCallContext,
++        *,
++        source_root: SourceRequestRoot,
+     ) -> EventSourceResponse:
+         method = request_obj.method
+-        if method == 'message/stream':
+-            stream_gen = self.handler.on_message_send_stream(
+-                request_obj, context
+-            )
+-        elif method == 'tasks/resubscribe':
+-            stream_gen = self.handler.on_subscribe_to_task(request_obj, context)
+-        else:
++
++        def acquire(resources: SourceAcquisition) -> AsyncIterable[Any]:
++            if method == 'message/stream':
++                return self.handler.on_message_send_stream(
++                    request_obj, context, resources=resources
++                )
++            if method == 'tasks/resubscribe':
++                return self.handler.on_subscribe_to_task(
++                    request_obj, context, resources=resources
++                )
+             raise ValueError(f'Unsupported streaming method {method}')
+ 
++        stream_gen = await source_root.open(acquire)
++
+         async def event_generator(
+             stream: AsyncIterable[Any],
+         ) -> AsyncIterator[dict[str, str]]:
+@@ -274,6 +294,7 @@ class JSONRPC03Adapter:
+                         )
+                     }
+             except A2AError as e:
++                stream_gen.raise_if_retirement_failed()
+                 err_resp = types_v03.SendStreamingMessageResponse(
+                     root=types_v03.JSONRPCErrorResponse(
+                         id=request_id, error=_to_v03_jsonrpc_error(e)
+@@ -285,10 +306,11 @@ class JSONRPC03Adapter:
                      )
                  }
              except Exception as e:
++                stream_gen.raise_if_retirement_failed()
 +                err = _to_v03_jsonrpc_error(e)
                  logger.exception(
                      'Error during stream generation in v0.3 JSONRPCAdapter'
@@ -68,7 +275,7 @@ index 2263f33..1e07992 100644
                  err_resp = types_v03.SendStreamingMessageResponse(
                      root=types_v03.JSONRPCErrorResponse(
                          id=request_id, error=err
-@@ -315,14 +321,22 @@ _V03_ERROR_CODES = frozenset(
+@@ -315,14 +337,22 @@ _V03_ERROR_CODES = frozenset(
  )
  
  
@@ -95,8 +302,58 @@ index 2263f33..1e07992 100644
 +        message=error.message if isinstance(error, A2AError) else str(error),
 +        data=error.data if isinstance(error, A2AError) else None,
      )
+diff --git a/src/a2a/compat/v0_3/request_handler.py b/src/a2a/compat/v0_3/request_handler.py
+index 9a53081..93cffa4 100644
+--- a/src/a2a/compat/v0_3/request_handler.py
++++ b/src/a2a/compat/v0_3/request_handler.py
+@@ -9,6 +9,7 @@ from a2a.server.request_handlers.request_handler import RequestHandler
+ from a2a.types.a2a_pb2 import ListTaskPushNotificationConfigsRequest, Task
+ from a2a.utils import proto_utils as core_proto_utils
+ from a2a.utils.errors import TaskNotFoundError
++from a2a.utils.source_ownership import SourceAcquisition
+ 
+ 
+ logger = logging.getLogger(__name__)
+@@ -38,12 +39,15 @@ class RequestHandler03:
+         self,
+         request: types_v03.SendMessageRequest,
+         context: ServerCallContext,
++        *,
++        resources: SourceAcquisition,
+     ) -> AsyncIterable[types_v03.SendStreamingMessageSuccessResponse]:
+         """Sends a message stream using v0.3 protocol types."""
+         v10_req = conversions.to_core_send_message_request(request)
+-        async for event in self.request_handler.on_message_send_stream(
+-            v10_req, context
+-        ):
++        stream = resources.retain_iterable(
++            self.request_handler.on_message_send_stream(v10_req, context)
++        )
++        async for event in stream:
+             v10_stream_resp = core_proto_utils.to_stream_response(event)
+             yield conversions.to_compat_stream_response(
+                 v10_stream_resp, request.id
+@@ -65,12 +69,15 @@ class RequestHandler03:
+         self,
+         request: types_v03.TaskResubscriptionRequest,
+         context: ServerCallContext,
++        *,
++        resources: SourceAcquisition,
+     ) -> AsyncIterable[types_v03.SendStreamingMessageSuccessResponse]:
+         """Subscribes to a task using v0.3 protocol types."""
+         v10_req = conversions.to_core_subscribe_to_task_request(request)
+-        async for event in self.request_handler.on_subscribe_to_task(
+-            v10_req, context
+-        ):
++        stream = resources.retain_iterable(
++            self.request_handler.on_subscribe_to_task(v10_req, context)
++        )
++        async for event in stream:
+             v10_stream_resp = core_proto_utils.to_stream_response(event)
+             yield conversions.to_compat_stream_response(
+                 v10_stream_resp, request.id
 diff --git a/src/a2a/compat/v0_3/rest_adapter.py b/src/a2a/compat/v0_3/rest_adapter.py
-index 9b91f3b..852df9e 100644
+index 9b91f3b..83c6173 100644
 --- a/src/a2a/compat/v0_3/rest_adapter.py
 +++ b/src/a2a/compat/v0_3/rest_adapter.py
 @@ -4,6 +4,8 @@ import logging
@@ -108,7 +365,30 @@ index 9b91f3b..852df9e 100644
  
  if TYPE_CHECKING:
      from sse_starlette.sse import EventSourceResponse
-@@ -87,6 +89,8 @@ class REST03Adapter:
+@@ -37,6 +39,7 @@ from a2a.server.routes.common import (
+     ServerCallContextBuilder,
+     create_event_source_response,
+ )
++from a2a.server.routes.source_lifetime import source_root_for
+ from a2a.utils import json_utils
+ from a2a.utils.error_handlers import (
+     rest_error_handler,
+@@ -45,6 +48,7 @@ from a2a.utils.error_handlers import (
+ from a2a.utils.errors import (
+     InvalidRequestError,
+ )
++from a2a.utils.source_ownership import SourceAcquisition
+ 
+ 
+ logger = logging.getLogger(__name__)
+@@ -81,12 +85,14 @@ class REST03Adapter:
+     @rest_stream_error_handler
+     async def _handle_streaming_request(
+         self,
+-        method: 'Callable[[Request, ServerCallContext], AsyncIterable[Any]]',
++        method: 'Callable[..., AsyncIterable[Any]]',
+         request: Request,
+     ) -> EventSourceResponse:
          try:
              await request.body()
          except (ValueError, RuntimeError, OSError) as e:
@@ -117,8 +397,20 @@ index 9b91f3b..852df9e 100644
              raise InvalidRequestError(
                  message=f'Failed to pre-consume request body: {e}'
              ) from e
+@@ -97,7 +103,10 @@ class REST03Adapter:
+         # errors raised before any event (e.g. a malformed body) are mapped
+         # to an HTTP error by @rest_stream_error_handler instead of an empty
+         # 200 stream, matching the v1.0 REST dispatcher.
+-        stream = aiter(method(request, call_context))
++        def acquire(resources: SourceAcquisition) -> AsyncIterable[Any]:
++            return method(request, call_context, resources=resources)
++
++        stream = await source_root_for(request).open(acquire)
+         try:
+             first_item = await anext(stream)
+         except StopAsyncIteration:
 diff --git a/src/a2a/compat/v0_3/rest_handler.py b/src/a2a/compat/v0_3/rest_handler.py
-index 9e0773f..96bbaf6 100644
+index 9e0773f..dd3018c 100644
 --- a/src/a2a/compat/v0_3/rest_handler.py
 +++ b/src/a2a/compat/v0_3/rest_handler.py
 @@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
@@ -129,7 +421,79 @@ index 9e0773f..96bbaf6 100644
  
  
  if TYPE_CHECKING:
-@@ -257,6 +258,8 @@ class REST03Handler:
+@@ -30,6 +31,7 @@ from a2a.server.context import ServerCallContext
+ from a2a.utils import constants
+ from a2a.utils.errors import InvalidParamsError
+ from a2a.utils.proto_utils import parse_lenient
++from a2a.utils.source_ownership import SourceAcquisition
+ from a2a.utils.telemetry import SpanKind, trace_class
+ from a2a.utils.version_validator import validate_version
+ 
+@@ -83,12 +85,15 @@ class REST03Handler:
+         self,
+         request: Request,
+         context: ServerCallContext,
++        *,
++        resources: SourceAcquisition,
+     ) -> AsyncIterator[dict[str, Any]]:
+         """Handles the 'message/stream' REST method.
+ 
+         Args:
+             request: The incoming `Request` object.
+             context: Context provided by the server.
++            resources: Original producer's acquisition/retirement record.
+ 
+         Yields:
+             JSON serialized objects containing streaming events in v0.3 format.
+@@ -99,9 +104,12 @@ class REST03Handler:
+         v03_params_msg = proto_utils.FromProto.message_send_params(v03_pb_msg)
+         rpc_req = types_v03.SendMessageRequest(id='', params=v03_params_msg)
+ 
+-        async for v03_stream_resp in self.handler03.on_message_send_stream(
+-            rpc_req, context
+-        ):
++        stream = resources.retain_iterable(
++            self.handler03.on_message_send_stream(
++                rpc_req, context, resources=resources
++            )
++        )
++        async for v03_stream_resp in stream:
+             v03_pb_resp = proto_utils.ToProto.stream_response(
+                 v03_stream_resp.result
+             )
+@@ -137,12 +145,15 @@ class REST03Handler:
+         self,
+         request: Request,
+         context: ServerCallContext,
++        *,
++        resources: SourceAcquisition,
+     ) -> AsyncIterator[dict[str, Any]]:
+         """Handles the 'tasks/{id}:subscribe' REST method.
+ 
+         Args:
+             request: The incoming `Request` object.
+             context: Context provided by the server.
++            resources: Original producer's acquisition/retirement record.
+ 
+         Yields:
+             JSON serialized objects containing streaming events in v0.3 format.
+@@ -153,9 +164,12 @@ class REST03Handler:
+             params=types_v03.TaskIdParams(id=task_id),
+         )
+ 
+-        async for v03_stream_resp in self.handler03.on_subscribe_to_task(
+-            rpc_req, context
+-        ):
++        stream = resources.retain_iterable(
++            self.handler03.on_subscribe_to_task(
++                rpc_req, context, resources=resources
++            )
++        )
++        async for v03_stream_resp in stream:
+             v03_pb_resp = proto_utils.ToProto.stream_response(
+                 v03_stream_resp.result
+             )
+@@ -257,6 +271,8 @@ class REST03Handler:
                  int(history_length_str) if history_length_str else None
              )
          except ValueError as e:
@@ -193,11 +557,47 @@ index 93dc034..c8f0784 100644
          return ServerCallContext(
              user=self.build_user(request),
              state=state,
+diff --git a/src/a2a/server/routes/fastapi_routes.py b/src/a2a/server/routes/fastapi_routes.py
+index 77c0c07..5bd4ae8 100644
+--- a/src/a2a/server/routes/fastapi_routes.py
++++ b/src/a2a/server/routes/fastapi_routes.py
+@@ -97,15 +97,17 @@ def _attach_route(
+         extra = dict(openapi_extra or {})
+         extra.setdefault('parameters', [_A2A_VERSION_HEADER])
+         openapi_extra = extra
+-    app.routes.append(
+-        _A2ARoute(
+-            path=route.path,
+-            endpoint=route.endpoint,
+-            methods=methods,
+-            tags=[tag],
+-            openapi_extra=openapi_extra,
+-        )
++    api_route = _A2ARoute(
++        path=route.path,
++        endpoint=route.endpoint,
++        methods=methods,
++        tags=[tag],
++        openapi_extra=openapi_extra,
+     )
++    # Preserve the actual ASGI lifetime, not just its bare endpoint metadata.
++    # Rebuilding request_response(endpoint) discards an admitted source root.
++    api_route.app = route.app
++    app.routes.append(api_route)
+ 
+ 
+ def add_a2a_routes_to_fastapi(
 diff --git a/src/a2a/server/routes/jsonrpc_dispatcher.py b/src/a2a/server/routes/jsonrpc_dispatcher.py
-index fb1801b..20d1ed3 100644
+index fb1801b..32ef526 100644
 --- a/src/a2a/server/routes/jsonrpc_dispatcher.py
 +++ b/src/a2a/server/routes/jsonrpc_dispatcher.py
-@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
+@@ -3,15 +3,15 @@
+ import json
+ import logging
+ 
+-from collections.abc import AsyncGenerator
++from collections.abc import AsyncGenerator, AsyncIterator
+ from typing import TYPE_CHECKING, Any, cast
  
  from google.protobuf.json_format import MessageToDict, ParseDict
  from jsonrpc.jsonrpc2 import JSONRPC20Request, JSONRPC20Response
@@ -205,7 +605,28 @@ index fb1801b..20d1ed3 100644
  
  from a2a.compat.v0_3.jsonrpc_adapter import JSONRPC03Adapter
  from a2a.server.context import ServerCallContext
-@@ -170,6 +171,10 @@ class JsonRpcDispatcher:
+-from a2a.server.events import Event
+ from a2a.server.jsonrpc_models import (
+     InternalError,
+     JSONParseError,
+@@ -26,6 +26,7 @@ from a2a.server.routes.common import (
+     create_event_source_response,
+     serialize_list_tasks_response,
+ )
++from a2a.server.routes.source_lifetime import SourceRequestRoot, source_root_for
+ from a2a.types.a2a_pb2 import (
+     CancelTaskRequest,
+     DeleteTaskPushNotificationConfigRequest,
+@@ -48,6 +49,8 @@ from a2a.utils.errors import (
+     TaskNotFoundError,
+     UnsupportedOperationError,
+ )
++from a2a.utils.source_lifetime import SourceDemand
++from a2a.utils.source_ownership import SourceAcquisition
+ from a2a.utils.telemetry import SpanKind, trace_class
+ from a2a.utils.version_validator import validate_version
+ 
+@@ -170,6 +173,10 @@ class JsonRpcDispatcher:
          self,
          request_id: str | int | None,
          error: Exception | JSONRPCError | A2AError,
@@ -216,7 +637,7 @@ index fb1801b..20d1ed3 100644
      ) -> JSONResponse:
          """Creates a Starlette JSONResponse for a JSON-RPC error.
  
-@@ -178,11 +183,26 @@ class JsonRpcDispatcher:
+@@ -178,11 +185,26 @@ class JsonRpcDispatcher:
          Args:
              request_id: The ID of the request that caused the error.
              error: The error object (one of the JSONRPCError types).
@@ -244,7 +665,18 @@ index fb1801b..20d1ed3 100644
              error = InternalError(message=str(error))
  
          response_data = build_error_response(request_id, error)
-@@ -227,8 +247,6 @@ class JsonRpcDispatcher:
+@@ -208,7 +230,9 @@ class JsonRpcDispatcher:
+             status_code=200,
+         )
+ 
+-    async def handle_requests(self, request: Request) -> Response:  # noqa: PLR0911, PLR0912
++    async def handle_requests(  # noqa: PLR0911, PLR0912
++        self, request: Request
++    ) -> Response:
+         """Handles incoming POST requests to the main A2A endpoint.
+ 
+         Parses the request body as JSON, validates it against A2A request types,
+@@ -227,8 +251,6 @@ class JsonRpcDispatcher:
              into JSON-RPC error responses by this method.
          """
          request_id = None
@@ -253,7 +685,7 @@ index fb1801b..20d1ed3 100644
          try:
              body = await request.json()
              if isinstance(body, dict):
-@@ -267,11 +285,11 @@ class JsonRpcDispatcher:
+@@ -267,11 +289,11 @@ class JsonRpcDispatcher:
                          ),
                      )
              except Exception as e:
@@ -269,7 +701,15 @@ index fb1801b..20d1ed3 100644
  
              # 2) Route by method name; unknown -> -32601, known -> validate params (-32602 on failure)
              method: str | None = base_request.method
-@@ -309,11 +327,11 @@ class JsonRpcDispatcher:
+@@ -293,6 +315,7 @@ class JsonRpcDispatcher:
+                     method=method,
+                     body=body,
+                     request=request,
++                    source_root=source_root_for(request),
+                 )
+ 
+             model_class = self.METHOD_TO_MODEL.get(method)
+@@ -309,11 +332,11 @@ class JsonRpcDispatcher:
                      params, model_class(), ignore_unknown_fields=True
                  )
              except Exception as e:
@@ -285,7 +725,15 @@ index fb1801b..20d1ed3 100644
  
              # 3) Build call context and wrap the request for downstream handling
              call_context = self._context_builder.build(request)
-@@ -331,33 +349,30 @@ class JsonRpcDispatcher:
+@@ -327,37 +350,37 @@ class JsonRpcDispatcher:
+             )
+             if method in ('SendStreamingMessage', 'SubscribeToTask'):
+                 handler_result = await self._process_streaming_request(
+-                    request_id, specific_request, call_context
++                    request_id,
++                    specific_request,
++                    call_context,
++                    source_root=source_root_for(request),
                  )
              else:
                  try:
@@ -327,7 +775,94 @@ index fb1801b..20d1ed3 100644
  
      @validate_version(constants.PROTOCOL_VERSION_1_0)
      async def _process_streaming_request(
-@@ -595,6 +610,8 @@ class JsonRpcDispatcher:
+@@ -365,6 +388,8 @@ class JsonRpcDispatcher:
+         request_id: str | int | None,
+         request_obj: Any,
+         context: ServerCallContext,
++        *,
++        source_root: SourceRequestRoot,
+     ) -> AsyncGenerator[dict[str, Any], None]:
+         """Processes streaming requests (SendStreamingMessage or SubscribeToTask).
+ 
+@@ -372,23 +397,39 @@ class JsonRpcDispatcher:
+             request_id: The ID of the request.
+             request_obj: The proto request message.
+             context: The ServerCallContext for the request.
++            source_root: Explicit active root spanning dispatch and response.
+ 
+         Returns:
+             An `AsyncGenerator` object to stream results to the client.
+         """
+-        stream: AsyncGenerator | None = None
+         method = context.state.get('method')
+-        if method == 'SendStreamingMessage':
+-            stream = self.request_handler.on_message_send_stream(
+-                request_obj, context
+-            )
+-        elif method == 'SubscribeToTask':
+-            stream = self.request_handler.on_subscribe_to_task(
+-                request_obj, context
+-            )
+ 
+-        if stream is None:
+-            raise UnsupportedOperationError(message='Stream not supported')
++        def acquire(
++            resources: SourceAcquisition,
++        ) -> AsyncIterator[dict[str, Any]]:
++            if method == 'SendStreamingMessage':
++                source = self.request_handler.on_message_send_stream(
++                    request_obj, context
++                )
++            elif method == 'SubscribeToTask':
++                source = self.request_handler.on_subscribe_to_task(
++                    request_obj, context
++                )
++            else:
++                raise UnsupportedOperationError(message='Stream not supported')
++            iterator = resources.retain_iterable(source)
++
++            async def mapped_events() -> AsyncIterator[dict[str, Any]]:
++                async for event in iterator:
++                    stream_response = proto_utils.to_stream_response(event)
++                    result = MessageToDict(
++                        stream_response, preserving_proto_field_name=False
++                    )
++                    yield JSONRPC20Response(result=result, _id=request_id).data
++
++            return mapped_events()
++
++        stream = await source_root.open(acquire)
+ 
+         # Eagerly fetch the first event to trigger validation/upfront errors
+         try:
+@@ -397,22 +438,16 @@ class JsonRpcDispatcher:
+             first_event = None
+ 
+         async def _wrap_stream(
+-            st: AsyncGenerator, first_evt: Event | None
++            st: SourceDemand[dict[str, Any]], first_evt: dict[str, Any] | None
+         ) -> AsyncGenerator[dict[str, Any], None]:
+-            def _map_event(evt: Event) -> dict[str, Any]:
+-                stream_response = proto_utils.to_stream_response(evt)
+-                result = MessageToDict(
+-                    stream_response, preserving_proto_field_name=False
+-                )
+-                return JSONRPC20Response(result=result, _id=request_id).data
+-
+             try:
+                 if first_evt is not None:
+-                    yield _map_event(first_evt)
++                    yield first_evt
+ 
+                 async for event in st:
+-                    yield _map_event(event)
++                    yield event
+             except A2AError as e:
++                st.raise_if_retirement_failed()
+                 yield build_error_response(request_id, e)
+ 
+         return _wrap_stream(stream, first_event)
+@@ -595,6 +630,8 @@ class JsonRpcDispatcher:
                              event['event'] = 'error'
                          yield event
                  except Exception as e:
@@ -336,8 +871,59 @@ index fb1801b..20d1ed3 100644
                      logger.exception(
                          'Unhandled error during JSON-RPC SSE stream'
                      )
+diff --git a/src/a2a/server/routes/jsonrpc_routes.py b/src/a2a/server/routes/jsonrpc_routes.py
+index 648e9df..c4b6a15 100644
+--- a/src/a2a/server/routes/jsonrpc_routes.py
++++ b/src/a2a/server/routes/jsonrpc_routes.py
+@@ -20,17 +20,24 @@ else:
+ from a2a.server.request_handlers.request_handler import RequestHandler
+ from a2a.server.routes.common import ServerCallContextBuilder
+ from a2a.server.routes.jsonrpc_dispatcher import JsonRpcDispatcher
++from a2a.server.routes.source_lifetime import create_source_route
++from a2a.utils.source_lifetime import (
++    SourceLifetimeFactory,
++    standalone_source_lifetime,
++)
+ 
+ 
+ logger = logging.getLogger(__name__)
+ 
+ 
+-def create_jsonrpc_routes(
++def create_jsonrpc_routes(  # noqa: PLR0913 -- preserve the existing positional API
+     request_handler: RequestHandler,
+     rpc_url: str,
+     context_builder: ServerCallContextBuilder | None = None,
+     enable_v0_3_compat: bool = False,
+     shutdown_grace_period: float = 0,
++    *,
++    source_lifetime_factory: SourceLifetimeFactory = standalone_source_lifetime,
+ ) -> list['Route']:
+     """Creates the Starlette Route for the A2A protocol JSON-RPC endpoint.
+ 
+@@ -50,6 +57,8 @@ def create_jsonrpc_routes(
+           before force-cancellation during shutdown. This value should be less
+           than the ASGI server's graceful shutdown timeout. Defaults to 0,
+           matching the ``sse-starlette`` default behavior.
++        source_lifetime_factory: Explicit source admission/retirement policy.
++          Native hosts must pass their policy; standalone apps use AnyIO.
+     """
+     if not _package_starlette_installed:
+         raise ImportError(
+@@ -66,9 +75,10 @@ def create_jsonrpc_routes(
+     )
+ 
+     return [
+-        Route(
++        create_source_route(
+             path=rpc_url,
+             endpoint=dispatcher.handle_requests,
+             methods=['POST'],
++            factory=source_lifetime_factory,
+         )
+     ]
 diff --git a/src/a2a/server/routes/rest_dispatcher.py b/src/a2a/server/routes/rest_dispatcher.py
-index 80964e5..0767dee 100644
+index 80964e5..c1e469a 100644
 --- a/src/a2a/server/routes/rest_dispatcher.py
 +++ b/src/a2a/server/routes/rest_dispatcher.py
 @@ -1,9 +1,11 @@
@@ -352,7 +938,14 @@ index 80964e5..0767dee 100644
  
  from a2a.server.context import ServerCallContext
  from a2a.server.request_handlers.request_handler import RequestHandler
-@@ -19,12 +21,8 @@ from a2a.types.a2a_pb2 import (
+@@ -13,26 +15,34 @@ from a2a.server.routes.common import (
+     create_event_source_response,
+     serialize_list_tasks_response,
+ )
++from a2a.server.routes.source_lifetime import source_root_for
+ from a2a.types import a2a_pb2
+ from a2a.types.a2a_pb2 import (
+     CancelTaskRequest,
      GetTaskPushNotificationConfigRequest,
      SubscribeToTaskRequest,
  )
@@ -367,7 +960,9 @@ index 80964e5..0767dee 100644
  from a2a.utils.errors import (
      InvalidRequestError,
      TaskNotFoundError,
-@@ -33,6 +31,16 @@ from a2a.utils.telemetry import SpanKind, trace_class
+ )
++from a2a.utils.source_ownership import SourceAcquisition
+ from a2a.utils.telemetry import SpanKind, trace_class
  from a2a.utils.version_validator import validate_version
  
  
@@ -384,7 +979,18 @@ index 80964e5..0767dee 100644
  if TYPE_CHECKING:
      from sse_starlette.event import ServerSentEvent
      from sse_starlette.sse import EventSourceResponse
-@@ -131,6 +139,8 @@ class RestDispatcher:
+@@ -122,7 +132,9 @@ class RestDispatcher:
+     async def _handle_streaming(
+         self,
+         request: Request,
+-        handler_func: Callable[[ServerCallContext], AsyncIterator[Any]],
++        handler_func: Callable[
++            [ServerCallContext, SourceAcquisition], AsyncIterator[Any]
++        ],
+     ) -> EventSourceResponse:
+         """Centralized error handling and context management for streaming calls."""
+         # Pre-consume and cache the request body to prevent deadlock in streaming context
+@@ -131,6 +143,8 @@ class RestDispatcher:
          try:
              await request.body()
          except (ValueError, RuntimeError, OSError) as e:
@@ -393,10 +999,23 @@ index 80964e5..0767dee 100644
              raise InvalidRequestError(
                  message=f'Failed to pre-consume request body: {e}'
              ) from e
-@@ -159,9 +169,10 @@ class RestDispatcher:
+@@ -144,7 +158,10 @@ class RestDispatcher:
+         # the correct HTTP status code instead of starting an SSE stream.
+         # Without this, the error would be raised after SSE headers are
+         # already sent, and the client would see a broken stream instead
+-        stream = aiter(handler_func(context))
++        def acquire(resources: SourceAcquisition) -> AsyncIterator[Any]:
++            return handler_func(context, resources)
++
++        stream = await source_root_for(request).open(acquire)
+         try:
+             first_item = await anext(stream)
+         except StopAsyncIteration:
+@@ -159,9 +176,11 @@ class RestDispatcher:
                  async for item in stream:
                      yield ServerSentEvent(data=json_utils.dumps(item))
              except Exception as e:
++                stream.raise_if_retirement_failed()
 +                payload = build_rest_error_payload(e)
                  logger.exception('Error during REST SSE stream')
                  yield ServerSentEvent(
@@ -405,6 +1024,335 @@ index 80964e5..0767dee 100644
                      event='error',
                  )
  
+@@ -200,13 +219,15 @@ class RestDispatcher:
+         @validate_version(constants.PROTOCOL_VERSION_1_0)
+         async def _handler(
+             context: ServerCallContext,
++            resources: SourceAcquisition,
+         ) -> AsyncIterator[dict[str, Any]]:
+             body = await request.body()
+             params = a2a_pb2.SendMessageRequest()
+             proto_utils.parse_lenient(body, params)
+-            async for event in self.request_handler.on_message_send_stream(
+-                params, context
+-            ):
++            stream = resources.retain_iterable(
++                self.request_handler.on_message_send_stream(params, context)
++            )
++            async for event in stream:
+                 response = proto_utils.to_stream_response(event)
+                 yield MessageToDict(response)
+ 
+@@ -241,10 +262,14 @@ class RestDispatcher:
+         @validate_version(constants.PROTOCOL_VERSION_1_0)
+         async def _handler(
+             context: ServerCallContext,
++            resources: SourceAcquisition,
+         ) -> AsyncIterator[dict[str, Any]]:
+-            async for event in self.request_handler.on_subscribe_to_task(
+-                SubscribeToTaskRequest(id=task_id), context
+-            ):
++            stream = resources.retain_iterable(
++                self.request_handler.on_subscribe_to_task(
++                    SubscribeToTaskRequest(id=task_id), context
++                )
++            )
++            async for event in stream:
+                 response = proto_utils.to_stream_response(event)
+                 yield MessageToDict(response)
+ 
+diff --git a/src/a2a/server/routes/rest_routes.py b/src/a2a/server/routes/rest_routes.py
+index b741411..6061153 100644
+--- a/src/a2a/server/routes/rest_routes.py
++++ b/src/a2a/server/routes/rest_routes.py
+@@ -1,11 +1,17 @@
+ import logging
+ 
++from collections.abc import Callable
+ from typing import TYPE_CHECKING, Any
+ 
+ from a2a.compat.v0_3.rest_adapter import REST03Adapter
+ from a2a.server.request_handlers.request_handler import RequestHandler
+ from a2a.server.routes.common import ServerCallContextBuilder
+ from a2a.server.routes.rest_dispatcher import RestDispatcher
++from a2a.server.routes.source_lifetime import with_source_lifetime
++from a2a.utils.source_lifetime import (
++    SourceLifetimeFactory,
++    standalone_source_lifetime,
++)
+ 
+ 
+ if TYPE_CHECKING:
+@@ -27,12 +33,14 @@ else:
+ logger = logging.getLogger(__name__)
+ 
+ 
+-def create_rest_routes(
++def create_rest_routes(  # noqa: PLR0913 -- preserve the existing positional API
+     request_handler: RequestHandler,
+     context_builder: ServerCallContextBuilder | None = None,
+     enable_v0_3_compat: bool = False,
+     path_prefix: str = '',
+     shutdown_grace_period: float = 0,
++    *,
++    source_lifetime_factory: SourceLifetimeFactory = standalone_source_lifetime,
+ ) -> list['BaseRoute']:
+     """Creates the Starlette Routes for the A2A protocol REST endpoint.
+ 
+@@ -49,6 +57,8 @@ def create_rest_routes(
+           before force-cancellation during shutdown. This value should be less
+           than the ASGI server's graceful shutdown timeout. Defaults to 0,
+           matching the ``sse-starlette`` default behavior.
++        source_lifetime_factory: Explicit source admission/retirement policy.
++          Native hosts must pass their policy; standalone apps use AnyIO.
+     """
+     if not _package_starlette_installed:
+         raise ImportError(
+@@ -63,6 +73,16 @@ def create_rest_routes(
+         shutdown_grace_period=shutdown_grace_period,
+     )
+ 
++    def make_route(
++        path: str, method: str, endpoint: Callable[..., Any]
++    ) -> Route:
++        route = Route(
++            path=f'{path_prefix}{path}', endpoint=endpoint, methods=[method]
++        )
++        if path.endswith((':stream', ':subscribe')):
++            return with_source_lifetime(route, source_lifetime_factory)
++        return route
++
+     routes: list[BaseRoute] = []
+     if enable_v0_3_compat:
+         v03_adapter = REST03Adapter(
+@@ -72,13 +92,7 @@ def create_rest_routes(
+         )
+         v03_routes = v03_adapter.routes()
+         for (path, method), endpoint in v03_routes.items():
+-            routes.append(
+-                Route(
+-                    path=f'{path_prefix}{path}',
+-                    endpoint=endpoint,
+-                    methods=[method],
+-                )
+-            )
++            routes.append(make_route(path, method, endpoint))
+ 
+     base_routes = {
+         ('/message:send', 'POST'): dispatcher.on_message_send,
+@@ -112,13 +126,7 @@ def create_rest_routes(
+ 
+     base_route_objects = []
+     for (path, method), endpoint in base_routes.items():
+-        base_route_objects.append(
+-            Route(
+-                path=f'{path_prefix}{path}',
+-                endpoint=endpoint,
+-                methods=[method],
+-            )
+-        )
++        base_route_objects.append(make_route(path, method, endpoint))
+     routes.extend(base_route_objects)
+     routes.append(Mount(path='/{tenant}', routes=base_route_objects))
+ 
+diff --git a/src/a2a/server/routes/source_lifetime.py b/src/a2a/server/routes/source_lifetime.py
+new file mode 100644
+index 0000000..9f8817d
+--- /dev/null
++++ b/src/a2a/server/routes/source_lifetime.py
+@@ -0,0 +1,192 @@
++"""Explicit request roots spanning endpoint dispatch AND ASGI response use."""
++
++from __future__ import annotations
++
++from contextlib import AsyncExitStack
++from typing import TYPE_CHECKING, Any, Protocol, Self, TypeVar
++
++from a2a.utils.source_lifetime import (
++    SourceDemand,
++    SourceFactory,
++    SourceLifetimeFactory,
++    standalone_source_lifetime,
++)
++
++
++if TYPE_CHECKING:
++    from collections.abc import AsyncGenerator
++    from types import TracebackType
++
++    from starlette.datastructures import FormData
++    from starlette.requests import AwaitableOrContextManager, Request
++    from starlette.responses import Response
++    from starlette.routing import Route
++    from starlette.types import ASGIApp, Receive, Scope, Send
++else:
++    try:
++        from starlette.requests import Request
++    except ImportError:
++        Request = Any
++
++
++T = TypeVar('T')
++
++
++class SourceRequestRoot:
++    """Own one streaming source until dispatch AND response execution finish.
++
++    A root is created per request. Its factory is an explicit policy choice,
++    never discovered from ContextVars, request.scope or a reader. Standalone
++    applications use AnyIO; hosts with native admission pass their own factory.
++    """
++
++    def __init__(self, factory: SourceLifetimeFactory) -> None:
++        self._factory = factory
++        self._stack = AsyncExitStack()
++        self._active = False
++        self._entered = False
++        self._opened = False
++        self._reader: SourceDemand[Any] | None = None
++
++    async def __aenter__(self) -> Self:
++        """Enter a fresh single-use request root before endpoint dispatch."""
++        if self._entered:
++            raise RuntimeError('A source request root cannot be re-entered')
++        self._entered = True
++        await self._stack.__aenter__()
++        self._active = True
++        return self
++
++    async def __aexit__(
++        self,
++        exc_type: type[BaseException] | None,
++        exc_value: BaseException | None,
++        traceback: TracebackType | None,
++    ) -> bool | None:
++        """Retire the admitted source before the original request root exits."""
++        try:
++            return await self._stack.__aexit__(exc_type, exc_value, traceback)
++        finally:
++            self._active = False
++
++    async def open(self, acquire: SourceFactory[T]) -> SourceDemand[T]:
++        """Admit exactly one source; its factory runs only in that owner."""
++        if not self._active:
++            raise RuntimeError(
++                'Streaming dispatch requires an active source root'
++            )
++        if self._opened:
++            raise RuntimeError('A request source has already been admitted')
++        self._opened = True
++        reader = await self._stack.enter_async_context(self._factory(acquire))
++        self._reader = reader
++        return reader
++
++    def raise_if_retirement_failed(self) -> None:
++        """Keep a known retirement failure out of a normalized HTTP response."""
++        if self._reader is not None:
++            self._reader.raise_if_retirement_failed()
++
++
++class SourceEndpoint(Protocol):
++    """A dispatcher accepting the actual request root explicitly."""
++
++    async def __call__(self, request: Request) -> Response:
++        """Dispatch without moving ownership into response consumers."""
++        ...
++
++
++class SourceRequest(Request):
++    """A request explicitly given its selected root, not scope authority."""
++
++    def __init__(
++        self, request: Request, source_root: SourceRequestRoot
++    ) -> None:
++        super().__init__(request.scope, receive=request.receive)
++        self._original_request = request
++        self._source_root = source_root
++
++    async def body(self) -> bytes:
++        """Preserve the original request's cache and transport-consumption state."""
++        return await self._original_request.body()
++
++    async def json(self) -> Any:
++        """Use the original parser/cache, not a second JSON request body."""
++        return await self._original_request.json()
++
++    def stream(self) -> AsyncGenerator[bytes, None]:
++        """Borrow the original body stream without another transport consumer."""
++        return self._original_request.stream()
++
++    def form(self, **kwargs: Any) -> AwaitableOrContextManager[FormData]:
++        """Preserve the original form cache and its library-selected options."""
++        return self._original_request.form(**kwargs)
++
++    async def close(self) -> None:
++        """Retire the original request's form resources, without a copied cache."""
++        await self._original_request.close()
++
++    @property
++    def source_root(self) -> SourceRequestRoot:
++        """Return the caller-selected root; it still must admit the source."""
++        return self._source_root
++
++
++def source_root_for(request: Request) -> SourceRequestRoot:
++    """Require explicit root injection, never reconstruct it from scope."""
++    if not isinstance(request, SourceRequest):
++        raise TypeError(
++            'Streaming dispatch requires SourceRequest with an active root; '
++            'use source_request_response or explicitly enclose dispatch and '
++            'response execution in SourceRequestRoot'
++        )
++    return request.source_root
++
++
++def source_request_response(
++    endpoint: SourceEndpoint,
++    factory: SourceLifetimeFactory = standalone_source_lifetime,
++) -> ASGIApp:
++    """Use Starlette's normal dispatcher inside the complete source root."""
++    from starlette.routing import (  # noqa: PLC0415 -- optional HTTP extra
++        request_response,
++    )
++
++    async def app(scope: Scope, receive: Receive, send: Send) -> None:
++        async with SourceRequestRoot(factory) as root:
++
++            async def dispatch(request: Request) -> Response:
++                response = await endpoint(SourceRequest(request, root))
++                # An early protocol normalizer may have caught a body error.
++                # It must not turn a failed original close into a JSON success
++                # before headers. The policy still joins pending work on exit.
++                root.raise_if_retirement_failed()
++                return response
++
++            await request_response(dispatch)(scope, receive, send)
++
++    return app
++
++
++def create_source_route(
++    path: str,
++    endpoint: SourceEndpoint,
++    *,
++    methods: list[str],
++    factory: SourceLifetimeFactory = standalone_source_lifetime,
++) -> Route:
++    """Retain Route metadata while installing its complete request owner."""
++    from starlette.routing import Route  # noqa: PLC0415 -- optional extra
++
++    return with_source_lifetime(
++        Route(path=path, endpoint=endpoint, methods=methods), factory
++    )
++
++
++def with_source_lifetime(
++    route: Route,
++    factory: SourceLifetimeFactory = standalone_source_lifetime,
++) -> Route:
++    """Install the one request-root wrapper before mounting a fresh route."""
++    route.app = source_request_response(route.endpoint, factory)
++    return route
 diff --git a/src/a2a/utils/error_handlers.py b/src/a2a/utils/error_handlers.py
 index ef81829..fee906d 100644
 --- a/src/a2a/utils/error_handlers.py
@@ -528,12 +1476,283 @@ index 9eb6d02..f72c020 100644
              raise ParseError(f'Failed to load JSON: {e}.') from e
      if isinstance(data, str):
          return Parse(data, message, ignore_unknown_fields=True)
+diff --git a/src/a2a/utils/source_lifetime.py b/src/a2a/utils/source_lifetime.py
+new file mode 100644
+index 0000000..7842efb
+--- /dev/null
++++ b/src/a2a/utils/source_lifetime.py
+@@ -0,0 +1,265 @@
++"""Standalone backend ownership for the shared original-source body.
++
++The enclosing context belongs to the request's complete ASGI lifetime, not
++only its endpoint call. A host with its own admission/authority policy supplies
++its own adapter; this standalone AnyIO policy grants no host authority.
++"""
++
++from __future__ import annotations
++
++from builtins import BaseExceptionGroup
++from collections.abc import AsyncIterable, AsyncIterator, Callable
++from contextlib import AbstractAsyncContextManager, asynccontextmanager
++from typing import TYPE_CHECKING, Generic, Protocol, TypeVar, cast
++
++from a2a.utils.source_ownership import (
++    CallbackSource,
++    SourceAcquisition,
++    SourceBodyOutcome,
++    SourceHandoff,
++    run_source_body,
++)
++
++
++if TYPE_CHECKING:
++    from anyio.abc import TaskStatus
++
++
++T = TypeVar('T')
++T_co = TypeVar('T_co', covariant=True)
++SourceFactory = Callable[
++    [SourceAcquisition], AsyncIterable[T] | CallbackSource[T]
++]
++
++
++class SourceDemand(Protocol[T_co]):
++    """Borrowed demand only; the enclosing policy owns physical retirement."""
++
++    def __aiter__(self) -> AsyncIterator[T_co]:
++        """Return an asynchronous demand reader without a second close."""
++        ...
++
++    async def __anext__(self) -> T_co:
++        """Read one frame or a physically joined original failure."""
++        ...
++
++    def request_stop(self) -> None:
++        """Withdraw demand, without acknowledging physical retirement."""
++        ...
++
++    def raise_if_retirement_failed(self) -> None:
++        """Raise known original retirement failures, never a body projection."""
++        ...
++
++
++class SourceLifetimeFactory(Protocol):
++    """Explicit caller-selected admission and physical-retirement policy."""
++
++    def __call__(
++        self, acquire: SourceFactory[T]
++    ) -> AbstractAsyncContextManager[SourceDemand[T]]:
++        """Retain the actual source owner until the enclosing context exits."""
++        ...
++
++
++def _original_errors(errors: list[BaseException]) -> BaseException | None:
++    """Retain original graphs without mutating their causes or tracebacks."""
++    originals: list[BaseException] = []
++    for error in errors:
++        if not any(error is original for original in originals):
++            originals.append(error)
++    if not originals:
++        return None
++    if len(originals) == 1:
++        return originals[0]
++    return BaseExceptionGroup('Original source lifetime failures', originals)
++
++
++class _SourceRuntime(Generic[T]):
++    def __init__(self, acquire: SourceFactory[T]) -> None:
++        import anyio  # noqa: PLC0415 -- optional backend, not a base import
++
++        if not callable(acquire):
++            raise TypeError('An original source requires a callable factory')
++        self.acquire = acquire
++        self.handoff = SourceHandoff[T]()
++        self.dispatch = anyio.Event()
++        self.joined = anyio.Event()
++        self.outcome: SourceBodyOutcome | None = None
++        self.backend_errors: list[BaseException] = []
++        self.error_observed = False
++        self._terminal_error: BaseException | None = None
++
++    async def run(self, *, task_status: TaskStatus[None]) -> None:
++        """Enter the original Task before dispatching any factory code."""
++        task_status.started()
++        # Cancellation before admission cannot enter an unknown source finally:
++        # the source and its shield do not exist on this side of the gate.
++        await self.dispatch.wait()
++        if not self.handoff.stopped:
++            self.outcome = await run_source_body(self.acquire, self.handoff)
++
++    async def monitor(self, *, task_status: TaskStatus[None]) -> None:
++        """Publish terminal demand only after the ORIGINAL Task group joins."""
++        import anyio  # noqa: PLC0415 -- optional backend
++
++        announced = False
++        try:
++            with anyio.CancelScope(shield=True):
++                async with anyio.create_task_group() as original:
++                    await original.start(self.run)
++                    task_status.started()
++                    announced = True
++                # The monitor owns the entire original Task, including any
++                # epilogue after the shared body shield has exited. Observer
++                # scope cancellation cannot replace that physical join.
++        except BaseException as error:
++            if not announced:
++                # The start waiter needs the actual failure, not a normal
++                # return that manufactures a missing-start announcement error.
++                raise
++            self.backend_errors.append(error)
++        finally:
++            self.handoff.publish_terminal()
++            self.joined.set()
++
++    def terminal_error(self) -> BaseException | None:
++        """Read the outcome only after the original group's physical join."""
++        if not self.joined.is_set():
++            raise RuntimeError('The original source owner is not joined')
++        if self._terminal_error is None:
++            errors = list(self.backend_errors)
++            if self.outcome is not None:
++                errors.extend(
++                    error
++                    for error in (
++                        self.outcome.body_error,
++                        *self.outcome.retirement_errors,
++                        *self.outcome.observation_errors,
++                    )
++                    if error is not None
++                )
++            self._terminal_error = _original_errors(errors)
++        return self._terminal_error
++
++    async def observe_join(self) -> BaseException | None:
++        """Observe one wait; a withdrawal is separate from physical joining."""
++        import anyio  # noqa: PLC0415 -- optional backend
++
++        try:
++            await self.joined.wait()
++        except anyio.get_cancelled_exc_class() as error:
++            return error
++        return None
++
++    def retirement_failed(self) -> bool:
++        """Keep original retirement failures distinct from body delivery."""
++        if not self.joined.is_set():
++            raise RuntimeError('The original source owner is not joined')
++        return bool(
++            self.backend_errors
++            or (
++                self.outcome is not None
++                and (
++                    self.outcome.retirement_errors
++                    or self.outcome.observation_errors
++                )
++            )
++        )
++
++
++class SourceReader(AsyncIterator[T]):
++    """Non-owning demand view; it deliberately exposes no second aclose."""
++
++    def __init__(self, runtime: _SourceRuntime[T]) -> None:
++        self._runtime = runtime
++
++    def __aiter__(self) -> SourceReader[T]:
++        """Return the sole non-owning demand reader."""
++        return self
++
++    async def __anext__(self) -> T:
++        """Acknowledge the prior frame or observe a joined original failure."""
++        present, value = await self._runtime.handoff.pull()
++        if present:
++            return cast('T', value)
++        if self._runtime.joined.is_set():
++            error = self._runtime.terminal_error()
++            if error is not None:
++                # This records delivery of the actual original failure, not
++                # physical completion. That was already established by join.
++                self._runtime.error_observed = True
++                raise error
++        raise StopAsyncIteration
++
++    def request_stop(self) -> None:
++        """Withdraw demand without claiming that resources have retired."""
++        self._runtime.handoff.request_stop()
++
++    def raise_if_retirement_failed(self) -> None:
++        """Prevent known close failures becoming ordinary protocol payloads.
++
++        Pending retirement is not successful retirement. The context still
++        owns and joins that pending work; this hook reports only facts already
++        established by the actual original group's physical exit.
++        """
++        if self._runtime.joined.is_set() and self._runtime.retirement_failed():
++            error = self._runtime.terminal_error()
++            if error is None:
++                raise RuntimeError('Failed retirement has no original error')
++            raise error
++
++
++@asynccontextmanager
++async def standalone_source_lifetime(
++    acquire: SourceFactory[T],
++) -> AsyncIterator[SourceReader[T]]:
++    """Admit one producer and join it before leaving the ASGI request root.
++
++    Use this context around BOTH dispatch and response execution. The source
++    factory, iterator operations and registered retirement run in the one
++    original producer, using the shared body mechanism. A blocked original
++    body/close keeps this context pending; caller cancellation is not an ACK.
++    """
++    import anyio  # noqa: PLC0415 -- optional backend
++
++    from anyio.lowlevel import checkpoint_if_cancelled  # noqa: PLC0415
++
++    runtime = _SourceRuntime(acquire)
++    observations: list[BaseException] = []
++    admitted = False
++    try:
++        with anyio.CancelScope(shield=True) as retirement:
++            async with anyio.create_task_group() as monitors:
++                try:
++                    await monitors.start(runtime.monitor)
++                    admitted = True
++                    runtime.dispatch.set()
++                    retirement.shield = False
++                    await checkpoint_if_cancelled()
++                    yield SourceReader(runtime)
++                except BaseException as error:  # noqa: BLE001 -- retained observer
++                    observations.append(error)
++                finally:
++                    retirement.shield = True
++                    runtime.handoff.request_stop()
++                    runtime.dispatch.set()
++                    # Wait for a monitor fact that follows the original group's
++                    # actual join. Keep repeated raw request-Task withdrawals
++                    # separate; never inject them into an active source finally.
++                    if admitted:
++                        while not runtime.joined.is_set():
++                            observation = await runtime.observe_join()
++                            if observation is not None:
++                                observations.append(observation)
++    except BaseException as error:  # noqa: BLE001 -- backend/scope exit is evidence
++        observations.append(error)
++    if runtime.joined.is_set() and (
++        not runtime.error_observed or runtime.retirement_failed()
++    ):
++        error = runtime.terminal_error()
++        if error is not None:
++            observations.append(error)
++    error = _original_errors(observations)
++    if error is not None:
++        raise error
 diff --git a/src/a2a/utils/source_ownership.py b/src/a2a/utils/source_ownership.py
 new file mode 100644
-index 0000000..1a86987
+index 0000000..d6f54d7
 --- /dev/null
 +++ b/src/a2a/utils/source_ownership.py
-@@ -0,0 +1,338 @@
+@@ -0,0 +1,343 @@
 +"""The one-item source handoff, independent of scheduling and host authority.
 +
 +Derived from Kestrel's original-source iterator. A scheduler/host adapter owns
@@ -789,6 +2008,13 @@ index 0000000..1a86987
 +            raise TypeError('An exposed aclose capability must be callable')
 +        self.retain(iterator, close)
 +
++    def retain_iterable(self, source: AsyncIterable[T]) -> AsyncIterator[T]:
++        """Retain source BEFORE aiter, then retain the actual iterator too."""
++        self.retain_iterator(source)
++        iterator = aiter(source)
++        self.retain_iterator(iterator)
++        return iterator
++
 +    async def retire(self) -> tuple[BaseException, ...]:
 +        """Attempt all original closers once, LIFO, retaining every failure."""
 +        if self._closed:
@@ -846,9 +2072,7 @@ index 0000000..1a86987
 +                    result = await source.producer(handoff.publish)
 +                    _require_none(result, 'callback producer')
 +                else:
-+                    resources.retain_iterator(source)
-+                    iterator = aiter(source)
-+                    resources.retain_iterator(iterator)
++                    iterator = resources.retain_iterable(source)
 +                    while True:
 +                        try:
 +                            item = await anext(iterator)
@@ -1004,6 +2228,488 @@ index 4a776c2..d6daba5 100644
              headers = context.state.get('headers', {})
              # Header names are usually case-insensitive in most frameworks, but dict lookup is case-sensitive.
              # We check both standard and lowercase versions.
+diff --git a/tests/compat/v0_3/test_grpc_handler.py b/tests/compat/v0_3/test_grpc_handler.py
+index 3c45729..527007c 100644
+--- a/tests/compat/v0_3/test_grpc_handler.py
++++ b/tests/compat/v0_3/test_grpc_handler.py
+@@ -154,9 +154,10 @@ async def test_send_streaming_message_success(
+         )
+     )
+ 
+-    responses = []
+-    async for res in handler.SendStreamingMessage(request, mock_grpc_context):
+-        responses.append(res)
++    await handler.SendStreamingMessage(request, mock_grpc_context)
++    responses = [
++        call.args[0] for call in mock_grpc_context.write.await_args_list
++    ]
+ 
+     expected_req = a2a_pb2.SendMessageRequest(
+         message=a2a_pb2.Message(
+@@ -281,9 +282,10 @@ async def test_task_subscription_success(
+     mock_request_handler.on_subscribe_to_task.side_effect = mock_stream
+     request = a2a_v0_3_pb2.TaskSubscriptionRequest(name='tasks/task-1')
+ 
+-    responses = []
+-    async for res in handler.TaskSubscription(request, mock_grpc_context):
+-        responses.append(res)
++    await handler.TaskSubscription(request, mock_grpc_context)
++    responses = [
++        call.args[0] for call in mock_grpc_context.write.await_args_list
++    ]
+ 
+     expected_req = a2a_pb2.SubscribeToTaskRequest(id='task-1')
+     mock_request_handler.on_subscribe_to_task.assert_called_once_with(
+diff --git a/tests/compat/v0_3/test_grpc_source_lifetime.py b/tests/compat/v0_3/test_grpc_source_lifetime.py
+new file mode 100644
+index 0000000..c49fe7f
+--- /dev/null
++++ b/tests/compat/v0_3/test_grpc_source_lifetime.py
+@@ -0,0 +1,160 @@
++"""Actual grpc.aio coroutine writers, original Tasks and file descriptors."""
++
++from __future__ import annotations
++
++import asyncio
++import os
++
++from collections.abc import AsyncIterator
++from contextlib import asynccontextmanager
++from pathlib import Path
++from typing import cast
++
++import anyio
++import grpc
++import pytest
++
++from a2a.compat.v0_3 import a2a_v0_3_pb2, a2a_v0_3_pb2_grpc
++from a2a.compat.v0_3.grpc_handler import CompatGrpcHandler
++from a2a.server.events import Event
++from a2a.types.a2a_pb2 import Message, Part, Role
++from a2a.utils.source_lifetime import (
++    SourceDemand,
++    SourceFactory,
++    standalone_source_lifetime,
++)
++
++from tests.source_witness import (
++    DescriptorSource,
++    StreamRequestHandler,
++    original_owner,
++)
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('subscribe', [False, True])
++async def test_real_grpc_writer_joins_original_before_final_status(
++    tmp_path: Path, subscribe: bool
++) -> None:
++    sources: list[DescriptorSource[Event]] = []
++
++    def acquire() -> DescriptorSource[Event]:
++        source = DescriptorSource(
++            tmp_path / 'source',
++            'asyncio',
++            (
++                Message(
++                    message_id='output',
++                    role=Role.ROLE_AGENT,
++                    parts=[Part(text='real output')],
++                ),
++            ),
++        )
++        sources.append(source)
++        return source
++
++    server = grpc.aio.server()
++    a2a_v0_3_pb2_grpc.add_A2AServiceServicer_to_server(
++        CompatGrpcHandler(StreamRequestHandler(acquire)), server
++    )
++    port = server.add_insecure_port('127.0.0.1:0')
++    assert port > 0
++    await server.start()
++    try:
++        with anyio.fail_after(5):
++            async with grpc.aio.insecure_channel(
++                f'127.0.0.1:{port}'
++            ) as channel:
++                stub = a2a_v0_3_pb2_grpc.A2AServiceStub(channel)
++                if subscribe:
++                    call = stub.TaskSubscription(
++                        a2a_v0_3_pb2.TaskSubscriptionRequest(name='tasks/one')
++                    )
++                else:
++                    call = stub.SendStreamingMessage(
++                        a2a_v0_3_pb2.SendMessageRequest(
++                            request=a2a_v0_3_pb2.Message(
++                                message_id='input',
++                                role=a2a_v0_3_pb2.Role.ROLE_USER,
++                            )
++                        )
++                    )
++                responses = [item async for item in call]
++                assert await call.code() == grpc.StatusCode.OK
++        assert len(responses) == 1
++        assert responses[0].msg.message_id == 'output'
++        assert len(sources) == 1
++        sources[0].assert_original_retired()
++    finally:
++        await server.stop(0)
++
++
++@pytest.mark.asyncio
++async def test_real_grpc_client_withdrawal_waits_for_blocked_original_close(
++    tmp_path: Path,
++) -> None:
++    closing, release = anyio.Event(), anyio.Event()
++    sources: list[DescriptorSource[Event]] = []
++    roots: list[tuple[object, object]] = []
++
++    def acquire() -> DescriptorSource[Event]:
++        source = DescriptorSource(
++            tmp_path / 'source',
++            'asyncio',
++            (Message(message_id='output', role=Role.ROLE_AGENT),),
++            closing=closing,
++            release=release,
++        )
++        sources.append(source)
++        return source
++
++    @asynccontextmanager
++    async def observed_policy(
++        acquire_source: SourceFactory[Event],
++    ) -> AsyncIterator[SourceDemand[Event]]:
++        roots.append(original_owner('asyncio'))
++        async with standalone_source_lifetime(acquire_source) as reader:
++            yield reader
++
++    server = grpc.aio.server()
++    a2a_v0_3_pb2_grpc.add_A2AServiceServicer_to_server(
++        CompatGrpcHandler(
++            StreamRequestHandler(acquire),
++            source_lifetime_factory=observed_policy,
++        ),
++        server,
++    )
++    port = server.add_insecure_port('127.0.0.1:0')
++    assert port > 0
++    await server.start()
++    try:
++        with anyio.fail_after(5):
++            async with grpc.aio.insecure_channel(
++                f'127.0.0.1:{port}'
++            ) as channel:
++                call = a2a_v0_3_pb2_grpc.A2AServiceStub(
++                    channel
++                ).SendStreamingMessage(
++                    a2a_v0_3_pb2.SendMessageRequest(
++                        request=a2a_v0_3_pb2.Message(
++                            message_id='input', role=a2a_v0_3_pb2.Role.ROLE_USER
++                        )
++                    )
++                )
++                assert (await call.read()).msg.message_id == 'output'
++                call.cancel()
++                try:
++                    await closing.wait()
++                    root_task = cast('asyncio.Task[None]', roots[0][0])
++                    assert root_task.get_coro() is roots[0][1]
++                    assert not root_task.done()
++                    os.fstat(sources[0].fd)
++                finally:
++                    release.set()
++                while not root_task.done():
++                    await anyio.lowlevel.checkpoint()
++                assert root_task.get_coro() is roots[0][1]
++        sources[0].assert_original_retired()
++    finally:
++        release.set()
++        await server.stop(0)
+diff --git a/tests/compat/v0_3/test_jsonrpc_app_compat.py b/tests/compat/v0_3/test_jsonrpc_app_compat.py
+index 5a9227d..99fe5cd 100644
+--- a/tests/compat/v0_3/test_jsonrpc_app_compat.py
++++ b/tests/compat/v0_3/test_jsonrpc_app_compat.py
+@@ -11,6 +11,7 @@ from a2a.compat.v0_3.jsonrpc_adapter import JSONRPC03Adapter
+ from a2a.server.context import ServerCallContext
+ from a2a.server.request_handlers.request_handler import RequestHandler
+ from a2a.server.routes import create_jsonrpc_routes
++from a2a.server.routes.source_lifetime import SourceRequestRoot
+ from a2a.types.a2a_pb2 import (
+     AgentCapabilities,
+     AgentCard,
+@@ -27,6 +28,7 @@ from a2a.utils.errors import (
+     TaskNotFoundError,
+     UnsupportedOperationError,
+ )
++from a2a.utils.source_lifetime import standalone_source_lifetime
+ from starlette.applications import Starlette
+ from starlette.testclient import TestClient
+ 
+@@ -50,14 +52,16 @@ async def test_shutdown_grace_period_is_passed_to_event_source_response(
+     )
+     request_obj = MagicMock(method='message/stream')
+ 
+-    with patch.object(
+-        jsonrpc_adapter, 'create_event_source_response'
+-    ) as response_class:
+-        await adapter._process_streaming_request(
+-            request_id='1',
+-            request_obj=request_obj,
+-            context=ServerCallContext(),
+-        )
++    async with SourceRequestRoot(standalone_source_lifetime) as root:
++        with patch.object(
++            jsonrpc_adapter, 'create_event_source_response'
++        ) as response_class:
++            await adapter._process_streaming_request(
++                request_id='1',
++                request_obj=request_obj,
++                context=ServerCallContext(),
++                source_root=root,
++            )
+ 
+     response_class.assert_called_once()
+     assert response_class.call_args.kwargs['shutdown_grace_period'] == 30.0
+diff --git a/tests/compat/v0_3/test_request_handler.py b/tests/compat/v0_3/test_request_handler.py
+index 0027973..30454cb 100644
+--- a/tests/compat/v0_3/test_request_handler.py
++++ b/tests/compat/v0_3/test_request_handler.py
+@@ -23,6 +23,7 @@ from a2a.types.a2a_pb2 import (
+     TaskStatus as V10TaskStatus,
+ )
+ from a2a.utils.errors import TaskNotFoundError
++from a2a.utils.source_lifetime import standalone_source_lifetime
+ 
+ 
+ @pytest.fixture
+@@ -138,12 +139,12 @@ async def test_on_message_send_stream(
+ 
+     mock_core_handler.on_message_send_stream.side_effect = mock_stream
+ 
+-    results = [
+-        chunk
+-        async for chunk in v03_handler.on_message_send_stream(
+-            v03_req, mock_context
++    async with standalone_source_lifetime(
++        lambda resources: v03_handler.on_message_send_stream(
++            v03_req, mock_context, resources=resources
+         )
+-    ]
++    ) as stream:
++        results = [chunk async for chunk in stream]
+ 
+     assert len(results) == 2
+     assert all(
+@@ -209,12 +210,12 @@ async def test_on_subscribe_to_task(
+ 
+     mock_core_handler.on_subscribe_to_task.side_effect = mock_stream
+ 
+-    results = [
+-        chunk
+-        async for chunk in v03_handler.on_subscribe_to_task(
+-            v03_req, mock_context
++    async with standalone_source_lifetime(
++        lambda resources: v03_handler.on_subscribe_to_task(
++            v03_req, mock_context, resources=resources
+         )
+-    ]
++    ) as stream:
++        results = [chunk async for chunk in stream]
+ 
+     assert len(results) == 1
+     assert results[0].result.parts[0].root.text == 'Update 1'
+diff --git a/tests/compat/v0_3/test_rest_handler.py b/tests/compat/v0_3/test_rest_handler.py
+index 9359301..0f0a34c 100644
+--- a/tests/compat/v0_3/test_rest_handler.py
++++ b/tests/compat/v0_3/test_rest_handler.py
+@@ -10,6 +10,7 @@ from a2a.server.context import ServerCallContext
+ from a2a.server.request_handlers.request_handler import RequestHandler
+ from a2a.types.a2a_pb2 import AgentCard
+ from a2a.utils.errors import InvalidParamsError
++from a2a.utils.source_lifetime import standalone_source_lifetime
+ 
+ 
+ @pytest.fixture
+@@ -110,12 +111,12 @@ async def test_on_message_send_stream(rest_handler, mock_request, mock_context):
+         side_effect=mock_stream
+     )
+ 
+-    results = [
+-        chunk
+-        async for chunk in rest_handler.on_message_send_stream(
+-            mock_request, mock_context
++    async with standalone_source_lifetime(
++        lambda resources: rest_handler.on_message_send_stream(
++            mock_request, mock_context, resources=resources
+         )
+-    ]
++    ) as stream:
++        results = [chunk async for chunk in stream]
+ 
+     assert results == [
+         {
+@@ -169,12 +170,12 @@ async def test_on_subscribe_to_task(rest_handler, mock_request, mock_context):
+         side_effect=mock_stream
+     )
+ 
+-    results = [
+-        chunk
+-        async for chunk in rest_handler.on_subscribe_to_task(
+-            mock_request, mock_context
++    async with standalone_source_lifetime(
++        lambda resources: rest_handler.on_subscribe_to_task(
++            mock_request, mock_context, resources=resources
+         )
+-    ]
++    ) as stream:
++        results = [chunk async for chunk in stream]
+ 
+     assert results == [
+         {
+@@ -212,12 +213,12 @@ async def test_on_subscribe_to_task_post(
+         side_effect=mock_stream
+     )
+ 
+-    results = [
+-        chunk
+-        async for chunk in rest_handler.on_subscribe_to_task(
+-            mock_request, mock_context
++    async with standalone_source_lifetime(
++        lambda resources: rest_handler.on_subscribe_to_task(
++            mock_request, mock_context, resources=resources
+         )
+-    ]
++    ) as stream:
++        results = [chunk async for chunk in stream]
+ 
+     assert len(results) == 1
+     rest_handler.handler03.on_subscribe_to_task.assert_called_once()
+diff --git a/tests/compat/v0_3/test_rest_routes_compat.py b/tests/compat/v0_3/test_rest_routes_compat.py
+index d7edda4..15697aa 100644
+--- a/tests/compat/v0_3/test_rest_routes_compat.py
++++ b/tests/compat/v0_3/test_rest_routes_compat.py
+@@ -2,7 +2,7 @@ import json
+ import logging
+ 
+ from collections.abc import AsyncIterator
+-from unittest.mock import AsyncMock, MagicMock, patch
++from unittest.mock import MagicMock, patch
+ 
+ import pytest
+ 
+@@ -21,13 +21,15 @@ from a2a.types.a2a_pb2 import (
+     TaskStatus as TaskStatus10,
+ )
+ from a2a.utils.errors import TaskNotFoundError
++from a2a.utils.source_ownership import SourceAcquisition
+ from fastapi import FastAPI
+ from google.protobuf import json_format
+ from httpx import ASGITransport, AsyncClient
+ from starlette.applications import Starlette
+-from starlette.datastructures import Headers
+ from starlette.requests import Request
+ 
++from tests.source_witness import make_request, source_request
++
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -37,7 +39,7 @@ async def test_shutdown_grace_period_is_passed_to_event_source_response(
+     request_handler: RequestHandler,
+ ) -> None:
+     async def stream(
+-        request: Request, context: object
++        request: Request, context: object, *, resources: SourceAcquisition
+     ) -> AsyncIterator[dict[str, str]]:
+         yield {'result': 'value'}
+ 
+@@ -45,17 +47,13 @@ async def test_shutdown_grace_period_is_passed_to_event_source_response(
+         http_handler=request_handler,
+         shutdown_grace_period=30.0,
+     )
+-    mock_req = MagicMock(spec=Request)
+-    mock_req.body = AsyncMock(return_value=b'{}')
+-    mock_req.headers = Headers({'a2a-version': '0.3'})
+-    mock_req.user = MagicMock(is_authenticated=False)
+-    mock_req.auth = None
+-    mock_req.scope = {}
+-
+-    with patch.object(
+-        rest_adapter, 'create_event_source_response'
+-    ) as response_class:
+-        await adapter._handle_streaming_request(stream, mock_req)
++    async with source_request(
++        make_request(headers={'a2a-version': '0.3'})
++    ) as owned:
++        with patch.object(
++            rest_adapter, 'create_event_source_response'
++        ) as response_class:
++            await adapter._handle_streaming_request(stream, owned)
+ 
+     response_class.assert_called_once()
+     assert response_class.call_args.kwargs['shutdown_grace_period'] == 30.0
+@@ -275,23 +273,19 @@ async def test_v03_streaming_does_not_ascii_escape_non_ascii(
+     non_ascii_text = '你好'
+ 
+     async def stream_with_non_ascii(
+-        request: Request, context: object
++        request: Request, context: object, *, resources: SourceAcquisition
+     ) -> AsyncIterator[dict]:
+         yield {'msg': {'text': non_ascii_text}}
+ 
+-    mock_req = MagicMock(spec=Request)
+-    mock_req.body = AsyncMock(return_value=b'{}')
+-    mock_req.headers = Headers({'a2a-version': '0.3'})
+-    mock_req.user = MagicMock(is_authenticated=False)
+-    mock_req.auth = None
+-    mock_req.scope = {}
+-
+-    response = await adapter._handle_streaming_request(
+-        stream_with_non_ascii, mock_req
+-    )
+-    chunks = []
+-    async for chunk in response.body_iterator:
+-        chunks.append(chunk)
++    async with source_request(
++        make_request(headers={'a2a-version': '0.3'})
++    ) as owned:
++        response = await adapter._handle_streaming_request(
++            stream_with_non_ascii, owned
++        )
++        chunks = []
++        async for chunk in response.body_iterator:
++            chunks.append(chunk)
+ 
+     assert len(chunks) == 1
+     chunk = chunks[0]
+@@ -341,20 +335,16 @@ async def test_v03_streaming_yields_all_events_in_order(
+     adapter = REST03Adapter(http_handler=request_handler)
+ 
+     async def stream(
+-        request: Request, context: object
++        request: Request, context: object, *, resources: SourceAcquisition
+     ) -> AsyncIterator[dict[str, int]]:
+         for i in range(3):
+             yield {'n': i}
+ 
+-    mock_req = MagicMock(spec=Request)
+-    mock_req.body = AsyncMock(return_value=b'{}')
+-    mock_req.headers = Headers({'a2a-version': '0.3'})
+-    mock_req.user = MagicMock(is_authenticated=False)
+-    mock_req.auth = None
+-    mock_req.scope = {}
+-
+-    response = await adapter._handle_streaming_request(stream, mock_req)
+-    chunks = [chunk async for chunk in response.body_iterator]
++    async with source_request(
++        make_request(headers={'a2a-version': '0.3'})
++    ) as owned:
++        response = await adapter._handle_streaming_request(stream, owned)
++        chunks = [chunk async for chunk in response.body_iterator]
+ 
+     assert [json.loads(chunk) for chunk in chunks] == [
+         {'n': 0},
 diff --git a/tests/integration/cross_version/client_server/test_client_server.py b/tests/integration/cross_version/client_server/test_client_server.py
 index d46582e..2e5788e 100644
 --- a/tests/integration/cross_version/client_server/test_client_server.py
@@ -1238,6 +2944,13 @@ index eb7928b..17dccb6 100644
              supported_protocol_bindings=[TransportProtocol.HTTP_JSON],
          )
      ).create(minimal_agent_card(agent_server, [TransportProtocol.HTTP_JSON]))
+diff --git a/tests/server/__init__.py b/tests/server/__init__.py
+new file mode 100644
+index 0000000..a03ebdc
+--- /dev/null
++++ b/tests/server/__init__.py
+@@ -0,0 +1 @@
++"""Server regressions using the repository's shared test witnesses."""
 diff --git a/tests/server/routes/test_common.py b/tests/server/routes/test_common.py
 index 9d285ca..5b7b7b8 100644
 --- a/tests/server/routes/test_common.py
@@ -1267,10 +2980,158 @@ index 9d285ca..5b7b7b8 100644
 +    ctx = DefaultServerCallContextBuilder().build(request)
 +    assert ctx.state['a2a_versions'] == ['1.0', '0.3', '1.0.1', '0.3']
 diff --git a/tests/server/routes/test_rest_dispatcher.py b/tests/server/routes/test_rest_dispatcher.py
-index 3d7bb39..4cb2e5e 100644
+index 3d7bb39..74621f7 100644
 --- a/tests/server/routes/test_rest_dispatcher.py
 +++ b/tests/server/routes/test_rest_dispatcher.py
-@@ -271,6 +271,17 @@ class TestRestDispatcherEndpoints:
+@@ -27,10 +27,12 @@ from a2a.types.a2a_pb2 import (
+ from a2a.utils.errors import (
+     UnsupportedOperationError,
+ )
++from a2a.utils.source_ownership import SourceAcquisition
+ from starlette.applications import Starlette
+-from starlette.requests import Request
+ from starlette.responses import JSONResponse
+ 
++from tests.source_witness import make_request, source_request
++
+ 
+ @pytest.fixture
+ def agent_card():
+@@ -78,34 +80,7 @@ def rest_dispatcher_instance(mock_handler):
+     return RestDispatcher(request_handler=mock_handler)
+ 
+ 
+-from starlette.datastructures import Headers, QueryParams
+-
+-
+-def make_mock_request(
+-    method: str = 'GET',
+-    path_params: dict | None = None,
+-    query_params: dict | None = None,
+-    headers: dict | None = None,
+-    body: bytes = b'{}',
+-) -> Request:
+-    mock_req = MagicMock(spec=Request)
+-    mock_req.method = method
+-    mock_req.path_params = path_params or {}
+-    mock_req.query_params = query_params or {}
+-
+-    # Default valid headers for A2A
+-    default_headers = {'a2a-version': '1.0'}
+-    if headers:
+-        default_headers.update(headers)
+-
+-    mock_req.headers = Headers(default_headers)
+-    mock_req.body = AsyncMock(return_value=body)
+-
+-    # Needs to be able to build ServerCallContext, so provide .user and .auth etc. if needed
+-    mock_req.user = MagicMock(is_authenticated=False)
+-    mock_req.auth = None
+-    mock_req.scope = {}
+-    return mock_req
++from starlette.datastructures import QueryParams
+ 
+ 
+ class TestRestDispatcherInitialization:
+@@ -133,7 +108,7 @@ class TestRestDispatcherInitialization:
+ @pytest.mark.asyncio
+ class TestRestDispatcherContextManagement:
+     async def test_build_call_context(self, rest_dispatcher_instance):
+-        req = make_mock_request(path_params={'tenant': 'my-tenant'})
++        req = make_request(path_params={'tenant': 'my-tenant'})
+         context = rest_dispatcher_instance._build_call_context(req)
+ 
+         assert isinstance(context, ServerCallContext)
+@@ -147,7 +122,7 @@ class TestRestDispatcherEndpoints:
+         self, rest_dispatcher_instance, mock_handler
+     ):
+         # 0.3 is currently not supported for direct message sending on RestDispatcher
+-        req = make_mock_request(method='POST', headers={'a2a-version': '0.3.0'})
++        req = make_request(method='POST', headers={'a2a-version': '0.3.0'})
+         response = await rest_dispatcher_instance.on_message_send(req)
+ 
+         # VersionNotSupportedError maps to 400 Bad Request
+@@ -156,7 +131,7 @@ class TestRestDispatcherEndpoints:
+     async def test_on_message_send_returns_message(
+         self, rest_dispatcher_instance, mock_handler
+     ):
+-        req = make_mock_request(method='POST')
++        req = make_request(method='POST')
+         response = await rest_dispatcher_instance.on_message_send(req)
+ 
+         assert isinstance(response, JSONResponse)
+@@ -168,7 +143,7 @@ class TestRestDispatcherEndpoints:
+         self, rest_dispatcher_instance, mock_handler
+     ):
+         mock_handler.on_message_send.return_value = Task(id='new_task')
+-        req = make_mock_request(method='POST')
++        req = make_request(method='POST')
+ 
+         response = await rest_dispatcher_instance.on_message_send(req)
+         assert response.status_code == 200
+@@ -179,7 +154,7 @@ class TestRestDispatcherEndpoints:
+     async def test_on_cancel_task_success(
+         self, rest_dispatcher_instance, mock_handler
+     ):
+-        req = make_mock_request(method='POST', path_params={'id': 'test_task'})
++        req = make_request(method='POST', path_params={'id': 'test_task'})
+         response = await rest_dispatcher_instance.on_cancel_task(req)
+ 
+         assert response.status_code == 200
+@@ -190,7 +165,7 @@ class TestRestDispatcherEndpoints:
+         self, rest_dispatcher_instance, mock_handler
+     ):
+         mock_handler.on_cancel_task.return_value = None
+-        req = make_mock_request(method='POST', path_params={'id': 'test_task'})
++        req = make_request(method='POST', path_params={'id': 'test_task'})
+ 
+         response = await rest_dispatcher_instance.on_cancel_task(req)
+         assert response.status_code == 404  # TaskNotFoundError maps to 404
+@@ -206,7 +181,7 @@ class TestRestDispatcherEndpoints:
+                 'metadata': {'reason': 'user_aborted', 'nested': {'step': 3}},
+             }
+         ).encode('utf-8')
+-        req = make_mock_request(
++        req = make_request(
+             method='POST', path_params={'id': 'test_task'}, body=body
+         )
+ 
+@@ -226,7 +201,7 @@ class TestRestDispatcherEndpoints:
+         mock_handler: AsyncMock,
+         body: bytes,
+     ) -> None:
+-        req = make_mock_request(
++        req = make_request(
+             method='POST', path_params={'id': 'test_task'}, body=body
+         )
+ 
+@@ -242,7 +217,7 @@ class TestRestDispatcherEndpoints:
+         rest_dispatcher_instance: RestDispatcher,
+         mock_handler: AsyncMock,
+     ) -> None:
+-        req = make_mock_request(
++        req = make_request(
+             method='POST', path_params={'id': 'test_task'}, body=b'{not-json'
+         )
+ 
+@@ -253,7 +228,7 @@ class TestRestDispatcherEndpoints:
+     async def test_on_get_task_success(
+         self, rest_dispatcher_instance, mock_handler
+     ):
+-        req = make_mock_request(method='GET', path_params={'id': 'test_task'})
++        req = make_request(method='GET', path_params={'id': 'test_task'})
+         response = await rest_dispatcher_instance.on_get_task(req)
+ 
+         assert response.status_code == 200
+@@ -264,15 +239,22 @@ class TestRestDispatcherEndpoints:
+         self, rest_dispatcher_instance, mock_handler
+     ):
+         mock_handler.on_get_task.return_value = None
+-        req = make_mock_request(
+-            method='GET', path_params={'id': 'missing_task'}
+-        )
++        req = make_request(method='GET', path_params={'id': 'missing_task'})
+ 
          response = await rest_dispatcher_instance.on_get_task(req)
          assert response.status_code == 404
  
@@ -1278,16 +3139,717 @@ index 3d7bb39..4cb2e5e 100644
 +        self, rest_dispatcher_instance, mock_handler
 +    ):
 +        mock_handler.on_get_task.return_value = None
-+        req = make_mock_request(
-+            method='GET', path_params={'id': 'missing_task'}
-+        )
++        req = make_request(method='GET', path_params={'id': 'missing_task'})
 +
 +        response = await rest_dispatcher_instance.on_get_task(req)
 +        assert response.media_type == 'application/a2a+json'
 +
      async def test_list_tasks(self, rest_dispatcher_instance, mock_handler):
-         req = make_mock_request(method='GET')
+-        req = make_mock_request(method='GET')
++        req = make_request(method='GET')
          response = await rest_dispatcher_instance.list_tasks(req)
+         assert response.status_code == 200
+ 
+@@ -317,7 +299,7 @@ class TestRestDispatcherEndpoints:
+                 )
+             ]
+         )
+-        req = make_mock_request(method='GET', query_params=query_params)
++        req = make_request(method='GET', query_params=query_params)
+ 
+         response = await rest_dispatcher_instance.list_tasks(req)
+ 
+@@ -354,7 +336,7 @@ class TestRestDispatcherEndpoints:
+     async def test_get_push_notification(
+         self, rest_dispatcher_instance, mock_handler
+     ):
+-        req = make_mock_request(
++        req = make_request(
+             method='GET', path_params={'id': 'task1', 'push_id': 'push1'}
+         )
+         response = await rest_dispatcher_instance.get_push_notification(req)
+@@ -365,7 +347,7 @@ class TestRestDispatcherEndpoints:
+     async def test_delete_push_notification(
+         self, rest_dispatcher_instance, mock_handler
+     ):
+-        req = make_mock_request(
++        req = make_request(
+             method='DELETE', path_params={'id': 'task1', 'push_id': 'push1'}
+         )
+         response = await rest_dispatcher_instance.delete_push_notification(req)
+@@ -374,7 +356,7 @@ class TestRestDispatcherEndpoints:
+     async def test_handle_authenticated_agent_card(
+         self, rest_dispatcher_instance
+     ):
+-        req = make_mock_request()
++        req = make_request()
+         response = (
+             await rest_dispatcher_instance.handle_authenticated_agent_card(req)
+         )
+@@ -388,11 +370,13 @@ class TestRestDispatcherStreaming:
+     ) -> None:
+         async def stream(
+             context: ServerCallContext,
++            resources: SourceAcquisition,
+         ) -> AsyncIterator[dict[str, str]]:
+             yield {'result': 'value'}
+ 
+         async def empty_stream(
+             context: ServerCallContext,
++            resources: SourceAcquisition,
+         ) -> AsyncIterator[dict[str, str]]:
+             for item in []:
+                 yield item
+@@ -401,10 +385,14 @@ class TestRestDispatcherStreaming:
+             request_handler=mock_handler,
+             shutdown_grace_period=30.0,
+         )
+-        req = make_mock_request(method='POST')
++        req = make_request(method='POST')
+ 
+-        response = await dispatcher._handle_streaming(req, stream)
+-        empty_response = await dispatcher._handle_streaming(req, empty_stream)
++        async with source_request(req) as owned:
++            response = await dispatcher._handle_streaming(owned, stream)
++        async with source_request(make_request(method='POST')) as owned:
++            empty_response = await dispatcher._handle_streaming(
++                owned, empty_stream
++            )
+ 
+         assert getattr(response, '_shutdown_grace_period') == 30.0
+         assert getattr(empty_response, '_shutdown_grace_period') == 30.0
+@@ -412,28 +400,34 @@ class TestRestDispatcherStreaming:
+     async def test_on_message_send_stream_success(
+         self, rest_dispatcher_instance
+     ):
+-        req = make_mock_request(method='POST')
+-        response = await rest_dispatcher_instance.on_message_send_stream(req)
++        req = make_request(method='POST')
++        async with source_request(req) as owned:
++            response = await rest_dispatcher_instance.on_message_send_stream(
++                owned
++            )
+ 
+-        assert response.status_code == 200
++            assert response.status_code == 200
+ 
+-        chunks = []
+-        async for chunk in response.body_iterator:
+-            chunks.append(chunk)
++            chunks = []
++            async for chunk in response.body_iterator:
++                chunks.append(chunk)
+ 
+         assert len(chunks) == 2
+         assert 'chunk1' in chunks[0].data
+         assert 'chunk2' in chunks[1].data
+ 
+     async def test_on_subscribe_to_task_success(self, rest_dispatcher_instance):
+-        req = make_mock_request(method='GET', path_params={'id': 'test_task'})
+-        response = await rest_dispatcher_instance.on_subscribe_to_task(req)
++        req = make_request(method='GET', path_params={'id': 'test_task'})
++        async with source_request(req) as owned:
++            response = await rest_dispatcher_instance.on_subscribe_to_task(
++                owned
++            )
+ 
+-        assert response.status_code == 200
++            assert response.status_code == 200
+ 
+-        chunks = []
+-        async for chunk in response.body_iterator:
+-            chunks.append(chunk)
++            chunks = []
++            async for chunk in response.body_iterator:
++                chunks.append(chunk)
+ 
+         assert len(chunks) == 2
+         assert 'chunk1' in chunks[0].data
+@@ -445,9 +439,10 @@ class TestRestDispatcherStreaming:
+         )
+ 
+         dispatcher = RestDispatcher(request_handler=mock_handler)
+-        req = make_mock_request(method='POST')
++        req = make_request(method='POST')
+ 
+-        response = await dispatcher.on_message_send_stream(req)
++        async with source_request(req) as owned:
++            response = await dispatcher.on_message_send_stream(owned)
+         assert response.status_code == 400
+ 
+     async def test_streaming_does_not_ascii_escape_non_ascii(
+@@ -461,21 +456,23 @@ class TestRestDispatcherStreaming:
+ 
+         async def stream_with_non_ascii(
+             context: ServerCallContext,
++            resources: SourceAcquisition,
+         ) -> AsyncIterator[dict]:
+             yield {'msg': {'text': non_ascii_text}}
+             yield {'msg': {'text': f'echo: {non_ascii_text}'}}
+ 
+         # Drive _handle_streaming directly to assert on the serialized bytes
+         # produced by json.dumps, independent of protobuf encoding details.
+-        req = make_mock_request(method='POST')
+-        response = await rest_dispatcher_instance._handle_streaming(
+-            req, stream_with_non_ascii
+-        )
+-        assert response.status_code == 200
++        req = make_request(method='POST')
++        async with source_request(req) as owned:
++            response = await rest_dispatcher_instance._handle_streaming(
++                owned, stream_with_non_ascii
++            )
++            assert response.status_code == 200
+ 
+-        chunks = []
+-        async for chunk in response.body_iterator:
+-            chunks.append(chunk)
++            chunks = []
++            async for chunk in response.body_iterator:
++                chunks.append(chunk)
+ 
+         assert len(chunks) == 2
+         for chunk in chunks:
+diff --git a/tests/server/routes/test_source_lifetime.py b/tests/server/routes/test_source_lifetime.py
+new file mode 100644
+index 0000000..88738ce
+--- /dev/null
++++ b/tests/server/routes/test_source_lifetime.py
+@@ -0,0 +1,534 @@
++"""Real response execution, original OS failures and request-root retirement."""
++
++from __future__ import annotations
++
++import errno
++import inspect
++import os
++
++from builtins import BaseExceptionGroup
++from collections.abc import AsyncIterator
++from contextlib import asynccontextmanager
++from pathlib import Path
++
++import anyio
++import httpx
++import pytest
++
++from a2a.server.events import Event
++from a2a.server.routes import create_jsonrpc_routes, create_rest_routes
++from a2a.server.routes.common import create_event_source_response
++from a2a.server.routes.fastapi_routes import add_a2a_routes_to_fastapi
++from a2a.server.routes.source_lifetime import (
++    SourceRequest,
++    SourceRequestRoot,
++    create_source_route,
++    source_request_response,
++    source_root_for,
++)
++from a2a.types.a2a_pb2 import Message as AgentMessage, Part, Role
++from a2a.utils.source_lifetime import (
++    SourceDemand,
++    SourceFactory,
++    standalone_source_lifetime,
++)
++from a2a.utils.source_ownership import SourceAcquisition
++from anyio.abc import TaskStatus
++from fastapi import FastAPI
++from starlette.applications import Starlette
++from starlette.datastructures import FormData, UploadFile
++from starlette.requests import Request
++from starlette.responses import JSONResponse, Response
++from starlette.types import Message, Scope
++
++from tests.source_witness import (
++    DescriptorSource,
++    StreamRequestHandler,
++    assert_closed,
++    original_owner,
++)
++
++
++def _scope() -> Scope:
++    return {
++        'type': 'http',
++        'asgi': {'version': '3.0', 'spec_version': '2.4'},
++        'http_version': '1.1',
++        'method': 'POST',
++        'scheme': 'http',
++        'path': '/',
++        'raw_path': b'/',
++        'root_path': '',
++        'query_string': b'',
++        'headers': [],
++        'server': ('testserver', 80),
++        'client': ('testclient', 123),
++    }
++
++
++async def _receive() -> Message:
++    await anyio.Event().wait()
++    raise AssertionError('A completed response must retire its receive waiter')
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_explicit_source_request_preserves_the_original_cached_body(
++    backend: str,
++) -> None:
++    async def run() -> None:
++        received = False
++        encoded = b'{"message":"already parsed"}'
++
++        async def receive() -> Message:
++            nonlocal received
++            if received:
++                raise AssertionError(
++                    'Cached body must not re-read the transport'
++                )
++            received = True
++            return {'type': 'http.request', 'body': encoded, 'more_body': False}
++
++        request = Request(_scope(), receive=receive)
++        assert await request.json() == {'message': 'already parsed'}
++        async with SourceRequestRoot(standalone_source_lifetime) as root:
++            owned = SourceRequest(request, root)
++            assert await owned.body() == encoded
++            assert await owned.json() == {'message': 'already parsed'}
++            assert [chunk async for chunk in owned.stream()] == [encoded, b'']
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_explicit_source_request_preserves_and_closes_original_cached_upload(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        upload = (tmp_path / 'original-upload').open('w+b')
++        fd = upload.fileno()
++        request = Request(_scope(), receive=_receive)
++        # A pre-parsed ORIGINAL cache, not a claim about multipart decoding.
++        form = FormData(
++            {'upload': UploadFile(upload, filename='original-upload')}
++        )
++        request._form = form
++        try:
++            async with SourceRequestRoot(standalone_source_lifetime) as root:
++                owned = SourceRequest(request, root)
++                assert await owned.form() is form
++                os.fstat(fd)
++                await owned.close()
++                assert upload.closed
++                assert_closed(fd)
++        finally:
++            # Failure-only fixture cleanup cannot establish either assertion.
++            upload.close()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_actual_sse_close_failure_retains_one_original_error_graph(
++    tmp_path: Path, backend: str
++) -> None:
++    def leaves(error: BaseException) -> list[BaseException]:
++        if isinstance(error, BaseExceptionGroup):
++            return [
++                leaf for child in error.exceptions for leaf in leaves(child)
++            ]
++        return [error]
++
++    async def run() -> None:
++        sources: list[DescriptorSource] = []
++
++        def acquire(resources: SourceAcquisition) -> DescriptorSource:
++            source = DescriptorSource(
++                tmp_path / 'source', backend, (1,), fail_close=True
++            )
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        async def endpoint(request: Request) -> Response:
++            reader = await source_root_for(request).open(acquire)
++            first = await anext(reader)
++
++            async def events() -> AsyncIterator[dict[str, str]]:
++                yield {'data': str(first)}
++                async for value in reader:
++                    yield {'data': str(value)}
++
++            return create_event_source_response(events())
++
++        async def send(message: Message) -> None:
++            return None
++
++        with (
++            anyio.fail_after(5),
++            pytest.raises((OSError, BaseExceptionGroup)) as caught,
++        ):
++            await source_request_response(endpoint)(_scope(), _receive, send)
++        assert leaves(caught.value) == [sources[0].close_error]
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_request_root_spans_prefetch_and_real_sse_response(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        sources: list[DescriptorSource] = []
++        sent: list[Message] = []
++
++        def acquire(resources: SourceAcquisition) -> DescriptorSource:
++            source = DescriptorSource(
++                tmp_path / 'source', backend, (0, '', None)
++            )
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        async def endpoint(request: Request) -> Response:
++            source_root = source_root_for(request)
++            assert request.scope['type'] == 'http'
++            reader = await source_root.open(acquire)
++            first = await anext(reader)
++            assert not hasattr(reader, 'aclose')
++
++            async def events() -> AsyncIterator[dict[str, str]]:
++                yield {'data': repr(first)}
++                async for value in reader:
++                    yield {'data': repr(value)}
++
++            return create_event_source_response(events())
++
++        async def send(message: Message) -> None:
++            sent.append(message)
++
++        with anyio.fail_after(5):
++            await source_request_response(endpoint)(_scope(), _receive, send)
++        body = b''.join(message.get('body', b'') for message in sent)
++        assert body == b"data: 0\r\n\r\ndata: ''\r\n\r\ndata: None\r\n\r\n"
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++@pytest.mark.parametrize('frontend', ['starlette', 'fastapi'])
++@pytest.mark.parametrize(
++    'binding', ['rest', 'rest-tenant', 'rest03', 'jsonrpc', 'jsonrpc03']
++)
++@pytest.mark.parametrize('subscribe', [False, True])
++def test_real_dispatchers_preserve_original_source_through_all_frontends(
++    tmp_path: Path, backend: str, frontend: str, binding: str, subscribe: bool
++) -> None:
++    async def run() -> None:
++        sources: list[DescriptorSource[Event]] = []
++        events = (
++            AgentMessage(
++                message_id='first',
++                role=Role.ROLE_AGENT,
++                parts=[Part(text='first')],
++            ),
++            AgentMessage(
++                message_id='second',
++                role=Role.ROLE_AGENT,
++                parts=[Part(text='second')],
++            ),
++        )
++
++        def acquire() -> DescriptorSource[Event]:
++            source = DescriptorSource(tmp_path / 'source', backend, events)
++            sources.append(source)
++            return source
++
++        handler = StreamRequestHandler(acquire)
++        compat = binding.endswith('03')
++        headers = {'a2a-version': '0.3' if compat else '1.0'}
++        if binding.startswith('rest'):
++            routes = create_rest_routes(handler, enable_v0_3_compat=compat)
++            route_groups = {'rest_routes': routes}
++            prefix = (
++                '/v1'
++                if compat
++                else '/tenant-one'
++                if binding == 'rest-tenant'
++                else ''
++            )
++            path = prefix + (
++                '/tasks/task-one:subscribe' if subscribe else '/message:stream'
++            )
++            body = (
++                {}
++                if subscribe
++                else {
++                    'message': {
++                        'messageId': 'input',
++                        'role': 'ROLE_USER',
++                        'parts': [{'text': 'hi'}],
++                    }
++                }
++            )
++        else:
++            routes = create_jsonrpc_routes(
++                handler, '/', enable_v0_3_compat=compat
++            )
++            route_groups = {'jsonrpc_routes': routes}
++            path = '/'
++            method = (
++                ('tasks/resubscribe' if compat else 'SubscribeToTask')
++                if subscribe
++                else ('message/stream' if compat else 'SendStreamingMessage')
++            )
++            params = (
++                {'id': 'task-one'}
++                if subscribe
++                else {
++                    'message': {
++                        'messageId': 'input',
++                        'role': 'user' if compat else 'ROLE_USER',
++                        'parts': [{'text': 'hi'}],
++                    }
++                }
++            )
++            body = {
++                'jsonrpc': '2.0',
++                'id': 'one',
++                'method': method,
++                'params': params,
++            }
++        if frontend == 'fastapi':
++            app = FastAPI()
++            add_a2a_routes_to_fastapi(app, **route_groups)
++            # Internal policy injection must not become an HTTP query parameter.
++            assert 'source_root' not in str(app.openapi())
++        else:
++            app = Starlette(routes=routes)
++        with anyio.fail_after(5):
++            async with httpx.AsyncClient(
++                transport=httpx.ASGITransport(app=app),
++                base_url='http://testserver',
++            ) as client:
++                response = await client.post(path, json=body, headers=headers)
++        assert response.status_code == 200, response.text
++        assert response.headers['content-type'].startswith('text/event-stream')
++        assert 'first' in response.text and 'second' in response.text
++        assert len(sources) == 1
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_finished_http_response_cannot_outlive_a_blocked_original_close(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        closing, release = anyio.Event(), anyio.Event()
++        sources: list[DescriptorSource] = []
++        sent: list[Message] = []
++
++        def acquire(resources: SourceAcquisition) -> DescriptorSource:
++            source = DescriptorSource(
++                tmp_path / 'source',
++                backend,
++                (1,),
++                closing=closing,
++                release=release,
++            )
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        async def endpoint(request: Request) -> Response:
++            source_root = source_root_for(request)
++            reader = await source_root.open(acquire)
++            return Response(str(await anext(reader)))
++
++        async def send(message: Message) -> None:
++            sent.append(message)
++
++        async def request(
++            *, task_status: TaskStatus[tuple[object, object]]
++        ) -> None:
++            task_status.started(original_owner(backend))
++            await source_request_response(endpoint)(_scope(), _receive, send)
++
++        with anyio.fail_after(5):
++            async with anyio.create_task_group() as requests:
++                task, coroutine = await requests.start(request)
++                assert task is not None
++                try:
++                    await closing.wait()
++                    assert sent[-1] == {
++                        'type': 'http.response.body',
++                        'body': b'1',
++                    }
++                    assert (
++                        inspect.getcoroutinestate(coroutine)
++                        != inspect.CORO_CLOSED
++                    )
++                    os.fstat(sources[0].fd)
++                finally:
++                    release.set()
++            assert inspect.getcoroutinestate(coroutine) == inspect.CORO_CLOSED
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_early_normalizer_cannot_send_a_failed_original_retirement(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        sources: list[DescriptorSource] = []
++        sent: list[Message] = []
++
++        def acquire(resources: SourceAcquisition) -> DescriptorSource:
++            source = DescriptorSource(
++                tmp_path / 'source', backend, (), fail_close=True
++            )
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        async def endpoint(request: Request) -> Response:
++            source_root = source_root_for(request)
++            reader = await source_root.open(acquire)
++            with pytest.raises(OSError) as caught:
++                await anext(reader)
++            assert caught.value is sources[0].close_error
++            return JSONResponse(
++                {'error': 'ordinary protocol error'}, status_code=500
++            )
++
++        async def send(message: Message) -> None:
++            sent.append(message)
++
++        with anyio.fail_after(5), pytest.raises(OSError) as caught:
++            await source_request_response(endpoint)(_scope(), _receive, send)
++        assert caught.value is sources[0].close_error
++        assert sent == []
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_real_send_failure_retires_the_original_before_propagating(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        sources: list[DescriptorSource] = []
++        errors: list[OSError] = []
++        fault, other_end = os.pipe()
++
++        def acquire(resources: SourceAcquisition) -> DescriptorSource:
++            source = DescriptorSource(tmp_path / 'source', backend, (1,))
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        async def endpoint(request: Request) -> Response:
++            source_root = source_root_for(request)
++            reader = await source_root.open(acquire)
++            return Response(str(await anext(reader)))
++
++        async def send(message: Message) -> None:
++            if message['type'] == 'http.response.body':
++                try:
++                    os.write(fault, b'cannot write to a live pipe read end')
++                except OSError as error:
++                    errors.append(error)
++                    raise
++
++        try:
++            with anyio.fail_after(5), pytest.raises(OSError) as caught:
++                await source_request_response(endpoint)(
++                    _scope(), _receive, send
++                )
++            assert errors == [caught.value]
++            assert caught.value.errno == errno.EBADF
++            sources[0].assert_original_retired()
++        finally:
++            os.close(fault)
++            os.close(other_end)
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_explicit_policy_refusal_does_not_fall_back_to_standalone(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        acquired: list[SourceAcquisition] = []
++
++        def acquire(resources: SourceAcquisition) -> DescriptorSource:
++            acquired.append(resources)
++            return DescriptorSource(tmp_path / 'must-not-acquire', backend, ())
++
++        @asynccontextmanager
++        async def refuse(
++            factory: SourceFactory[object],
++        ) -> AsyncIterator[SourceDemand[object]]:
++            fd = os.open(
++                tmp_path / 'missing-parent' / 'policy-refusal', os.O_RDWR
++            )
++            os.close(fd)
++            pytest.fail(
++                'Native refusal must happen before standalone admission'
++            )
++            yield  # pragma: no cover -- async context manager shape only
++
++        with anyio.fail_after(5), pytest.raises(FileNotFoundError) as caught:
++            async with SourceRequestRoot(refuse) as root:
++                await root.open(acquire)
++        assert caught.value.errno == errno.ENOENT
++        assert acquired == []
++        assert not (tmp_path / 'must-not-acquire').exists()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_source_root_requires_explicit_active_single_use(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        sources: list[DescriptorSource] = []
++
++        def acquire(resources: SourceAcquisition) -> DescriptorSource:
++            source = DescriptorSource(tmp_path / 'source', backend, ())
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        root = SourceRequestRoot(standalone_source_lifetime)
++        with pytest.raises(RuntimeError, match='active source root'):
++            await root.open(acquire)
++        assert sources == []
++        async with root:
++            reader = await root.open(acquire)
++            with pytest.raises(StopAsyncIteration):
++                await anext(reader)
++            with pytest.raises(RuntimeError, match='already been admitted'):
++                await root.open(acquire)
++        with pytest.raises(RuntimeError, match='cannot be re-entered'):
++            async with root:
++                pytest.fail('A retired root cannot admit another source')
++        sources[0].assert_original_retired()
++
++        async def endpoint(request: Request) -> Response:
++            return Response('metadata')
++
++        route = create_source_route('/stream', endpoint, methods=['POST'])
++        assert route.endpoint is endpoint
++        assert route.path == '/stream'
++        assert route.methods == {'POST'}
++
++    anyio.run(run, backend=backend)
 diff --git a/tests/server/test_cross_event_loop_locks.py b/tests/server/test_cross_event_loop_locks.py
 index edbac80..c8b46cc 100644
 --- a/tests/server/test_cross_event_loop_locks.py
@@ -1398,6 +3960,201 @@ index edbac80..c8b46cc 100644
  
  
  @pytest.fixture
+diff --git a/tests/source_witness.py b/tests/source_witness.py
+new file mode 100644
+index 0000000..c007401
+--- /dev/null
++++ b/tests/source_witness.py
+@@ -0,0 +1,182 @@
++"""Shared real original-Task/FD/context witnesses for source lifetime tests."""
++
++from __future__ import annotations
++
++import asyncio
++import contextvars
++import errno
++import inspect
++import os
++
++from collections.abc import AsyncGenerator, AsyncIterator, Callable
++from contextlib import asynccontextmanager
++from pathlib import Path
++from typing import Any, TypeVar
++
++import anyio
++import pytest
++
++from a2a.server.context import ServerCallContext
++from a2a.server.events import Event
++from a2a.server.request_handlers.request_handler import RequestHandler
++from a2a.server.routes.source_lifetime import SourceRequest, SourceRequestRoot
++from a2a.types.a2a_pb2 import SendMessageRequest, SubscribeToTaskRequest
++from a2a.utils.errors import UnsupportedOperationError
++from a2a.utils.source_lifetime import standalone_source_lifetime
++from starlette.datastructures import Headers, QueryParams
++from starlette.requests import Request
++from starlette.types import Message
++
++
++T = TypeVar('T')
++
++
++def make_request(
++    method: str = 'GET',
++    path_params: dict | None = None,
++    query_params: dict | None = None,
++    headers: dict | None = None,
++    body: bytes = b'{}',
++) -> Request:
++    request_headers = {'a2a-version': '1.0', **(headers or {})}
++    scope = {
++        'type': 'http',
++        'method': method,
++        'path': '/',
++        'headers': Headers(request_headers).raw,
++        'path_params': path_params or {},
++        'query_string': str(QueryParams(query_params or {})).encode(),
++    }
++    received = False
++
++    async def receive() -> Message:
++        nonlocal received
++        if received:
++            await anyio.Event().wait()
++            raise AssertionError('The request body has already been consumed')
++        received = True
++        return {'type': 'http.request', 'body': body, 'more_body': False}
++
++    return Request(scope, receive=receive)
++
++
++@asynccontextmanager
++async def source_request(request: Request) -> AsyncIterator[SourceRequest]:
++    async with SourceRequestRoot(standalone_source_lifetime) as root:
++        yield SourceRequest(request, root)
++
++
++def original_owner(backend: str) -> tuple[object, object]:
++    if backend == 'asyncio':
++        task = asyncio.current_task()
++        assert task is not None
++        return task, task.get_coro()
++    import trio  # noqa: PLC0415 -- test-only backend
++
++    task = trio.lowlevel.current_task()
++    return task, task.coro
++
++
++def assert_closed(fd: int) -> None:
++    with pytest.raises(OSError) as caught:
++        os.fstat(fd)
++    assert caught.value.errno == errno.EBADF
++
++
++class DescriptorSource(AsyncIterator[T]):
++    def __init__(
++        self,
++        path: Path,
++        backend: str,
++        values: tuple[T, ...],
++        *,
++        closing: anyio.Event | None = None,
++        release: anyio.Event | None = None,
++        fail_close: bool = False,
++    ) -> None:
++        self.backend = backend
++        self.values = iter(values)
++        self.fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
++        os.write(self.fd, b'original source')
++        self.context = contextvars.ContextVar('original source', default=False)
++        self.token = self.context.set(True)
++        self.phases: list[tuple[str, tuple[object, object]]] = []
++        self.closing = closing
++        self.release = release
++        self.fail_close = fail_close
++        self.close_error: OSError | None = None
++        self._record('factory')
++
++    def _record(self, phase: str) -> None:
++        assert self.context.get() is True
++        self.phases.append((phase, original_owner(self.backend)))
++
++    def __aiter__(self) -> DescriptorSource[T]:
++        self._record('iterator')
++        return self
++
++    async def __anext__(self) -> T:
++        self._record('next')
++        try:
++            return next(self.values)
++        except StopIteration:
++            raise StopAsyncIteration from None
++
++    async def aclose(self) -> None:
++        self._record('close')
++        if self.closing is not None:
++            self.closing.set()
++        if self.release is not None:
++            await self.release.wait()
++        os.close(self.fd)
++        self.context.reset(self.token)
++        if self.fail_close:
++            try:
++                os.fsync(self.fd)
++            except OSError as error:
++                self.close_error = error
++                raise
++
++    def assert_original_retired(self) -> None:
++        original = self.phases[0][1]
++        assert all(
++            task is original[0] and coroutine is original[1]
++            for _phase, (task, coroutine) in self.phases
++        )
++        assert [phase for phase, _ in self.phases].count('close') == 1
++        assert inspect.getcoroutinestate(original[1]) == inspect.CORO_CLOSED
++        assert_closed(self.fd)
++
++
++class StreamRequestHandler(RequestHandler):
++    """A real stream-only implementation; every other operation is unsupported."""
++
++    def __init__(self, factory: Callable[[], DescriptorSource[Event]]) -> None:
++        self.factory = factory
++
++    async def _unsupported(self, *args: Any, **kwargs: Any) -> Any:
++        raise UnsupportedOperationError('This handler supports streaming only')
++
++    on_get_task = _unsupported
++    on_list_tasks = _unsupported
++    on_cancel_task = _unsupported
++    on_message_send = _unsupported
++    on_create_task_push_notification_config = _unsupported
++    on_get_task_push_notification_config = _unsupported
++    on_list_task_push_notification_configs = _unsupported
++    on_delete_task_push_notification_config = _unsupported
++    on_get_extended_agent_card = _unsupported
++
++    async def on_message_send_stream(
++        self,
++        params: SendMessageRequest | SubscribeToTaskRequest,
++        context: ServerCallContext,
++    ) -> AsyncGenerator[Event, None]:
++        source = self.factory()
++        try:
++            async for event in source:
++                yield event
++        finally:
++            await source.aclose()
++
++    on_subscribe_to_task = on_message_send_stream
+diff --git a/tests/utils/__init__.py b/tests/utils/__init__.py
+new file mode 100644
+index 0000000..16300d4
+--- /dev/null
++++ b/tests/utils/__init__.py
+@@ -0,0 +1 @@
++"""Utility regression package, including shared original-source witnesses."""
 diff --git a/tests/utils/test_error_handlers.py b/tests/utils/test_error_handlers.py
 index 3c30b09..f5c878f 100644
 --- a/tests/utils/test_error_handlers.py
@@ -1897,6 +4654,496 @@ index 0000000..5c9fb99
 +    )
 +    assert result.stdout.strip() == 'ACTUAL_SCOPE_FAILURE_RETAINED'
 +    assert 'Exception ignored' not in result.stderr
+diff --git a/tests/utils/test_source_lifetime.py b/tests/utils/test_source_lifetime.py
+new file mode 100644
+index 0000000..23a052d
+--- /dev/null
++++ b/tests/utils/test_source_lifetime.py
+@@ -0,0 +1,484 @@
++"""Real original Tasks, file descriptors, context tokens and caller withdrawal."""
++
++from __future__ import annotations
++
++import asyncio
++import errno
++import inspect
++import os
++
++from builtins import BaseExceptionGroup, ExceptionGroup
++from pathlib import Path
++
++import anyio
++import pytest
++
++from a2a.utils import source_lifetime
++from a2a.utils.source_lifetime import SourceReader, standalone_source_lifetime
++from a2a.utils.source_ownership import SourceAcquisition
++from anyio.abc import TaskStatus
++
++from tests.source_witness import (
++    DescriptorSource as _DescriptorSource,
++    assert_closed as _closed,
++    original_owner as _owner,
++)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_factory_iteration_and_retirement_use_one_original(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        sources: list[_DescriptorSource] = []
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
++            source = _DescriptorSource(
++                tmp_path / 'source', backend, (None, '', 0)
++            )
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        with anyio.fail_after(5):
++            async with standalone_source_lifetime(acquire) as reader:
++                assert not hasattr(reader, 'aclose')
++                assert [value async for value in reader] == [None, '', 0]
++        assert len(sources) == 1
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_partial_factory_and_real_late_close_errors_retain_originals(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        sources: list[_DescriptorSource] = []
++        original = RuntimeError('factory after retained acquisition')
++        cause = ValueError('original cause')
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
++            source = _DescriptorSource(
++                tmp_path / 'source', backend, (), fail_close=True
++            )
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            raise original from cause
++
++        with anyio.fail_after(5), pytest.raises(ExceptionGroup) as root:
++            async with standalone_source_lifetime(acquire) as reader:
++                with pytest.raises(ExceptionGroup) as caught:
++                    await anext(reader)
++                assert caught.value.exceptions == (
++                    original,
++                    sources[0].close_error,
++                )
++                assert original.__cause__ is cause
++                assert sources[0].close_error is not None
++                assert sources[0].close_error.errno == errno.EBADF
++        assert root.value is caught.value
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_only_a_body_error_can_be_consumed_after_successful_retirement(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        sources: list[_DescriptorSource] = []
++        original = RuntimeError('body after retained acquisition')
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
++            source = _DescriptorSource(tmp_path / 'source', backend, ())
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            raise original
++
++        with anyio.fail_after(5):
++            async with standalone_source_lifetime(acquire) as reader:
++                with pytest.raises(RuntimeError) as demand:
++                    await anext(reader)
++                assert demand.value is original
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_reading_a_failed_close_does_not_acknowledge_successful_retirement(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        sources: list[_DescriptorSource] = []
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
++            source = _DescriptorSource(
++                tmp_path / 'source', backend, (), fail_close=True
++            )
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        with anyio.fail_after(5), pytest.raises(OSError) as root:
++            async with standalone_source_lifetime(acquire) as reader:
++                with pytest.raises(OSError) as demand:
++                    await anext(reader)
++                assert demand.value is sources[0].close_error
++        assert root.value is sources[0].close_error
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_unobserved_late_close_failure_reaches_the_request_root(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        sources: list[_DescriptorSource] = []
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
++            source = _DescriptorSource(
++                tmp_path / 'source', backend, (1,), fail_close=True
++            )
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        with anyio.fail_after(5), pytest.raises(OSError) as caught:
++            async with standalone_source_lifetime(acquire) as reader:
++                assert await anext(reader) == 1
++        assert caught.value is sources[0].close_error
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++def test_repeated_raw_request_cancellation_does_not_abort_original_close(
++    tmp_path: Path,
++) -> None:
++    async def run() -> None:
++        closing, release, received = anyio.Event(), anyio.Event(), anyio.Event()
++        sources: list[_DescriptorSource] = []
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
++            source = _DescriptorSource(
++                tmp_path / 'source',
++                'asyncio',
++                (1,),
++                closing=closing,
++                release=release,
++            )
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        async def request() -> None:
++            async with standalone_source_lifetime(acquire) as reader:
++                assert await anext(reader) == 1
++                received.set()
++                await anyio.Event().wait()
++
++        with anyio.fail_after(5):
++            original_request = asyncio.create_task(request())
++            try:
++                await received.wait()
++                original_request.cancel('request withdrawal')
++                await closing.wait()
++                original_request.cancel('join withdrawal')
++                await asyncio.sleep(0)
++                assert not original_request.done()
++                os.fstat(sources[0].fd)
++            finally:
++                release.set()
++                with pytest.raises(BaseExceptionGroup) as caught:
++                    await original_request
++            assert [error.args for error in caught.value.exceptions] == [
++                ('request withdrawal',),
++                ('join withdrawal',),
++            ]
++        sources[0].assert_original_retired()
++
++    anyio.run(run)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_stop_does_not_finish_the_request_while_original_close_is_blocked(
++    tmp_path: Path, backend: str
++) -> None:
++    async def run() -> None:
++        closing, release = anyio.Event(), anyio.Event()
++        sources: list[_DescriptorSource] = []
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
++            source = _DescriptorSource(
++                tmp_path / 'source',
++                backend,
++                (1,),
++                closing=closing,
++                release=release,
++            )
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        async def request(
++            *, task_status: TaskStatus[tuple[object, object]]
++        ) -> None:
++            task_status.started(_owner(backend))
++            async with standalone_source_lifetime(acquire) as reader:
++                assert await anext(reader) == 1
++
++        with anyio.fail_after(5):
++            async with anyio.create_task_group() as requests:
++                original = await requests.start(request)
++                try:
++                    await closing.wait()
++                    assert (
++                        inspect.getcoroutinestate(original[1])
++                        != inspect.CORO_CLOSED
++                    )
++                    os.fstat(sources[0].fd)
++                finally:
++                    release.set()
++        assert inspect.getcoroutinestate(original[1]) == inspect.CORO_CLOSED
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_kernel_return_is_not_the_original_producers_physical_join(
++    tmp_path: Path, backend: str, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    async def run() -> None:
++        epilogue, release, observing_join = (
++            anyio.Event(),
++            anyio.Event(),
++            anyio.Event(),
++        )
++        sources: list[_DescriptorSource] = []
++        readers: list[SourceReader[object]] = []
++        original_run = source_lifetime._SourceRuntime.run
++        original_observe = source_lifetime._SourceRuntime.observe_join
++
++        async def held_original(
++            self: source_lifetime._SourceRuntime[object],
++            *,
++            task_status: TaskStatus[None],
++        ) -> None:
++            await original_run(self, task_status=task_status)
++            # This is the ACTUAL producer's remaining epilogue, after the real
++            # kernel retired its FD and returned. The group must still join it.
++            epilogue.set()
++            await release.wait()
++
++        async def observed_wait(
++            self: source_lifetime._SourceRuntime[object],
++        ) -> BaseException | None:
++            observing_join.set()
++            return await original_observe(self)
++
++        monkeypatch.setattr(
++            source_lifetime._SourceRuntime, 'run', held_original
++        )
++        monkeypatch.setattr(
++            source_lifetime._SourceRuntime, 'observe_join', observed_wait
++        )
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
++            source = _DescriptorSource(tmp_path / 'source', backend, ())
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        async def request(
++            *, task_status: TaskStatus[tuple[object, object]]
++        ) -> None:
++            task_status.started(_owner(backend))
++            async with standalone_source_lifetime(acquire) as reader:
++                readers.append(reader)
++                with pytest.raises(StopAsyncIteration):
++                    await anext(reader)
++
++        with anyio.fail_after(5):
++            async with anyio.create_task_group() as requests:
++                original = await requests.start(request)
++                try:
++                    await epilogue.wait()
++                    _closed(sources[0].fd)
++                    assert (
++                        inspect.getcoroutinestate(sources[0].phases[0][1][1])
++                        != inspect.CORO_CLOSED
++                    )
++                    readers[0].request_stop()
++                    await observing_join.wait()
++                    assert (
++                        inspect.getcoroutinestate(original[1])
++                        != inspect.CORO_CLOSED
++                    )
++                finally:
++                    release.set()
++        assert inspect.getcoroutinestate(original[1]) == inspect.CORO_CLOSED
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_native_startup_failure_keeps_original_without_protocol_placeholder(
++    tmp_path: Path, backend: str, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    async def run() -> None:
++        failures: list[OSError] = []
++        originals: list[tuple[object, object]] = []
++
++        async def failed_start(
++            self: source_lifetime._SourceRuntime[object],
++            *,
++            task_status: TaskStatus[None],
++        ) -> None:
++            originals.append(_owner(backend))
++            await anyio.lowlevel.checkpoint()
++            try:
++                fd = os.open(
++                    tmp_path / 'missing-parent' / 'native-failure', os.O_RDWR
++                )
++            except OSError as error:
++                failures.append(error)
++                raise
++            else:
++                os.close(fd)
++                pytest.fail('The absent parent must refuse native startup')
++
++        monkeypatch.setattr(source_lifetime._SourceRuntime, 'run', failed_start)
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
++            source = _DescriptorSource(
++                tmp_path / 'must-not-acquire', backend, ()
++            )
++            resources.retain(source, source.aclose)
++            return source
++
++        def leaves(error: BaseException) -> list[BaseException]:
++            if isinstance(error, BaseExceptionGroup):
++                return [
++                    leaf for child in error.exceptions for leaf in leaves(child)
++                ]
++            return [error]
++
++        with anyio.fail_after(5), pytest.raises(BaseExceptionGroup) as caught:
++            async with standalone_source_lifetime(acquire):
++                pytest.fail('Failed original startup must not admit a reader')
++        assert leaves(caught.value) == failures
++        assert len(failures) == 1 and failures[0].errno == errno.ENOENT
++        assert not (tmp_path / 'must-not-acquire').exists()
++        assert len(originals) == 1
++        assert inspect.getcoroutinestate(originals[0][1]) == inspect.CORO_CLOSED
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_scope_withdrawal_does_not_cut_off_the_original_task_finally(
++    tmp_path: Path, backend: str, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    async def run() -> None:
++        retiring, release = anyio.Event(), anyio.Event()
++        observing_join, request_finished = anyio.Event(), anyio.Event()
++        sources: list[_DescriptorSource] = []
++        tails: list[tuple[int, tuple[object, object]]] = []
++        original_run = source_lifetime._SourceRuntime.run
++        original_observe = source_lifetime._SourceRuntime.observe_join
++
++        async def original_with_finally(
++            self: source_lifetime._SourceRuntime[object],
++            *,
++            task_status: TaskStatus[None],
++        ) -> None:
++            try:
++                await original_run(self, task_status=task_status)
++            finally:
++                if self.outcome is not None:
++                    fd = os.open(
++                        tmp_path / 'original-finally',
++                        os.O_CREAT | os.O_EXCL | os.O_RDWR,
++                        0o600,
++                    )
++                    tails.append((fd, _owner(backend)))
++                    retiring.set()
++                    await release.wait()
++                    os.close(fd)
++
++        async def observed_wait(
++            self: source_lifetime._SourceRuntime[object],
++        ) -> BaseException | None:
++            observing_join.set()
++            return await original_observe(self)
++
++        monkeypatch.setattr(
++            source_lifetime._SourceRuntime, 'run', original_with_finally
++        )
++        monkeypatch.setattr(
++            source_lifetime._SourceRuntime, 'observe_join', observed_wait
++        )
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
++            source = _DescriptorSource(tmp_path / 'source', backend, ())
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            return source
++
++        async def request(
++            *,
++            task_status: TaskStatus[
++                tuple[anyio.CancelScope, tuple[object, object]]
++            ],
++        ) -> None:
++            with anyio.CancelScope() as observer:
++                task_status.started((observer, _owner(backend)))
++                try:
++                    async with standalone_source_lifetime(acquire) as reader:
++                        with pytest.raises(StopAsyncIteration):
++                            await anext(reader)
++                finally:
++                    request_finished.set()
++
++        try:
++            with anyio.fail_after(5):
++                async with anyio.create_task_group() as requests:
++                    observer, request_owner = await requests.start(request)
++                    try:
++                        await retiring.wait()
++                        observer.cancel()
++                        while not (
++                            observing_join.is_set() or request_finished.is_set()
++                        ):
++                            await anyio.lowlevel.checkpoint()
++                        assert (
++                            inspect.getcoroutinestate(request_owner[1])
++                            != inspect.CORO_CLOSED
++                        )
++                        assert (
++                            inspect.getcoroutinestate(tails[0][1][1])
++                            != inspect.CORO_CLOSED
++                        )
++                        os.fstat(tails[0][0])
++                    finally:
++                        release.set()
++            _closed(tails[0][0])
++            sources[0].assert_original_retired()
++        finally:
++            # Failure-only fixture cleanup is AFTER physical-join/FD assertions.
++            for fd, _owner_record in tails:
++                try:
++                    os.close(fd)
++                except OSError as error:
++                    if error.errno != errno.EBADF:
++                        raise
++
++    anyio.run(run, backend=backend)
 diff --git a/tests/utils/test_source_ownership.py b/tests/utils/test_source_ownership.py
 new file mode 100644
 index 0000000..484ca0a
@@ -2250,6 +5497,70 @@ index 0000000..484ca0a
 +        assert await handoff.pull() == (False, None)
 +
 +    anyio.run(run, backend=backend)
+diff --git a/tests/utils/test_telemetry.py b/tests/utils/test_telemetry.py
+index f630df2..558f8fd 100644
+--- a/tests/utils/test_telemetry.py
++++ b/tests/utils/test_telemetry.py
+@@ -3,6 +3,7 @@ import importlib
+ import sys
+ 
+ from collections.abc import Callable, Generator
++from contextlib import contextmanager
+ from typing import Any, NoReturn
+ from unittest import mock
+ 
+@@ -53,10 +54,39 @@ def reload_telemetry_module(
+         module = importlib.import_module('a2a.utils.telemetry')
+         return module
+ 
+-    yield _reload
++    with _isolated_telemetry_identity():
++        yield _reload
+ 
+-    # Cleanup to ensure other tests aren't affected by a "poisoned" sys.modules
+-    sys.modules.pop('a2a.utils.telemetry', None)
++
++@contextmanager
++def _isolated_telemetry_identity() -> Generator[None, None, None]:
++    """Restore the original module AND package reference after reload probes."""
++    name = trace_function.__module__
++    original = sys.modules[name]
++    parent_name, _, attribute = name.rpartition('.')
++    parent = sys.modules[parent_name]
++    original_attribute = getattr(parent, attribute)
++    try:
++        yield
++    finally:
++        sys.modules[name] = original
++        setattr(parent, attribute, original_attribute)
++
++
++def test_reload_probe_restores_original_telemetry_module_identity() -> None:
++    name = trace_function.__module__
++    original = sys.modules[name]
++    parent_name, _, attribute = name.rpartition('.')
++    parent = sys.modules[parent_name]
++    assert getattr(parent, attribute) is original
++    with _isolated_telemetry_identity():
++        sys.modules.pop(name)
++        replacement = importlib.import_module(name)
++        assert replacement is not original
++        assert getattr(parent, attribute) is replacement
++    assert sys.modules[name] is original
++    assert getattr(parent, attribute) is original
++    assert trace_function.__globals__ is original.__dict__
+ 
+ 
+ def test_trace_function_sync_success(mock_span: mock.MagicMock) -> None:
+@@ -116,7 +146,7 @@ def test_trace_function_sync_attribute_extractor_error_logged(
+         foo()
+         logger.exception.assert_any_call(
+             'attribute_extractor error in span %s',
+-            'test_telemetry.foo',
++            f'{__name__}.foo',
+         )
+ 
+ 
 diff --git a/tests/utils/test_version_validation.py b/tests/utils/test_version_validation.py
 index 9014702..3a4b381 100644
 --- a/tests/utils/test_version_validation.py

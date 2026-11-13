@@ -96,6 +96,7 @@ test = [
     "respx>=0.20.2",
     "rfc8785>=0.1.4",
     "grpcio>=1.60",
+    "fastapi>=0.115.12",
     "alembic>=1.14.0",
     "sqlalchemy[asyncio]>=2.0.0",
     "aiosqlite>=0.21.0",

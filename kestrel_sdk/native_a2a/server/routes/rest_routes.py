@@ -1,12 +1,18 @@
 # Modified by Kestrel: isolated SDK namespace; see VENDORED.json.
 import logging
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from kestrel_sdk.native_a2a.compat.v0_3.rest_adapter import REST03Adapter
 from kestrel_sdk.native_a2a.server.request_handlers.request_handler import RequestHandler
 from kestrel_sdk.native_a2a.server.routes.common import ServerCallContextBuilder
 from kestrel_sdk.native_a2a.server.routes.rest_dispatcher import RestDispatcher
+from kestrel_sdk.native_a2a.server.routes.source_lifetime import with_source_lifetime
+from kestrel_sdk.native_a2a.utils.source_lifetime import (
+    SourceLifetimeFactory,
+    standalone_source_lifetime,
+)
 
 
 if TYPE_CHECKING:
@@ -28,12 +34,14 @@ else:
 logger = logging.getLogger(__name__)
 
 
-def create_rest_routes(
+def create_rest_routes(  # noqa: PLR0913 -- preserve the existing positional API
     request_handler: RequestHandler,
     context_builder: ServerCallContextBuilder | None = None,
     enable_v0_3_compat: bool = False,
     path_prefix: str = '',
     shutdown_grace_period: float = 0,
+    *,
+    source_lifetime_factory: SourceLifetimeFactory = standalone_source_lifetime,
 ) -> list['BaseRoute']:
     """Creates the Starlette Routes for the A2A protocol REST endpoint.
 
@@ -50,6 +58,8 @@ def create_rest_routes(
           before force-cancellation during shutdown. This value should be less
           than the ASGI server's graceful shutdown timeout. Defaults to 0,
           matching the ``sse-starlette`` default behavior.
+        source_lifetime_factory: Explicit source admission/retirement policy.
+          Native hosts must pass their policy; standalone apps use AnyIO.
     """
     if not _package_starlette_installed:
         raise ImportError(
@@ -64,6 +74,16 @@ def create_rest_routes(
         shutdown_grace_period=shutdown_grace_period,
     )
 
+    def make_route(
+        path: str, method: str, endpoint: Callable[..., Any]
+    ) -> Route:
+        route = Route(
+            path=f'{path_prefix}{path}', endpoint=endpoint, methods=[method]
+        )
+        if path.endswith((':stream', ':subscribe')):
+            return with_source_lifetime(route, source_lifetime_factory)
+        return route
+
     routes: list[BaseRoute] = []
     if enable_v0_3_compat:
         v03_adapter = REST03Adapter(
@@ -73,13 +93,7 @@ def create_rest_routes(
         )
         v03_routes = v03_adapter.routes()
         for (path, method), endpoint in v03_routes.items():
-            routes.append(
-                Route(
-                    path=f'{path_prefix}{path}',
-                    endpoint=endpoint,
-                    methods=[method],
-                )
-            )
+            routes.append(make_route(path, method, endpoint))
 
     base_routes = {
         ('/message:send', 'POST'): dispatcher.on_message_send,
@@ -113,13 +127,7 @@ def create_rest_routes(
 
     base_route_objects = []
     for (path, method), endpoint in base_routes.items():
-        base_route_objects.append(
-            Route(
-                path=f'{path_prefix}{path}',
-                endpoint=endpoint,
-                methods=[method],
-            )
-        )
+        base_route_objects.append(make_route(path, method, endpoint))
     routes.extend(base_route_objects)
     routes.append(Mount(path='/{tenant}', routes=base_route_objects))
 

@@ -119,7 +119,26 @@ physical Task-join receipt. A host must admit its original owner and install
 completion observation before opening the dispatch gate. Calling the body in
 a cancellable request Task does not provide that boundary. Stop only withdraws
 demand; a blocked original owner remains pending until the host actually joins
-it. Native HTTP request/response lifetime integration remains separate work.
+it.
+
+The HTTP route factories now install a request root around **both** endpoint
+dispatch and ASGI response execution, including prefetch. Their standalone
+policy admits one AnyIO producer and joins its actual Task before successful
+request exit; Stop or caller cancellation is not a retirement receipt. A known
+original close failure cannot be normalized into an ordinary response.
+FastAPI registration preserves the actual ASGI wrapper and tenant/0.3 routes
+use the same source mechanism. Compatibility gRPC streams use the coroutine
+writer API, keeping their root around all writes rather than across yields.
+
+Hosts with native ownership must explicitly pass their `SourceLifetimeFactory`
+as `source_lifetime_factory` to the route factories (or compatibility gRPC
+handler). The factory owns admission, observation and any typed unfinished
+debt. Neither a `SourceDemand` reader, copied context nor request scope grants
+host authority; native refusal must not fall back to standalone admission.
+Direct dispatchers require an explicit `SourceRequest` in an active
+`SourceRequestRoot` spanning response execution; `source_request_response`
+provides that boundary for an ASGI endpoint. The request adapter preserves the
+original payload caches instead of consuming the transport again.
 
 ### Maintaining the vendored copy
 
@@ -137,6 +156,13 @@ protocol names, JSON fields and protobuf descriptors are preserved.
 `tests/native_a2a` holds relocated copies of the upstream test files the patch
 changes. These are SDK regressions, not a claim that Kestrel has passed the
 full A2A TCK.
+
+When importing a producer update into a fresh `--root`, use `--tests-since`
+with the exact previous producer revision. The importer relocates only the
+changed producer tests and their actual package ancestors, including the
+shared original-resource witness. It refuses an existing test output and
+requires explicit disposition of deleted or renamed tests; it never imports
+all upstream fixtures or consumes dirty working-tree tests.
 
 No runtime module alias, monkey patch, private protocol or signature fallback is
 installed. A separately installed `a2a` Python package does not supply Kestrel's

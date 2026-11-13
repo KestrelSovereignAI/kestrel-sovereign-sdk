@@ -40,6 +40,7 @@ from kestrel_sdk.native_a2a.server.routes.common import (
     ServerCallContextBuilder,
     create_event_source_response,
 )
+from kestrel_sdk.native_a2a.server.routes.source_lifetime import source_root_for
 from kestrel_sdk.native_a2a.utils import json_utils
 from kestrel_sdk.native_a2a.utils.error_handlers import (
     rest_error_handler,
@@ -48,6 +49,7 @@ from kestrel_sdk.native_a2a.utils.error_handlers import (
 from kestrel_sdk.native_a2a.utils.errors import (
     InvalidRequestError,
 )
+from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
 
 
 logger = logging.getLogger(__name__)
@@ -84,7 +86,7 @@ class REST03Adapter:
     @rest_stream_error_handler
     async def _handle_streaming_request(
         self,
-        method: 'Callable[[Request, ServerCallContext], AsyncIterable[Any]]',
+        method: 'Callable[..., AsyncIterable[Any]]',
         request: Request,
     ) -> EventSourceResponse:
         try:
@@ -102,7 +104,10 @@ class REST03Adapter:
         # errors raised before any event (e.g. a malformed body) are mapped
         # to an HTTP error by @rest_stream_error_handler instead of an empty
         # 200 stream, matching the v1.0 REST dispatcher.
-        stream = aiter(method(request, call_context))
+        def acquire(resources: SourceAcquisition) -> AsyncIterable[Any]:
+            return method(request, call_context, resources=resources)
+
+        stream = await source_root_for(request).open(acquire)
         try:
             first_item = await anext(stream)
         except StopAsyncIteration:

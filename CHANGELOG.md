@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+
+- Complete standalone request-lifetime ownership for streaming HTTP routes,
+  including prefetch, response execution, original source retirement and
+  explicit host-policy injection. FastAPI preserves the actual ASGI root;
+  tenant and compatibility routes use the same acquisition mechanism.
+- Compatibility gRPC coroutine writers retain their original source through
+  all writes; cancellation or an observed close failure is not successful
+  retirement. Native host adapters and consumer acceptance remain release gates.
+- Exact-Git-tree regression import via `--tests-since`, with canonical test
+  namespace relocation and required package ancestors, not all upstream fixtures.
+
 ## 0.52.2
 
 ### Added

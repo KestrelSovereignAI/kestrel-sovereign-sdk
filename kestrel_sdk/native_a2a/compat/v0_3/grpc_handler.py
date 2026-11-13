@@ -28,6 +28,12 @@ from kestrel_sdk.native_a2a.server.request_handlers.grpc_handler import (
 )
 from kestrel_sdk.native_a2a.server.request_handlers.request_handler import RequestHandler
 from kestrel_sdk.native_a2a.utils.errors import A2AError, InvalidParamsError
+from kestrel_sdk.native_a2a.utils.source_lifetime import (
+    SourceDemand,
+    SourceLifetimeFactory,
+    standalone_source_lifetime,
+)
+from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
 
 
 logger = logging.getLogger(__name__)
@@ -42,7 +48,9 @@ class CompatGrpcHandler(a2a_v0_3_pb2_grpc.A2AServiceServicer):
         self,
         request_handler: RequestHandler,
         context_builder: GrpcServerCallContextBuilder | None = None,
-    ):
+        *,
+        source_lifetime_factory: SourceLifetimeFactory = standalone_source_lifetime,
+    ) -> None:
         """Initializes the CompatGrpcHandler.
 
         Args:
@@ -50,8 +58,10 @@ class CompatGrpcHandler(a2a_v0_3_pb2_grpc.A2AServiceServicer):
                              delegate requests to.
             context_builder: The CallContextBuilder object. If none the
                              DefaultCallContextBuilder is used.
+            source_lifetime_factory: Explicit source admission/retirement policy.
         """
         self.handler03 = RequestHandler03(request_handler=request_handler)
+        self._source_lifetime_factory = source_lifetime_factory
         self._context_builder = V03GrpcServerCallContextBuilder(
             context_builder or DefaultGrpcServerCallContextBuilder()
         )
@@ -75,14 +85,22 @@ class CompatGrpcHandler(a2a_v0_3_pb2_grpc.A2AServiceServicer):
     async def _handle_stream(
         self,
         context: grpc.aio.ServicerContext,
-        handler_func: Callable[[ServerCallContext], AsyncIterable[TResponse]],
-    ) -> AsyncIterable[TResponse]:
+        handler_func: Callable[
+            [ServerCallContext, SourceAcquisition], AsyncIterable[TResponse]
+        ],
+    ) -> None:
         """Centralized error handling and context management for streaming calls."""
+        stream: SourceDemand[TResponse] | None = None
         try:
             server_context = self._context_builder.build(context)
-            async for item in handler_func(server_context):
-                yield item
+            async with self._source_lifetime_factory(
+                lambda resources: handler_func(server_context, resources)
+            ) as stream:
+                async for item in stream:
+                    await context.write(item)
         except A2AError as e:
+            if stream is not None:
+                stream.raise_if_retirement_failed()
             await self.abort_context(e, context)
 
     def _extract_task_id(self, resource_name: str) -> str:
@@ -151,24 +169,27 @@ class CompatGrpcHandler(a2a_v0_3_pb2_grpc.A2AServiceServicer):
         self,
         request: a2a_v0_3_pb2.SendMessageRequest,
         context: grpc.aio.ServicerContext,
-    ) -> AsyncIterable[a2a_v0_3_pb2.StreamResponse]:
+    ) -> None:
         """Handles the 'SendStreamingMessage' gRPC method (v0.3)."""
 
         async def _handler(
             server_context: ServerCallContext,
+            resources: SourceAcquisition,
         ) -> AsyncIterable[a2a_v0_3_pb2.StreamResponse]:
             req_v03 = types_v03.SendMessageRequest(
                 id=0, params=proto_utils.FromProto.message_send_params(request)
             )
-            async for v03_stream_resp in self.handler03.on_message_send_stream(
-                req_v03, server_context
-            ):
+            stream = resources.retain_iterable(
+                self.handler03.on_message_send_stream(
+                    req_v03, server_context, resources=resources
+                )
+            )
+            async for v03_stream_resp in stream:
                 yield proto_utils.ToProto.stream_response(
                     v03_stream_resp.result
                 )
 
-        async for item in self._handle_stream(context, _handler):
-            yield item
+        await self._handle_stream(context, _handler)
 
     async def GetTask(
         self,
@@ -210,24 +231,27 @@ class CompatGrpcHandler(a2a_v0_3_pb2_grpc.A2AServiceServicer):
         self,
         request: a2a_v0_3_pb2.TaskSubscriptionRequest,
         context: grpc.aio.ServicerContext,
-    ) -> AsyncIterable[a2a_v0_3_pb2.StreamResponse]:
+    ) -> None:
         """Handles the 'TaskSubscription' gRPC method (v0.3)."""
 
         async def _handler(
             server_context: ServerCallContext,
+            resources: SourceAcquisition,
         ) -> AsyncIterable[a2a_v0_3_pb2.StreamResponse]:
             req_v03 = types_v03.TaskResubscriptionRequest(
                 id=0, params=proto_utils.FromProto.task_id_params(request)
             )
-            async for v03_stream_resp in self.handler03.on_subscribe_to_task(
-                req_v03, server_context
-            ):
+            stream = resources.retain_iterable(
+                self.handler03.on_subscribe_to_task(
+                    req_v03, server_context, resources=resources
+                )
+            )
+            async for v03_stream_resp in stream:
                 yield proto_utils.ToProto.stream_response(
                     v03_stream_resp.result
                 )
 
-        async for item in self._handle_stream(context, _handler):
-            yield item
+        await self._handle_stream(context, _handler)
 
     async def CreateTaskPushNotificationConfig(
         self,

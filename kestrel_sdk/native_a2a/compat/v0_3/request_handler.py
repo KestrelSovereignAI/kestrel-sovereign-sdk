@@ -10,6 +10,7 @@ from kestrel_sdk.native_a2a.server.request_handlers.request_handler import Reque
 from kestrel_sdk.native_a2a.types.a2a_pb2 import ListTaskPushNotificationConfigsRequest, Task
 from kestrel_sdk.native_a2a.utils import proto_utils as core_proto_utils
 from kestrel_sdk.native_a2a.utils.errors import TaskNotFoundError
+from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
 
 
 logger = logging.getLogger(__name__)
@@ -39,12 +40,15 @@ class RequestHandler03:
         self,
         request: types_v03.SendMessageRequest,
         context: ServerCallContext,
+        *,
+        resources: SourceAcquisition,
     ) -> AsyncIterable[types_v03.SendStreamingMessageSuccessResponse]:
         """Sends a message stream using v0.3 protocol types."""
         v10_req = conversions.to_core_send_message_request(request)
-        async for event in self.request_handler.on_message_send_stream(
-            v10_req, context
-        ):
+        stream = resources.retain_iterable(
+            self.request_handler.on_message_send_stream(v10_req, context)
+        )
+        async for event in stream:
             v10_stream_resp = core_proto_utils.to_stream_response(event)
             yield conversions.to_compat_stream_response(
                 v10_stream_resp, request.id
@@ -66,12 +70,15 @@ class RequestHandler03:
         self,
         request: types_v03.TaskResubscriptionRequest,
         context: ServerCallContext,
+        *,
+        resources: SourceAcquisition,
     ) -> AsyncIterable[types_v03.SendStreamingMessageSuccessResponse]:
         """Subscribes to a task using v0.3 protocol types."""
         v10_req = conversions.to_core_subscribe_to_task_request(request)
-        async for event in self.request_handler.on_subscribe_to_task(
-            v10_req, context
-        ):
+        stream = resources.retain_iterable(
+            self.request_handler.on_subscribe_to_task(v10_req, context)
+        )
+        async for event in stream:
             v10_stream_resp = core_proto_utils.to_stream_response(event)
             yield conversions.to_compat_stream_response(
                 v10_stream_resp, request.id

@@ -4,7 +4,7 @@
 import json
 import logging
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any, cast
 
 from google.protobuf.json_format import MessageToDict, ParseDict
@@ -13,7 +13,6 @@ from kestrel_sdk.features.host_errors import is_host_control_error
 
 from kestrel_sdk.native_a2a.compat.v0_3.jsonrpc_adapter import JSONRPC03Adapter
 from kestrel_sdk.native_a2a.server.context import ServerCallContext
-from kestrel_sdk.native_a2a.server.events import Event
 from kestrel_sdk.native_a2a.server.jsonrpc_models import (
     InternalError,
     JSONParseError,
@@ -28,6 +27,7 @@ from kestrel_sdk.native_a2a.server.routes.common import (
     create_event_source_response,
     serialize_list_tasks_response,
 )
+from kestrel_sdk.native_a2a.server.routes.source_lifetime import SourceRequestRoot, source_root_for
 from kestrel_sdk.native_a2a.types.a2a_pb2 import (
     CancelTaskRequest,
     DeleteTaskPushNotificationConfigRequest,
@@ -50,6 +50,8 @@ from kestrel_sdk.native_a2a.utils.errors import (
     TaskNotFoundError,
     UnsupportedOperationError,
 )
+from kestrel_sdk.native_a2a.utils.source_lifetime import SourceDemand
+from kestrel_sdk.native_a2a.utils.source_ownership import SourceAcquisition
 from kestrel_sdk.native_a2a.utils.telemetry import SpanKind, trace_class
 from kestrel_sdk.native_a2a.utils.version_validator import validate_version
 
@@ -229,7 +231,9 @@ class JsonRpcDispatcher:
             status_code=200,
         )
 
-    async def handle_requests(self, request: Request) -> Response:  # noqa: PLR0911, PLR0912
+    async def handle_requests(  # noqa: PLR0911, PLR0912
+        self, request: Request
+    ) -> Response:
         """Handles incoming POST requests to the main A2A endpoint.
 
         Parses the request body as JSON, validates it against A2A request types,
@@ -312,6 +316,7 @@ class JsonRpcDispatcher:
                     method=method,
                     body=body,
                     request=request,
+                    source_root=source_root_for(request),
                 )
 
             model_class = self.METHOD_TO_MODEL.get(method)
@@ -346,7 +351,10 @@ class JsonRpcDispatcher:
             )
             if method in ('SendStreamingMessage', 'SubscribeToTask'):
                 handler_result = await self._process_streaming_request(
-                    request_id, specific_request, call_context
+                    request_id,
+                    specific_request,
+                    call_context,
+                    source_root=source_root_for(request),
                 )
             else:
                 try:
@@ -381,6 +389,8 @@ class JsonRpcDispatcher:
         request_id: str | int | None,
         request_obj: Any,
         context: ServerCallContext,
+        *,
+        source_root: SourceRequestRoot,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Processes streaming requests (SendStreamingMessage or SubscribeToTask).
 
@@ -388,23 +398,39 @@ class JsonRpcDispatcher:
             request_id: The ID of the request.
             request_obj: The proto request message.
             context: The ServerCallContext for the request.
+            source_root: Explicit active root spanning dispatch and response.
 
         Returns:
             An `AsyncGenerator` object to stream results to the client.
         """
-        stream: AsyncGenerator | None = None
         method = context.state.get('method')
-        if method == 'SendStreamingMessage':
-            stream = self.request_handler.on_message_send_stream(
-                request_obj, context
-            )
-        elif method == 'SubscribeToTask':
-            stream = self.request_handler.on_subscribe_to_task(
-                request_obj, context
-            )
 
-        if stream is None:
-            raise UnsupportedOperationError(message='Stream not supported')
+        def acquire(
+            resources: SourceAcquisition,
+        ) -> AsyncIterator[dict[str, Any]]:
+            if method == 'SendStreamingMessage':
+                source = self.request_handler.on_message_send_stream(
+                    request_obj, context
+                )
+            elif method == 'SubscribeToTask':
+                source = self.request_handler.on_subscribe_to_task(
+                    request_obj, context
+                )
+            else:
+                raise UnsupportedOperationError(message='Stream not supported')
+            iterator = resources.retain_iterable(source)
+
+            async def mapped_events() -> AsyncIterator[dict[str, Any]]:
+                async for event in iterator:
+                    stream_response = proto_utils.to_stream_response(event)
+                    result = MessageToDict(
+                        stream_response, preserving_proto_field_name=False
+                    )
+                    yield JSONRPC20Response(result=result, _id=request_id).data
+
+            return mapped_events()
+
+        stream = await source_root.open(acquire)
 
         # Eagerly fetch the first event to trigger validation/upfront errors
         try:
@@ -413,22 +439,16 @@ class JsonRpcDispatcher:
             first_event = None
 
         async def _wrap_stream(
-            st: AsyncGenerator, first_evt: Event | None
+            st: SourceDemand[dict[str, Any]], first_evt: dict[str, Any] | None
         ) -> AsyncGenerator[dict[str, Any], None]:
-            def _map_event(evt: Event) -> dict[str, Any]:
-                stream_response = proto_utils.to_stream_response(evt)
-                result = MessageToDict(
-                    stream_response, preserving_proto_field_name=False
-                )
-                return JSONRPC20Response(result=result, _id=request_id).data
-
             try:
                 if first_evt is not None:
-                    yield _map_event(first_evt)
+                    yield first_evt
 
                 async for event in st:
-                    yield _map_event(event)
+                    yield event
             except A2AError as e:
+                st.raise_if_retirement_failed()
                 yield build_error_response(request_id, e)
 
         return _wrap_stream(stream, first_event)

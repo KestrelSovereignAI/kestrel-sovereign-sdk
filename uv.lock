@@ -46,6 +46,15 @@ wheels = [
 ]
 
 [[package]]
+name = "annotated-doc"
+version = "0.0.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/6e/a61e86e43bb6039b31a33a8f5fba76fe1cdacf3661e7b9756d4ff1b28cdc/annotated_doc-0.0.6.tar.gz", hash = "sha256:7969bb69912085b2285849c0dcac0b4b374fd180c13cf10a87f284ffcf347bbf", size = 10767, upload-time = "2026-11-10T18:17:11.28Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/f5/3dd85d583e55be76cd02b1fc9bbec771b12d63124b01661d9535ccf8721f/annotated_doc-0.0.6-py3-none-any.whl", hash = "sha256:361ca0950cc7082f53fa69e9328409f40a62c61e57e0a47e1825a08078a58a53", size = 5293, upload-time = "2026-11-10T18:17:10.249Z" },
+]
+
+[[package]]
 name = "annotated-types"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -366,6 +375,24 @@ wheels = [
 ]
 
 [[package]]
+name = "fastapi"
+version = "0.162.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "annotated-doc" },
+    { name = "anyio" },
+    { name = "opentelemetry-api" },
+    { name = "pydantic" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/77/f6/d4b619efeaeaf7209a89142217c9d4f1c583520905257332aa5b2a499152/fastapi-0.162.6.tar.gz", hash = "sha256:a530213b59ad47d96d1b64fcf8b7bf9317128a6bdddde9d9ad05f9ae75d57ca9", size = 531929, upload-time = "2026-11-13T13:36:39.357Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/41/caeb021c22a8df1ef5bf8844fc81aa4a43d5a41b7a02a556b13801870c82/fastapi-0.162.6-py3-none-any.whl", hash = "sha256:df12575573c26a49083f690c43496b6dafa483dca72ca66de4b50d1db5940787", size = 151939, upload-time = "2026-11-13T13:36:38.005Z" },
+]
+
+[[package]]
 name = "google-api-core"
 version = "2.42.0"
 source = { registry = "https://pypi.org/simple" }
@@ -677,6 +704,7 @@ test = [
     { name = "certifi" },
     { name = "cryptography" },
     { name = "culsans", marker = "python_full_version < '3.13'" },
+    { name = "fastapi" },
     { name = "google-api-core" },
     { name = "googleapis-common-protos" },
     { name = "grpcio" },
@@ -732,6 +760,7 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'crypto'", specifier = ">=42.0" },
     { name = "cryptography", marker = "extra == 'test'", specifier = ">=42.0" },
     { name = "culsans", marker = "python_full_version < '3.13' and extra == 'a2a'", specifier = ">=0.11.0" },
+    { name = "fastapi", marker = "extra == 'test'", specifier = ">=0.115.12" },
     { name = "google-api-core", marker = "extra == 'a2a'", specifier = ">=1.26.0" },
     { name = "googleapis-common-protos", marker = "extra == 'a2a'", specifier = ">=1.70.0" },
     { name = "grpcio", marker = "extra == 'test'", specifier = ">=1.60" },
