@@ -1157,10 +1157,10 @@ index b741411..6061153 100644
  
 diff --git a/src/a2a/server/routes/source_lifetime.py b/src/a2a/server/routes/source_lifetime.py
 new file mode 100644
-index 0000000..9f8817d
+index 0000000..ad5dfa3
 --- /dev/null
 +++ b/src/a2a/server/routes/source_lifetime.py
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,200 @@
 +"""Explicit request roots spanning endpoint dispatch AND ASGI response use."""
 +
 +from __future__ import annotations
@@ -1288,6 +1288,14 @@ index 0000000..9f8817d
 +    async def close(self) -> None:
 +        """Retire the original request's form resources, without a copied cache."""
 +        await self._original_request.close()
++
++    async def send_push_promise(self, path: str) -> None:
++        """Use the original server send capability, not a missing replacement."""
++        await self._original_request.send_push_promise(path)
++
++    async def is_disconnected(self) -> bool:
++        """Preserve the original disconnect cache without consuming receive twice."""
++        return await self._original_request.is_disconnected()
 +
 +    @property
 +    def source_root(self) -> SourceRequestRoot:
@@ -1478,10 +1486,10 @@ index 9eb6d02..f72c020 100644
          return Parse(data, message, ignore_unknown_fields=True)
 diff --git a/src/a2a/utils/source_lifetime.py b/src/a2a/utils/source_lifetime.py
 new file mode 100644
-index 0000000..9a6a089
+index 0000000..e3da46e
 --- /dev/null
 +++ b/src/a2a/utils/source_lifetime.py
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,284 @@
 +"""Standalone backend ownership for the shared original-source body.
 +
 +The enclosing context belongs to the request's complete ASGI lifetime, not
@@ -1560,9 +1568,12 @@ index 0000000..9a6a089
 +                continue
 +            visited.add(id(current))
 +            if isinstance(current, BaseExceptionGroup):
-+                pending.extend(current.exceptions)
-+            if current.__cause__ is not None:
-+                pending.append(current.__cause__)
++                pending.extend(
++                    BaseExceptionGroup.__dict__['exceptions'].__get__(current)
++                )
++            cause = BaseException.__dict__['__cause__'].__get__(current)
++            if cause is not None:
++                pending.append(cause)
 +        return False
 +
 +    originals: list[BaseException] = []
@@ -3604,10 +3615,10 @@ index a0450b2..0b8d1a0 100644
  
 diff --git a/tests/server/routes/test_source_lifetime.py b/tests/server/routes/test_source_lifetime.py
 new file mode 100644
-index 0000000..515c920
+index 0000000..ce66578
 --- /dev/null
 +++ b/tests/server/routes/test_source_lifetime.py
-@@ -0,0 +1,649 @@
+@@ -0,0 +1,697 @@
 +"""Real response execution, original OS failures and request-root retirement."""
 +
 +from __future__ import annotations
@@ -3796,6 +3807,54 @@ index 0000000..515c920
 +        assert 'source_root' not in str(app.openapi())
 +        return app, path, body, headers
 +    return Starlette(routes=routes), path, body, headers
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_explicit_source_request_preserves_original_send_capability(
++    backend: str,
++) -> None:
++    async def run() -> None:
++        sent: list[Message] = []
++        scope = _scope()
++        scope['extensions'] = {'http.response.push': {}}
++        scope['headers'] = [(b'accept', b'text/css')]
++
++        async def send(message: Message) -> None:
++            sent.append(message)
++
++        original = Request(scope, receive=_receive, send=send)
++        async with SourceRequestRoot(standalone_source_lifetime) as root:
++            wrapped = SourceRequest(original, root)
++            await wrapped.send_push_promise('/original.css')
++        assert len(sent) == 1
++        assert sent[0]['type'] == 'http.response.push'
++        assert sent[0]['path'] == '/original.css'
++        assert (b'accept', b'text/css') in sent[0]['headers']
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++def test_explicit_source_request_preserves_original_cached_disconnect(
++    backend: str,
++) -> None:
++    async def run() -> None:
++        received = False
++
++        async def receive() -> Message:
++            nonlocal received
++            assert not received, (
++                'Cached disconnect must not consume the transport again'
++            )
++            received = True
++            return {'type': 'http.disconnect'}
++
++        original = Request(_scope(), receive=receive)
++        assert await original.is_disconnected()
++        async with SourceRequestRoot(standalone_source_lifetime) as root:
++            assert await SourceRequest(original, root).is_disconnected()
++
++    anyio.run(run, backend=backend)
 +
 +
 +@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
@@ -5113,10 +5172,10 @@ index 0000000..5c9fb99
 +    assert 'Exception ignored' not in result.stderr
 diff --git a/tests/utils/test_source_lifetime.py b/tests/utils/test_source_lifetime.py
 new file mode 100644
-index 0000000..5fedcd2
+index 0000000..a1a3004
 --- /dev/null
 +++ b/tests/utils/test_source_lifetime.py
-@@ -0,0 +1,550 @@
+@@ -0,0 +1,603 @@
 +"""Real original Tasks, file descriptors, context tokens and caller withdrawal."""
 +
 +from __future__ import annotations
@@ -5314,6 +5373,59 @@ index 0000000..5fedcd2
 +                    raise observer from original
 +        assert root.value is observer
 +        assert observer.__cause__ is sources[0].close_error
++        sources[0].assert_original_retired()
++
++    anyio.run(run, backend=backend)
++
++
++@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
++@pytest.mark.parametrize('spoof', ['cause', 'group'])
++def test_overridden_graph_properties_cannot_hide_original_close_failure(
++    tmp_path: Path, backend: str, spoof: str
++) -> None:
++    async def run() -> None:
++        sources: list[_DescriptorSource] = []
++
++        class SpoofedCause(RuntimeError):
++            @property
++            def __cause__(self) -> BaseException | None:
++                return sources[0].close_error
++
++        class SpoofedGroup(ExceptionGroup):
++            @property
++            def exceptions(self) -> tuple[BaseException, ...]:
++                error = sources[0].close_error
++                assert error is not None
++                return (error,)
++
++        original = (
++            SpoofedCause('original body failure')
++            if spoof == 'cause'
++            else SpoofedGroup(
++                'original body group', [ValueError('actual body child')]
++            )
++        )
++
++        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
++            source = _DescriptorSource(
++                tmp_path / 'source', backend, (), fail_close=True
++            )
++            resources.retain(source, source.aclose)
++            sources.append(source)
++            raise original
++
++        with anyio.fail_after(5), pytest.raises(BaseException) as root:
++            async with standalone_source_lifetime(acquire) as reader:
++                with pytest.raises(BaseException) as delivered:
++                    await anext(reader)
++        assert root.value is delivered.value
++        assert type(root.value) is ExceptionGroup
++        actual = BaseExceptionGroup.__dict__['exceptions'].__get__(root.value)
++        assert len(actual) == 2
++        assert actual[0] is original
++        assert actual[1] is sources[0].close_error
++        assert actual[1].errno == errno.EBADF
++        assert BaseException.__dict__['__cause__'].__get__(original) is None
 +        sources[0].assert_original_retired()
 +
 +    anyio.run(run, backend=backend)

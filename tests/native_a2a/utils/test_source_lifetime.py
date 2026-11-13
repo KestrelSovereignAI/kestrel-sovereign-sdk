@@ -202,6 +202,59 @@ def test_original_error_already_retained_as_cause_is_not_duplicated(
 
 
 @pytest.mark.parametrize('backend', ['asyncio', 'trio'])
+@pytest.mark.parametrize('spoof', ['cause', 'group'])
+def test_overridden_graph_properties_cannot_hide_original_close_failure(
+    tmp_path: Path, backend: str, spoof: str
+) -> None:
+    async def run() -> None:
+        sources: list[_DescriptorSource] = []
+
+        class SpoofedCause(RuntimeError):
+            @property
+            def __cause__(self) -> BaseException | None:
+                return sources[0].close_error
+
+        class SpoofedGroup(ExceptionGroup):
+            @property
+            def exceptions(self) -> tuple[BaseException, ...]:
+                error = sources[0].close_error
+                assert error is not None
+                return (error,)
+
+        original = (
+            SpoofedCause('original body failure')
+            if spoof == 'cause'
+            else SpoofedGroup(
+                'original body group', [ValueError('actual body child')]
+            )
+        )
+
+        def acquire(resources: SourceAcquisition) -> _DescriptorSource:
+            source = _DescriptorSource(
+                tmp_path / 'source', backend, (), fail_close=True
+            )
+            resources.retain(source, source.aclose)
+            sources.append(source)
+            raise original
+
+        with anyio.fail_after(5), pytest.raises(BaseException) as root:
+            async with standalone_source_lifetime(acquire) as reader:
+                with pytest.raises(BaseException) as delivered:
+                    await anext(reader)
+        assert root.value is delivered.value
+        assert type(root.value) is ExceptionGroup
+        actual = BaseExceptionGroup.__dict__['exceptions'].__get__(root.value)
+        assert len(actual) == 2
+        assert actual[0] is original
+        assert actual[1] is sources[0].close_error
+        assert actual[1].errno == errno.EBADF
+        assert BaseException.__dict__['__cause__'].__get__(original) is None
+        sources[0].assert_original_retired()
+
+    anyio.run(run, backend=backend)
+
+
+@pytest.mark.parametrize('backend', ['asyncio', 'trio'])
 def test_unobserved_late_close_failure_reaches_the_request_root(
     tmp_path: Path, backend: str
 ) -> None:

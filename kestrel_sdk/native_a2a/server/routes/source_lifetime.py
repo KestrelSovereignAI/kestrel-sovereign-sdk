@@ -127,6 +127,14 @@ class SourceRequest(Request):
         """Retire the original request's form resources, without a copied cache."""
         await self._original_request.close()
 
+    async def send_push_promise(self, path: str) -> None:
+        """Use the original server send capability, not a missing replacement."""
+        await self._original_request.send_push_promise(path)
+
+    async def is_disconnected(self) -> bool:
+        """Preserve the original disconnect cache without consuming receive twice."""
+        return await self._original_request.is_disconnected()
+
     @property
     def source_root(self) -> SourceRequestRoot:
         """Return the caller-selected root; it still must admit the source."""

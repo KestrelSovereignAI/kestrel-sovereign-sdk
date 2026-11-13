@@ -77,9 +77,12 @@ def _original_errors(errors: list[BaseException]) -> BaseException | None:
                 continue
             visited.add(id(current))
             if isinstance(current, BaseExceptionGroup):
-                pending.extend(current.exceptions)
-            if current.__cause__ is not None:
-                pending.append(current.__cause__)
+                pending.extend(
+                    BaseExceptionGroup.__dict__['exceptions'].__get__(current)
+                )
+            cause = BaseException.__dict__['__cause__'].__get__(current)
+            if cause is not None:
+                pending.append(cause)
         return False
 
     originals: list[BaseException] = []
