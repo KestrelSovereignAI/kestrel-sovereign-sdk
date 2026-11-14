@@ -13,10 +13,17 @@ import inspect
 
 from builtins import BaseExceptionGroup
 from collections import deque
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+)
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Generic, Protocol, TypeVar, cast
+from typing import Any, Generic, Protocol, TypeVar, cast
 
 
 T = TypeVar('T')
@@ -44,6 +51,76 @@ class _Signal(Protocol):
     def set(self) -> None: ...
 
     async def wait(self) -> None: ...
+
+
+class SourceWithdrawal:
+    """Explicit demand withdrawal for a source's known, resource-free waits.
+
+    This signal neither cancels a Task nor acknowledges a physical retirement.
+    Use it only at a wait whose normal return allows the ORIGINAL source to
+    leave its body and finish its own finally. Never race an opaque resource
+    acquisition or finalizer against it. A signal is sticky and not reusable
+    for a fresh source lifetime.
+    """
+
+    def __init__(self) -> None:
+        import anyio  # noqa: PLC0415 -- optional backend, lazy at construction
+
+        self._requested = anyio.Event()
+
+    @property
+    def requested(self) -> bool:
+        """Read demand withdrawal, not a retirement receipt."""
+        return self._requested.is_set()
+
+    async def wait(self) -> None:
+        """Wait for withdrawal without acquiring or retiring a resource."""
+        await self._requested.wait()
+
+    def request_stop(self) -> None:
+        """Notify known waits; this is neither cancellation nor retirement."""
+        self._requested.set()
+
+
+@dataclass(frozen=True)
+class WakeableSource(AsyncGenerator[T, None]):
+    """An original generator plus explicit withdrawal at its known waits.
+
+    Delegation preserves direct handler consumers, including asend/athrow and
+    aclose. SourceAcquisition unwraps and retains the actual original generator
+    before registering its signal; dispatcher mapping cannot hide that signal.
+    This wrapper starts no owner and adds no body/finalizer loop.
+    """
+
+    original: AsyncGenerator[T, None] = field(repr=False)
+    withdrawal: SourceWithdrawal = field(repr=False)
+
+    def __post_init__(self) -> None:
+        """Require the explicit source and signal contracts."""
+        if not issubclass(type(self.original), AsyncGenerator):
+            raise TypeError('A wakeable source requires an async generator')
+        if type(self.withdrawal) is not SourceWithdrawal:
+            raise TypeError('A wakeable source requires a SourceWithdrawal')
+
+    def __aiter__(self) -> WakeableSource[T]:
+        """Return this direct, non-owning delegation view."""
+        return self
+
+    async def __anext__(self) -> T:
+        """Advance the actual original generator."""
+        return await anext(self.original)
+
+    def asend(self, value: None) -> Coroutine[Any, Any, T]:
+        """Delegate direct-generator send without another owner."""
+        return self.original.asend(value)
+
+    def athrow(self, *args: Any) -> Coroutine[Any, Any, T]:
+        """Delegate the original generator's throw argument contract."""
+        return self.original.athrow(*args)
+
+    def aclose(self) -> Coroutine[Any, Any, None]:
+        """Delegate direct close; acquisition retains only the original."""
+        return self.original.aclose()
 
 
 class SourceHandoff(Generic[T]):
@@ -76,6 +153,24 @@ class SourceHandoff(Generic[T]):
         self._stopped = False
         self._finished = False
         self._reading = False
+        self._withdrawals: list[SourceWithdrawal] = []
+
+    def retain_withdrawal(self, withdrawal: SourceWithdrawal) -> None:
+        """Register an explicit signal before advancing its retained source."""
+        if type(withdrawal) is not SourceWithdrawal:
+            raise TypeError('Original withdrawal requires a SourceWithdrawal')
+        if not any(original is withdrawal for original in self._withdrawals):
+            self._withdrawals.append(withdrawal)
+        if self._stopped:
+            SourceWithdrawal.request_stop(withdrawal)
+
+    def release_withdrawal(self, withdrawal: SourceWithdrawal) -> None:
+        """Release a registration only after actual original retirement."""
+        for index, original in enumerate(self._withdrawals):
+            if original is withdrawal:
+                del self._withdrawals[index]
+                return
+        raise ValueError('Original withdrawal was not registered')
 
     @property
     def stopped(self) -> bool:
@@ -103,6 +198,8 @@ class SourceHandoff(Generic[T]):
         if self._publishing is not None:
             self._publishing.acknowledge(proceed=False)
         self._ready.set()
+        for withdrawal in self._withdrawals:
+            SourceWithdrawal.request_stop(withdrawal)
 
     def publish_terminal(self) -> None:
         """Publish an owner observation; does not invent or join that owner."""
@@ -228,9 +325,11 @@ class SourceAcquisition:
     factory's exception-safety responsibility.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, handoff: SourceHandoff[Any] | None = None) -> None:
         self._resources: list[tuple[object, CloseResource]] = []
         self._closed = False
+        self._handoff = handoff
+        self._withdrawals: list[SourceWithdrawal] = []
 
     def retain(self, resource: T, close: CloseResource) -> T:
         """Register exactly one original closer, then return its resource."""
@@ -245,6 +344,8 @@ class SourceAcquisition:
 
     def retain_iterator(self, iterator: object) -> None:
         """Retain an exposed iterator before its next acquisition/advancement."""
+        if self._closed:
+            raise RuntimeError('Original source acquisition is closed')
         if any(original is iterator for original, _ in self._resources):
             return
         close = getattr(iterator, 'aclose', None)
@@ -256,6 +357,22 @@ class SourceAcquisition:
 
     def retain_iterable(self, source: AsyncIterable[T]) -> AsyncIterator[T]:
         """Retain source BEFORE aiter, then retain the actual iterator too."""
+        if self._closed:
+            raise RuntimeError('Original source acquisition is closed')
+        if issubclass(type(source), WakeableSource):
+            wakeable = cast('WakeableSource[T]', source)
+            iterator = self.retain_iterable(wakeable.original)
+            if self._handoff is None:
+                raise RuntimeError(
+                    'Wakeable acquisition requires its source handoff'
+                )
+            withdrawal = wakeable.withdrawal
+            if not any(
+                original is withdrawal for original in self._withdrawals
+            ):
+                self._handoff.retain_withdrawal(withdrawal)
+                self._withdrawals.append(withdrawal)
+            return iterator
         self.retain_iterator(source)
         iterator = aiter(source)
         self.retain_iterator(iterator)
@@ -271,6 +388,9 @@ class SourceAcquisition:
             error = await _retire_resource(close)
             if error is not None:
                 errors.append(error)
+        if self._handoff is not None:
+            for withdrawal in self._withdrawals:
+                self._handoff.release_withdrawal(withdrawal)
         return tuple(errors)
 
 
@@ -306,7 +426,7 @@ async def run_source_body(
     """
     import anyio  # noqa: PLC0415 -- optional HTTP backend
 
-    resources = SourceAcquisition()
+    resources = SourceAcquisition(handoff)
     body_error: BaseException | None = None
     observation_errors: list[BaseException] = []
     retirement_errors: tuple[BaseException, ...] = ()

@@ -145,6 +145,26 @@ Direct dispatchers require an explicit `SourceRequest` in an active
 provides that boundary for an ASGI endpoint. The request adapter preserves the
 original payload caches instead of consuming the transport again.
 
+### Cooperative withdrawal from known idle waits
+
+`SourceWithdrawal` and `WakeableSource` in `utils.source_ownership` let an
+opt-in source leave a known, resource-free idle wait when request demand ends.
+The source receives its own explicit signal and returns normally from that
+wait. Wrap its actual async generator in `WakeableSource(original, withdrawal)`.
+The same `SourceAcquisition.retain_iterable()` registers the signal before
+advancement and retains the actual original, even when a dispatcher exposes a
+mapping generator. Withdrawal that precedes registration remains visible.
+The wrapper delegates direct `anext`, `asend`, `athrow` and `aclose` calls.
+
+A signal is sticky: create a new one for each source lifetime. It is not a
+request deadline, durable-task cancellation, resource closer or authority
+grant. Do not race opaque acquisition or finalizer code against it. The same
+original owner must finish its own cleanup and actually join; stopped demand
+or an empty queue is never a retirement acknowledgement. A blocked original
+finally stays pending and an actual failed finally stays a failure. Ordinary
+generators need no signal and retain their existing behavior. Base SDK imports
+still do not import AnyIO; signal construction requires the `[a2a]` extra.
+
 ### Maintaining the vendored copy
 
 This copy is Kestrel's maintained fork. Fixes land here and are not held for
