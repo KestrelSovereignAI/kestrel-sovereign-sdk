@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 334 tracked files (302 `.py`, 10 `.md`, 22 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 359 tracked files (327 `.py`, 10 `.md`, 22 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -327,6 +327,8 @@ Repo entry points and standard project files.
   - `class RestDispatcher`
 - **kestrel_sdk/native_a2a/server/routes/rest_routes.py** — —
   - `def create_rest_routes(request_handler, context_builder, enable_v0_3_compat, path_prefix, …)`
+- **kestrel_sdk/native_a2a/server/routes/source_lifetime.py** — Explicit request roots spanning endpoint dispatch AND ASGI response use.
+  - `class SourceRequestRoot`; `class SourceEndpoint`; `class SourceRequest`; `def source_root_for(request)`; `def source_request_response(endpoint, factory)`; `def create_source_route(path, endpoint)`; `def with_source_lifetime(route, factory)`
 - **kestrel_sdk/native_a2a/server/tasks/__init__.py** — Components for managing tasks within the A2A server.
 - **kestrel_sdk/native_a2a/server/tasks/base_push_notification_sender.py** — —
   - `class BasePushNotificationSender`
@@ -379,8 +381,12 @@ Repo entry points and standard project files.
   - `async def validate_push_notification_url(url)`
 - **kestrel_sdk/native_a2a/utils/signing.py** — —
   - `class SignatureVerificationError`; `class NoSignatureError`; `class InvalidSignaturesError`; `class ProtectedHeader`; `def create_agent_card_signer(signing_key, protected_header, header)`; `def create_signature_verifier(key_provider, algorithms)`
+- **kestrel_sdk/native_a2a/utils/source_lifetime.py** — Standalone backend ownership for the shared original-source body.
+  - `class SourceDemand`; `class SourceLifetimeFactory`; `class SourceReader`; `async def standalone_source_lifetime(acquire)`
 - **kestrel_sdk/native_a2a/utils/source_ownership.py** — The one-item source handoff, independent of scheduling and host authority.
-  - `class SourceHandoff`; `class CallbackSource`; `class SourceAcquisition`; `class SourceBodyOutcome`; `async def run_source_body(acquire, handoff)`
+  - `class SourceWithdrawal`; `class WakeableSource`; `class SourceHandoff`; `class CallbackSource`; `class SourceAcquisition`; `class SourceBodyOutcome`; `async def run_source_body(acquire, handoff)`
+- **kestrel_sdk/native_a2a/utils/stream_refusal.py** — Explicit logical stream outcomes, never source-retirement acknowledgements.
+  - `class StreamRefusal`; `def map_stream_item(item, mapper)`; `async def drain_stream_refusal(stream, refusal)`; `class ProtocolStreamDemand`
 - **kestrel_sdk/native_a2a/utils/task.py** — Utility functions for creating A2A Task objects.
   - `class HistoryLengthConfig`; `def validate_history_length(config)`; `def apply_history_length(task, config)`; `def validate_page_size(page_size)`; `def encode_page_token(task_id)`; `def decode_page_token(page_token)`; `class ListTasksCursor`; `def encode_list_tasks_cursor(cursor)`; `…`
 - **kestrel_sdk/native_a2a/utils/telemetry.py** — OpenTelemetry Tracing Utilities for A2A Python SDK.
@@ -475,23 +481,60 @@ Repo entry points and standard project files.
 - **scripts/generate_repo_map.py** — Generate REPO_MAP.md — a file-tree + per-file purpose index for this repo.
   - `class FileEntry`; `def repo_name()`; `def tracked_files()`; `def is_excluded(path)`; `def first_sentence(text, max_chars)`; `def summarize_python(path)`; `def summarize_markdown(path)`; `def summarize_other(path)`; `…`
 - **scripts/vendor_a2a.py** — Import and verify the reviewed A2A SDK in Kestrel's isolated namespace.
-  - `def relocate(text)`; `def import_vendor(root, source, revision, base)`; `def check_vendor(root)`; `def main()`
+  - `def relocate(text)`; `def relocate_test(text)`; `def import_test_delta(root, source, base, revision)`; `def import_vendor(root, source, revision, base)`; `def check_vendor(root)`; `def main()`
 
 ## `tests/`
 
 - **tests/__init__.py** — —
 - **tests/git_support.py** — One required identity for real, disposable Git fixture commits.
   - `def commit_fixture(checkout)`
+- **tests/native_a2a/__init__.py** — —
+- **tests/native_a2a/compat/__init__.py** — —
+- **tests/native_a2a/compat/v0_3/__init__.py** — —
+- **tests/native_a2a/compat/v0_3/test_grpc_handler.py** — —
+  - `def mock_request_handler()`; `def mock_grpc_context()`; `def sample_agent_card()`; `def handler(mock_request_handler, sample_agent_card)`; `async def test_send_message_success_task(handler, mock_request_handler, mock_grpc_context)`; `async def test_send_message_success_message(handler, mock_request_handler, mock_grpc_context)`; `async def test_send_streaming_message_success(handler, mock_request_handler, mock_grpc_context)`; `async def test_get_task_success(handler, mock_request_handler, mock_grpc_context)`; `…`
+- **tests/native_a2a/compat/v0_3/test_grpc_source_lifetime.py** — Actual grpc.aio coroutine writers, original Tasks and file descriptors.
+  - `async def test_real_grpc_writer_joins_original_before_final_status(tmp_path, subscribe)`; `async def test_real_grpc_client_withdrawal_waits_for_blocked_original_close(tmp_path)`
+- **tests/native_a2a/compat/v0_3/test_jsonrpc_app_compat.py** — —
+  - `async def test_shutdown_grace_period_is_passed_to_event_source_response(mock_handler)`; `def mock_handler()`; `def agent_card()`; `def test_app(mock_handler, agent_card)`; `def root_probe(test_app)`; `def client(root_probe)`; `def test_send_message_v03_compat(client, mock_handler)`; `def test_get_task_v03_compat(client, mock_handler)`; `…`
+- **tests/native_a2a/compat/v0_3/test_request_handler.py** — —
+  - `def mock_core_handler()`; `def v03_handler(mock_core_handler)`; `def mock_context()`; `async def test_on_message_send_returns_message(v03_handler, mock_core_handler, mock_context)`; `async def test_on_message_send_returns_task(v03_handler, mock_core_handler, mock_context)`; `async def test_on_message_send_stream(v03_handler, mock_core_handler, mock_context)`; `async def test_on_cancel_task(v03_handler, mock_core_handler, mock_context)`; `async def test_on_cancel_task_not_found(v03_handler, mock_core_handler, mock_context)`; `…`
+- **tests/native_a2a/compat/v0_3/test_rest_handler.py** — —
+  - `def mock_core_handler()`; `def agent_card()`; `def rest_handler(agent_card, mock_core_handler)`; `def mock_context()`; `def mock_request()`; `async def test_on_message_send(rest_handler, mock_request, mock_context)`; `async def test_on_message_send_stream(rest_handler, mock_request, mock_context)`; `async def test_on_cancel_task(rest_handler, mock_request, mock_context)`; `…`
+- **tests/native_a2a/compat/v0_3/test_rest_routes_compat.py** — —
+  - `async def test_shutdown_grace_period_is_passed_to_event_source_response(request_handler)`; `async def agent_card()`; `async def request_handler()`; `async def app(agent_card, request_handler)`; `async def root_probe(app)`; `async def client(root_probe)`; `async def test_send_message_success_message_v03(client, request_handler)`; `async def test_send_message_success_task_v03(client, request_handler)`; `…`
+- **tests/native_a2a/integration/__init__.py** — —
+- **tests/native_a2a/integration/test_client_server_integration.py** — —
+  - `def create_key_provider(verification_key)`; `def mock_request_handler(agent_card)`; `def agent_card()`; `class TransportSetup`; `def http_base_setup(mock_request_handler, agent_card)`; `def jsonrpc_setup(http_base_setup)`; `def rest_setup(http_base_setup)`; `async def grpc_setup(grpc_server_and_handler, agent_card)`; `…`
+- **tests/native_a2a/server/__init__.py** — Server regressions using the repository's shared test witnesses.
+- **tests/native_a2a/server/routes/__init__.py** — —
 - **tests/native_a2a/server/routes/test_common.py** — —
   - `class LegacyEventSourceResponse`; `def test_default_grace_period_supports_legacy_sse_starlette()`; `def test_grace_period_constructor_arguments(grace_period)`; `def test_nonzero_grace_period_requires_cooperative_shutdown_support()`; `def test_negative_grace_period_is_rejected(response_class)`; `class TestStarletteUser`; `class TestDefaultContextBuilder`; `class TestBuildServerCallContext`; `…`
 - **tests/native_a2a/server/routes/test_rest_dispatcher.py** — —
-  - `def agent_card()`; `def mock_handler(agent_card)`; `def rest_dispatcher_instance(mock_handler)`; `def make_mock_request(method, path_params, query_params, headers, …)`; `class TestRestDispatcherInitialization`; `class TestRestDispatcherContextManagement`; `class TestRestDispatcherEndpoints`; `class TestRestDispatcherStreaming`
+  - `def agent_card()`; `def mock_handler(agent_card)`; `def rest_dispatcher_instance(mock_handler)`; `class TestRestDispatcherInitialization`; `class TestRestDispatcherContextManagement`; `class TestRestDispatcherEndpoints`; `class TestRestDispatcherStreaming`
+- **tests/native_a2a/server/routes/test_rest_routes.py** — —
+  - `def agent_card()`; `def mock_handler()`; `def test_routes_creation(agent_card, mock_handler)`; `def test_routes_creation_v03_compat(agent_card, mock_handler)`; `def test_rest_endpoints_routing(agent_card, mock_handler)`; `def test_rest_invalid_utf8_body_is_bad_request(mock_handler, path)`; `def test_rest_endpoints_routing_tenant(agent_card, mock_handler)`; `def test_rest_list_tasks(agent_card, mock_handler)`; `…`
+- **tests/native_a2a/server/routes/test_source_lifetime.py** — Real response execution, original OS failures and request-root retirement.
+  - `def test_root_probe_requires_an_actual_matching_original_failure(backend)`; `def test_terminal_refusal_is_normalized_only_after_real_source_retirement(tmp_path, backend, frontend, binding, …)`; `def test_explicit_source_request_preserves_original_send_capability(backend)`; `def test_explicit_source_request_preserves_original_cached_disconnect(backend)`; `def test_explicit_source_request_preserves_the_original_cached_body(backend)`; `def test_explicit_source_request_preserves_and_closes_original_cached_upload(tmp_path, backend)`; `def test_actual_sse_close_failure_retains_one_original_error_graph(tmp_path, backend)`; `def test_request_root_spans_prefetch_and_real_sse_response(tmp_path, backend)`; `…`
+- **tests/native_a2a/source_witness.py** — Shared real original-Task/FD/context witnesses for source lifetime tests.
+  - `class RootFailureProbe`; `def make_request(method, path_params, query_params, headers, …)`; `async def source_request(request)`; `def original_owner(backend)`; `def assert_closed(fd)`; `class DescriptorSource`; `class StreamRequestHandler`
+- **tests/native_a2a/utils/__init__.py** — Utility regression package, including shared original-source witnesses.
 - **tests/native_a2a/utils/test_error_handlers.py** — Tests for kestrel_sdk.native_a2a.utils.error_handlers module.
   - `class MockJSONResponse`; `class MockEventSourceResponse`; `async def test_rest_error_handler_server_error()`; `async def test_rest_error_handler_unknown_exception()`; `async def test_rest_stream_error_handler_server_error()`; `async def test_rest_stream_error_handler_reraises_exception()`; `async def test_rest_error_handler_success()`; `async def test_rest_stream_error_handler_generator_error(caplog)`; `…`
 - **tests/native_a2a/utils/test_source_body.py** — Original source acquisition/retirement using real Tasks, tokens and files.
   - `def test_acquire_iterate_and_retire_in_the_original_task(backend, tmp_path)`; `def test_partial_acquisition_failures_retain_originals_and_close_the_file(backend, failure_phase, tmp_path)`; `def test_all_close_failures_and_policy_failure_remain_separate(backend)`; `def test_callback_source_joins_its_structured_emitters(backend)`; `def test_parent_scope_cancellation_does_not_abort_original_close(backend, tmp_path)`; `def test_acquisition_contract_refusals_and_one_close_attempt(backend)`; `def test_invalid_callback_return_still_retires_acquisitions(backend)`; `def test_invalid_closing_contracts_fail_without_leaking_a_file(backend, mode, tmp_path)`; `…`
+- **tests/native_a2a/utils/test_source_lifetime.py** — Real original Tasks, file descriptors, context tokens and caller withdrawal.
+  - `def test_factory_iteration_and_retirement_use_one_original(tmp_path, backend)`; `def test_partial_factory_and_real_late_close_errors_retain_originals(tmp_path, backend)`; `def test_delivered_body_error_does_not_acknowledge_a_successful_root(tmp_path, backend)`; `def test_natural_generator_finally_error_is_fatal_after_demand_catches_it(tmp_path, backend, empty)`; `def test_reading_a_failed_close_does_not_acknowledge_successful_retirement(tmp_path, backend)`; `def test_original_error_already_retained_as_cause_is_not_duplicated(tmp_path, backend)`; `def test_overridden_graph_properties_cannot_hide_original_close_failure(tmp_path, backend, spoof)`; `def test_spoofed_callback_class_cannot_bypass_original_iterable_retirement(tmp_path, backend)`; `…`
 - **tests/native_a2a/utils/test_source_ownership.py** — Real backend handoffs; no Task, cancellation or completion mocks.
   - `def test_falsy_items_are_not_terminal_receipts(backend)`; `def test_each_item_requires_its_own_ack(backend)`; `def test_stop_is_not_a_physical_retirement_ack(backend)`; `def test_wait_hooks_restore_original_context(backend)`; `def test_direct_cancel_cannot_transfer_a_frame_ack_to_its_sibling()`; `def test_cancelled_queued_emitter_does_not_publish(backend)`; `def test_stop_before_emission_never_enters_writer_hook(backend)`; `def test_concurrent_reader_refuses_without_replacing_original(backend)`; `…`
+- **tests/native_a2a/utils/test_source_withdrawal.py** — Explicit idle withdrawal preserves the actual generator and its finally.
+  - `def test_idle_withdrawal_joins_original_finally_not_only_demand(tmp_path, backend, mapped, fail_close)`; `def test_withdrawal_before_registration_is_sticky_and_has_identity(backend)`; `def test_wakeable_contract_rejects_arbitrary_signal_and_non_generator(backend)`; `def test_partial_acquisition_failure_retains_actual_original_before_registration(tmp_path, backend)`; `def test_direct_generator_delegation_preserves_send_throw_and_close(backend)`
+- **tests/native_a2a/utils/test_stream_refusal.py** — A logical refusal is data; only original-source EOF/join permits projection.
+  - `def test_actual_registered_host_control_is_not_projected_as_protocol_data()`; `def test_refusal_is_an_explicit_value_and_does_not_map_or_format_its_error()`; `def test_http_refusal_retains_the_actual_status_and_challenge()`; `def test_refusal_projection_waits_for_original_retirement_and_preserves_late_failure(tmp_path, backend, fail_close)`; `def test_refusal_cannot_acknowledge_a_blocked_original_close(tmp_path, backend)`; `def test_refusal_followed_by_another_item_is_not_a_terminal_outcome(tmp_path, backend)`
+- **tests/native_a2a/utils/test_stream_refusal_policy.py** — Refusal demand views do not manufacture completion or empty protobufs.
+  - `def test_profiles_without_refusal_projection_reject_it_instead_of_empty_protobuf()`; `def test_protocol_view_inspection_does_not_certify_pending_original_close(tmp_path, backend)`
+- **tests/native_a2a/utils/test_telemetry.py** — —
+  - `def mock_span()`; `def mock_tracer(mock_span)`; `def patch_trace_get_tracer(mock_tracer)`; `def reload_telemetry_module(monkeypatch)`; `def test_reload_probe_restores_original_telemetry_module_identity()`; `def test_trace_function_sync_success(mock_span)`; `def test_trace_function_sync_exception(mock_span)`; `def test_trace_function_sync_attribute_extractor_called(mock_span)`; `…`
 - **tests/native_a2a/utils/test_version_validation.py** — Tests for version validation decorators.
   - `class TestHandler`; `async def test_validate_version_success()`; `async def test_validate_version_case_insensitive()`; `async def test_validate_version_mismatch()`; `async def test_validate_version_missing_defaults_to_0_3()`; `async def test_validate_version_async_gen_success()`; `async def test_validate_version_async_gen_failure()`; `async def test_validate_version_no_context()`; `…`
 - **tests/test_channel_delivery_contracts.py** — —
@@ -581,7 +624,7 @@ Repo entry points and standard project files.
 - **tests/test_run_contracts.py** — Focused tests for durable operator run-plane contracts.
   - `def test_launch_contains_only_semantic_input_and_record_owns_runtime_clock()`; `def test_launch_authorization_binds_all_trusted_authority()`; `def test_manual_and_agent_launch_shape_invariants()`; `def test_run_models_are_frozen_and_correlate_attempt_and_external_job()`; `def test_resolved_run_authorization_rechecks_durable_launch_scope()`; `def test_resolved_run_tenant_mismatch_matches_tenant_scoped_absence()`; `def test_terminal_state_and_separate_control_and_artifact_actions()`; `def test_control_expected_sequence_is_validated_and_outside_key_scope()`; `…`
 - **tests/test_sdk_test_driver.py** — Original diagnostic sink survives pytest and retires with its process (#118).
-  - `def test_actual_driver_keeps_diagnostics_through_original_interpreter_exit(tmp_path, test_fails)`
+  - `def test_accelerated_profile_keeps_actual_collection_on_normal_startup_budget(tmp_path)`; `def test_progress_longer_than_diagnostic_interval_does_not_dump_healthy_frames(tmp_path, test_fails)`; `def test_inactivity_diagnostics_survive_test_teardown_and_original_shutdown(tmp_path, phase)`; `def test_invalid_diagnostic_interval_refuses_before_pytest(tmp_path, interval)`; `def test_actual_driver_keeps_diagnostics_through_original_interpreter_exit(tmp_path, test_fails)`
 - **tests/test_security_encryption.py** — Tests for SDK encryption key derivation and migration behavior.
   - `def key_shape(request, monkeypatch, tmp_path)`; `def clear_master_key_cache()`; `def test_passphrase_master_key_uses_salted_pbkdf2_600k(monkeypatch, tmp_path)`; `def test_env_passphrase_without_salt_warns_once_and_uses_legacy(monkeypatch, caplog, tmp_path)`; `def test_same_passphrase_and_env_salt_yield_same_key_across_derivations(monkeypatch)`; `def test_key_file_passphrase_persists_salt_next_to_key(monkeypatch, tmp_path)`; `def test_key_file_salt_is_published_privately_without_temp_files(monkeypatch, tmp_path)`; `def test_concurrent_first_starts_converge_on_one_durable_salt(tmp_path)`; `…`
 - **tests/test_timeline_protocol.py** — Tests for timeline protocols.
@@ -607,7 +650,7 @@ Repo entry points and standard project files.
 - **tests/test_vector_search_protocol.py** — Tests for vector search backend protocol.
   - `class StubVectorSearchBackend`; `async def test_vector_search_backend_conformance()`; `async def test_vector_search_backend_callable()`; `async def test_vector_search_backend_without_filter()`; `async def test_vector_search_backend_supports_filters_property()`; `async def test_vector_search_backend_returns_tuples()`
 - **tests/test_vendored_a2a.py** — Custody, isolation and packaging contracts for the modified official SDK.
-  - `def test_import_uses_the_pinned_git_tree_and_refuses_overwrite(tmp_path)`; `def test_relocation_changes_modules_but_preserves_protocol_identifiers()`; `def test_checked_in_sdk_reproduces_reviewed_source_and_license()`; `def test_optional_migration_cli_resolves_its_actual_packaged_resources(tmp_path)`; `def test_vendor_custody_rejects_changed_sources_and_provenance(tmp_path, mutation)`; `def test_sdk_imports_never_load_the_external_a2a_package()`; `def test_vendored_runtime_dependencies_are_declared_without_external_sdk()`
+  - `def test_import_uses_the_pinned_git_tree_and_refuses_overwrite(tmp_path)`; `def test_relocation_changes_modules_but_preserves_protocol_identifiers()`; `def test_relocated_test_witness_uses_the_sdk_test_namespace()`; `def test_producer_test_delta_uses_exact_tree_and_only_required_package_support(tmp_path)`; `def test_checked_in_sdk_reproduces_reviewed_source_and_license()`; `def test_optional_migration_cli_resolves_its_actual_packaged_resources(tmp_path)`; `def test_vendor_custody_rejects_changed_sources_and_provenance(tmp_path, mutation)`; `def test_sdk_imports_never_load_the_external_a2a_package()`; `…`
 - **tests/test_voice_provider_contract.py** — —
   - `async def test_single_tool_providers_remain_batch_compatible()`; `async def test_parallel_provider_can_commit_one_batch()`; `def test_conversation_capabilities_serialize_specialized_tools()`; `def test_legacy_provider_gets_conservative_capabilities()`; `def test_provider_scoped_voices_do_not_leak_between_catalogs()`; `def test_provider_scoped_voice_keys_are_normalized()`; `def test_transcript_updates_can_declare_cumulative_corrections()`; `def test_legacy_tts_provider_gets_format_capabilities()`; `…`
 - **tests/test_waitable.py** — Tests for the Waitable provider contract.
