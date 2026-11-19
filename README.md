@@ -967,6 +967,28 @@ the SDK does not replace an application's middleware or HTTP error policy.
 These bindings are in-process host interfaces, not wire credentials. The
 host implementation is required; the SDK itself does not execute tools.
 
+SDK 0.55 adds native actions to that same binding contract. A tool's static
+`native_actions` mapping contains `NativeAction` declarations: a name, native
+method, sealed JSON Schema bytes and the original handler. Hosts capture the
+mapping atomically with the tool, so later additions cannot extend a retained
+binding. Ordinary tools declare an empty read-only mapping.
+
+`invoke_action(name, arguments, native_action=context, session_id=...,
+operation_id=...)` uses the original tool's permission target and the existing
+dispatch, hooks and durable evidence path. The registered handler supplies
+execution; callers supply no callback. Action approvals are single use and
+cannot persist permission for ordinary calls.
+
+`NativeActionContext` is immutable identity metadata: the original registration,
+original Task contract digest, local target handle, remote-target digest, attribution, optional
+View/conversation labels and input revision. It contains no parameters or raw
+remote Task ID. A label does not grant authority or re-adopt a View. Hosts
+independently verify live original ownership and pin the context across hooks.
+Native params use the existing `HookInput.tool_input` and `updated_input`, so
+security hooks see what would execute. Decided params require fresh validation
+against the captured schema and target before the native send. This contract
+alone does not activate MCP Tasks.
+
 `DeferredToolResult` (from `kestrel_sdk.tools`) lets an installed feature defer
 private render delivery until the host finishes post-tool hooks. It wraps an
 ordinary tool-result dictionary and a synchronous `publish` factory returning

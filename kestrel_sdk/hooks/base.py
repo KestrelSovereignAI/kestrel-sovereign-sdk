@@ -12,6 +12,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from kestrel_sdk.tools.native_action import NativeActionContext
+
 
 class HookEvent(Enum):
     """
@@ -117,10 +119,13 @@ class HookInput:
     # confirmation fields) as the only basis for past-tense success
     # language.
     tool_results: Optional[List[Dict[str, Any]]] = None
+    # Identity only. Native params use tool_input/updated_input, so existing
+    # security and redaction hooks inspect exactly what would execute.
+    native_action: Optional[NativeActionContext] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        return {
+        result = {
             "session_id": self.session_id,
             "hook_event_name": self.hook_event_name,
             "cwd": self.cwd,
@@ -141,6 +146,9 @@ class HookInput:
             "spawn_purpose": self.spawn_purpose,
             "termination_reason": self.termination_reason,
         }
+        if self.native_action is not None:
+            result["native_action"] = self.native_action.to_dict()
+        return result
 
 
 @dataclass
