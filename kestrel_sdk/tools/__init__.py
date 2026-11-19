@@ -13,6 +13,7 @@ from .base import (
     coerce_tool_arguments,
 )
 from .parts import current_tool_result_parts, tool_result_parts_buffer
+from .native_action import NativeAction, NativeActionContext
 from .result import ToolResult, ToolResultStatus
 from .deferred import (
     DeferredToolResult, DeferredToolResultHost, FinalizedToolResult,
@@ -25,6 +26,8 @@ __all__ = [
     "COERCION_FAILED",
     "CommandParseError",
     "GovernedToolBinding",
+    "NativeAction",
+    "NativeActionContext",
     "coerce_json_value",
     "coerce_tool_arguments",
     "ToolCategory",

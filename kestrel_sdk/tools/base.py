@@ -11,8 +11,11 @@ import math
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional, Protocol
 from enum import Enum
+
+from .native_action import NativeAction, NativeActionContext
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +338,34 @@ class GovernedToolBinding(Protocol):
         """The actual registered name after host normalization/disambiguation."""
         ...
 
+    async def invoke_action(
+        self, name: str, arguments: Dict[str, Any], *,
+        native_action: NativeActionContext, session_id: str, operation_id: str,
+        source: str = "mcp-task",
+    ) -> Any:
+        """Execute one captured action through the original governed path.
+
+        Context is identity metadata only. The host verifies original target
+        custody and fresh authority, uses the registered action schema without
+        coercion, and revalidates decided params before its native handler.
+        It must fail closed on missing context or an absent/stale action and
+        must never fall through to the ordinary tool. Parameters stay in the
+        existing hook input; context contains no second copy of them.
+
+        ``name`` must equal ``native_action.action`` and the captured mapping
+        key/declaration name. The context's tool name must equal this binding's
+        actual name and its method must match the captured declaration. The
+        host verifies registration and original Task contract identity from
+        private custody; ``schema_digest`` names that original contract, not
+        the action parameter schema. Stale targets raise ``ResourceConflict``;
+        unconfirmed execution raises ``ResourceOutcomeUnknown``.
+
+        A Task action has a separate journal namespace and its approvals are
+        single use. It cannot persist permission for future ordinary calls.
+        The caller cannot provide an execution callback.
+        """
+        ...
+
     @property
     def is_current(self) -> bool:
         """Diagnostic only; invoke must independently recheck before execution."""
@@ -539,6 +570,17 @@ class AgentTool(ABC):
                 - error: Optional error message if success=False
         """
         pass
+
+    @property
+    def native_actions(self) -> Mapping[str, NativeAction]:
+        """Static actions captured atomically with this tool by its host.
+
+        Ordinary tools declare none. Action names are not separate model
+        tools, and adding one after registration cannot extend that binding.
+        Every mapping key must equal its declaration's ``name``; hosts reject
+        mismatches before committing any part of the tool batch.
+        """
+        return MappingProxyType({})
 
     def can_handle_command(self, user_input: str) -> bool:
         """
