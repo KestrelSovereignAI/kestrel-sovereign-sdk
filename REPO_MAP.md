@@ -5,7 +5,7 @@ regenerate via `python scripts/generate_repo_map.py` (refreshed nightly by
 `.github/workflows/repo-map.yml`). No timestamp on purpose: the nightly job
 commits only when the tree actually changes; `git log REPO_MAP.md` has the date.
 
-**Scope:** 359 tracked files (327 `.py`, 10 `.md`, 22 other). Excludes caches, lockfiles, and build artifacts.
+**Scope:** 361 tracked files (329 `.py`, 10 `.md`, 22 other). Excludes caches, lockfiles, and build artifacts.
 
 **Format per file:** `path — one-line purpose` plus the public top-level Python symbols on the next line
 (classes and functions; private `_name` skipped).
@@ -452,6 +452,8 @@ Repo entry points and standard project files.
   - `def coerce_json_value(value, param_type, nullable)`; `class ToolCategory`; `class ToolParameter`; `def coerce_tool_arguments(tool_name, parameters, arguments)`; `class ToolSchema`; `class GovernedToolBinding`; `class CommandParseError`; `class AgentTool`; `…`
 - **kestrel_sdk/tools/deferred.py** — In-process render delivery after the host completes post-tool policy.
   - `class FinalizedToolResult`; `class ToolPublicationContext`; `class DeferredToolResultHost`; `class ToolPublicationHost`; `class DeferredToolResult`
+- **kestrel_sdk/tools/native_action.py** — Registered native tool actions and their content-free identity context.
+  - `class NativeActionContext`; `class NativeAction`
 - **kestrel_sdk/tools/parts.py** — Pending typed-parts buffer for the tool call currently executing.
   - `def tool_result_parts_buffer()`; `def current_tool_result_parts()`
 - **kestrel_sdk/tools/result.py** — Tool result envelope contract.
@@ -605,6 +607,8 @@ Repo entry points and standard project files.
   - `class HostControlError`; `class HostA2AControlError`; `class UnformattableHostControl`; `class RaisingHostHandler`; `def isolate_host_policy(monkeypatch)`; `async def test_native_routes_preserve_original_registered_host_failure(tmp_path, binding, error_type, compound, …)`; `async def test_enabled_compatibility_routes_keep_original_host_control(tmp_path, error_type, compound, phase, …)`; `class OriginalFailingRequestBody`; `…`
 - **tests/test_native_a2a_skills.py** — Features contribute native skills; only the serving agent owns a card.
   - `class SkillFeature`; `def test_skills_are_official_models_with_native_json()`; `def test_skills_follow_current_tool_exposure_and_are_fresh()`; `def test_skill_metadata_comes_from_current_tool_schema()`; `def test_empty_exposure_has_no_skills()`; `def test_invalid_required_skill_fields_fail_with_the_native_error(name, description)`; `def test_features_do_not_publish_fake_agent_cards()`; `def test_draft_wire_models_are_retired(module)`; `…`
+- **tests/test_native_actions.py** — Native action declarations seal schemas and keep identity out of params.
+  - `def context()`; `async def handler(context, params)`; `def test_native_schema_is_sealed_and_each_reader_gets_its_own_values()`; `def test_schema_identity_ignores_formatting_and_key_order()`; `def test_non_object_nonfinite_or_invalid_schema_is_refused(raw)`; `def test_schema_requires_immutable_bytes(raw)`; `def test_action_requires_its_registered_callable(target)`; `def test_declaration_refuses_invalid_identity_fields(field, value)`; `…`
 - **tests/test_operator_contracts.py** — Focused tests for feature-owned operator SDK contracts.
   - `def test_operator_context_rejects_invalid_or_missing_tenant(tenant_id)`; `def test_operator_context_requires_tenant_field()`; `def test_operator_context_normalizes_collections_and_is_frozen()`; `def test_operator_context_helpers_fail_closed_for_unknown_values()`; `def test_operator_context_has_bounded_freshness_and_agent_attribution()`; `def test_service_descriptors_are_versioned_and_scope_is_explicit()`; `def test_stable_service_requirement_uses_compatible_major_and_minimum()`; `def test_service_requirement_rejects_non_stable_versions(version)`; `…`
 - **tests/test_outbound_http.py** — SSRF guard (#1727): block server-side fetches to non-public addresses.
